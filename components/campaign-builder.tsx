@@ -795,7 +795,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                   onChange={(e) => setOpeningDmButtonLabel(e.target.value)}
                   placeholder="Send me the link"
                   className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
-                  maxLength={64}
+                  maxLength={20}
                 />
               </div>
             )}
