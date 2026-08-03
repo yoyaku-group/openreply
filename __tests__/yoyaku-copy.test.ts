@@ -3,6 +3,7 @@ import {
   buildCampaignCopy,
   META_BODY_LIMIT,
   META_BUTTON_LIMIT,
+  releaseOpeningVariants,
 } from "@/lib/copy/yoyaku-patterns";
 import { lintCampaignCopy, lintText } from "@/lib/copy/copy-linter";
 import { factNouns, missingFacts } from "@/lib/copy/release-facts";
@@ -64,6 +65,38 @@ describe("yoyaku patterns", () => {
     const long = buildCampaignCopy({ ...RELEASE, catno: "STICKYPLASTICK002" });
     expect(long.linkButtonLabel.length).toBeLessThanOrEqual(META_BUTTON_LIMIT);
     expect(long.linkButtonLabel).toContain("STICKYPLASTICK");
+  });
+
+  it.each(eventTypes)("%s always keeps a label-free shell available", (eventType) => {
+    const placeholder = { ...RELEASE, eventType, label: "YYK no label" };
+    expect(releaseOpeningVariants(placeholder).length).toBeGreaterThan(0);
+  });
+
+  // Observed on the 2026-08-03 canary: YYK1212 carries the taxonomy placeholder
+  // "YYK no label" and PANTHERFOLD carries a label equal to its catalogue
+  // number, both of which read wrong as "… on <label>".
+  it.each([
+    ["placeholder term", "YYK no label"],
+    ["label equal to the catno", "TO001"],
+    ["label equal to the artist", "Theo Kottis"],
+    ["label equal to the title", "Pressure EP"],
+  ])("drops the label clause when the label is a %s", (_case, label) => {
+    for (const eventType of eventTypes) {
+      const copy = buildCampaignCopy({ ...RELEASE, eventType, label });
+      expect(copy.openingDmMessage).not.toContain(` on ${label}`);
+      expect(lintCampaignCopy(copy, { ...RELEASE, eventType, label }).violations).toEqual(
+        []
+      );
+    }
+  });
+
+  it("still names a real label", () => {
+    const copy = buildCampaignCopy({
+      ...RELEASE,
+      eventType: "preorder_open",
+      label: "Sous:sol",
+    });
+    expect(copy.openingDmMessage).toContain("Sous:sol");
   });
 });
 

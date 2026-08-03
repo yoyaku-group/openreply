@@ -55,22 +55,76 @@ const REVEAL_VARIANTS = ["Here you go:", "There you go:"] as const;
 
 type ReleaseShell = (facts: ReleaseFacts) => string;
 
-const RELEASE_OPENINGS: Record<ReleaseFacts["eventType"], readonly ReleaseShell[]> = {
+interface ReleaseVariant {
+  /** Whether the shell interpolates `facts.label` — see `hasUsableLabel`. */
+  usesLabel: boolean;
+  render: ReleaseShell;
+}
+
+/**
+ * Every event type MUST keep at least one label-free variant: a release whose
+ * label is a placeholder falls back to that subset (asserted by the tests).
+ */
+const RELEASE_OPENINGS: Record<
+  ReleaseFacts["eventType"],
+  readonly ReleaseVariant[]
+> = {
   preorder_open: [
-    (f) => `${f.artist}, ${f.title}. Preorder is open on ${f.label}.`,
-    (f) => `${f.title} by ${f.artist} is up for preorder on ${f.label}.`,
-    (f) => `New on ${f.label}: ${f.artist}, ${f.title}. Preorders are open.`,
+    {
+      usesLabel: true,
+      render: (f) => `${f.artist}, ${f.title}. Preorder is open on ${f.label}.`,
+    },
+    {
+      usesLabel: true,
+      render: (f) => `${f.title} by ${f.artist} is up for preorder on ${f.label}.`,
+    },
+    {
+      usesLabel: true,
+      render: (f) => `New on ${f.label}: ${f.artist}, ${f.title}. Preorders are open.`,
+    },
+    { usesLabel: false, render: (f) => `${f.artist}, ${f.title}. Preorder is open.` },
   ],
   release_live: [
-    (f) => `${f.artist}, ${f.title} is out now on ${f.label}.`,
-    (f) => `${f.title} by ${f.artist} just landed. Copies are in the shop.`,
-    (f) => `Out today: ${f.artist}, ${f.title} on ${f.label}.`,
+    { usesLabel: true, render: (f) => `${f.artist}, ${f.title} is out now on ${f.label}.` },
+    {
+      usesLabel: false,
+      render: (f) => `${f.title} by ${f.artist} just landed. Copies are in the shop.`,
+    },
+    { usesLabel: true, render: (f) => `Out today: ${f.artist}, ${f.title} on ${f.label}.` },
   ],
   restock: [
-    (f) => `${f.artist}, ${f.title} is back in stock.`,
-    (f) => `Restock: ${f.artist}, ${f.title} on ${f.label}.`,
+    { usesLabel: false, render: (f) => `${f.artist}, ${f.title} is back in stock.` },
+    { usesLabel: true, render: (f) => `Restock: ${f.artist}, ${f.title} on ${f.label}.` },
   ],
 };
+
+/**
+ * The shop's `musiclabel` taxonomy carries placeholder terms for self-released
+ * records ("YYK no label") and, for one-off imprints, a term equal to the
+ * catalogue number or the record itself. All of them read wrong in
+ * "… on <label>", so those releases take the label-free shells.
+ */
+function hasUsableLabel(facts: ReleaseFacts): boolean {
+  const label = facts.label.trim();
+  if (!label || /\bno label\b/i.test(label)) return false;
+
+  const key = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const labelKey = key(label);
+
+  return (
+    labelKey !== key(facts.catno) &&
+    labelKey !== key(facts.artist) &&
+    labelKey !== key(facts.title)
+  );
+}
+
+export function releaseOpeningVariants(
+  facts: ReleaseFacts
+): readonly ReleaseVariant[] {
+  const variants = RELEASE_OPENINGS[facts.eventType];
+  if (hasUsableLabel(facts)) return variants;
+  return variants.filter((variant) => !variant.usesLabel);
+}
 
 const RELEASE_GOALS: Record<ReleaseFacts["eventType"], string> = {
   preorder_open: "Preorder link",
@@ -98,7 +152,9 @@ export function buildCampaignCopy(facts: CampaignFacts): CampaignCopy {
     };
   }
 
-  const opening = pickVariant(RELEASE_OPENINGS[facts.eventType], facts.catno)(facts);
+  const opening = pickVariant(releaseOpeningVariants(facts), facts.catno).render(
+    facts
+  );
 
   return {
     name: `${facts.catno} ${RELEASE_GOALS[facts.eventType]}`,
