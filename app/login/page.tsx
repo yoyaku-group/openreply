@@ -43,7 +43,10 @@ export default async function LoginPage({
   // or "https://…") falls back to the dashboard. Open-redirect guard.
   const rawCallbackUrl = params.callbackUrl ?? templateCallbackUrl ?? "/dashboard";
   const callbackUrl =
-    rawCallbackUrl.startsWith("/") && !rawCallbackUrl.startsWith("//")
+    // "//host" is protocol-relative and browsers normalize "\" to "/" in the
+    // Location header, so "/\host" is the same bypass — require a "/" followed
+    // by neither slash flavor.
+    /^\/(?![/\\])/.test(rawCallbackUrl)
       ? rawCallbackUrl
       : "/dashboard";
 
