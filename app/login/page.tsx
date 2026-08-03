@@ -38,7 +38,14 @@ export default async function LoginPage({
   const templateCallbackUrl = selectedTemplate
     ? `/campaigns/new?template=${selectedTemplate.slug}`
     : null;
-  const callbackUrl = params.callbackUrl ?? templateCallbackUrl ?? "/dashboard";
+  // Only ever redirect within the app: a query-supplied callbackUrl is
+  // attacker-controlled, so anything but a same-site path ("/x", never "//x"
+  // or "https://…") falls back to the dashboard. Open-redirect guard.
+  const rawCallbackUrl = params.callbackUrl ?? templateCallbackUrl ?? "/dashboard";
+  const callbackUrl =
+    rawCallbackUrl.startsWith("/") && !rawCallbackUrl.startsWith("//")
+      ? rawCallbackUrl
+      : "/dashboard";
 
   // An authenticated visitor has no business on the login form — send them to
   // the tool (nginx also 302s the marketing root here, so this is the landing
