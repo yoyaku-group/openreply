@@ -84,6 +84,7 @@ model Workspace {
   linkClicks        LinkClick[]
   webhookEvents     WebhookEvent[]
   operationalEvents OperationalEvent[]
+  savTransportItems SavTransportItem[]
 
   @@index([ownerId])
 }
@@ -141,6 +142,8 @@ model InstagramAccount {
   dmLogs      DmLog[]
   linkClicks  LinkClick[]
   followerSnapshots FollowerSnapshot[]
+  savTransportItems SavTransportItem[]
+  savConversationFences SavConversationFence[]
 
   @@index([workspaceId])
 }
@@ -324,6 +327,71 @@ model WebhookEvent {
   @@index([status])
 }
 
+/// Ephemeral delivery/review state for the external SAV worker. Gmail and the
+/// YOFR case registry remain the communication and lifecycle sources of truth;
+/// this table only guards Instagram transport, leases, and idempotency.
+model SavTransportItem {
+  id                     String            @id @default(cuid())
+  workspaceId            String
+  instagramAccountId     String
+  accountInstagramId     String
+  accountUsername        String
+  senderInstagramId      String
+  senderUsername         String?
+  conversationKey        String
+  graphConversationId    String?
+  conversationRevision   Int
+  metaMessageId          String            @unique
+  messageCiphertext      String
+  messageFingerprint     String
+  contextCiphertext      String?
+  contextFingerprint     String?
+  hasAttachments         Boolean           @default(false)
+  receivedAt             DateTime
+  replyWindowExpiresAt   DateTime
+  state                  SavTransportState @default(PENDING)
+  attempts               Int               @default(0)
+  claimWorkerId          String?
+  claimTokenHash         String?
+  claimExpiresAt         DateTime?
+  reviewedAt             DateTime?
+  failureCode            String?
+  deliveryTokenHash      String?
+  deliveryTokenExpiresAt DateTime?
+  deliveryIdempotencyKey String?           @unique
+  outboundFingerprint    String?
+  metaReplyMessageId     String?
+  sentAt                 DateTime?
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+
+  workspace        Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  instagramAccount InstagramAccount @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+
+  @@index([state, receivedAt])
+  @@index([instagramAccountId, senderInstagramId, receivedAt])
+  @@index([claimExpiresAt])
+  @@index([updatedAt])
+}
+
+/// Monotonic inbound revision for one Instagram account/contact pair. A
+/// preflight or send is valid only while its item's revision is still latest.
+model SavConversationFence {
+  id                  String   @id @default(cuid())
+  instagramAccountId  String
+  senderInstagramId   String
+  revision            Int      @default(1)
+  latestMetaMessageId String
+  latestReceivedAt    DateTime
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  instagramAccount InstagramAccount @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([instagramAccountId, senderInstagramId])
+  @@index([updatedAt])
+}
+
 model OperationalEvent {
   id          String                @id @default(cuid())
   workspaceId String?
@@ -368,6 +436,16 @@ enum DmStatus {
 enum WebhookStatus {
   PENDING
   PROCESSED
+  FAILED
+}
+
+enum SavTransportState {
+  PENDING
+  CLAIMED
+  REVIEWED
+  SENDING
+  SENT
+  HOLD
   FAILED
 }
 

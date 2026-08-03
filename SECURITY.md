@@ -34,6 +34,12 @@ Never commit any of these, and rotate one if it is exposed anywhere it could be 
 - `RESEND_API_KEY`
 - `INSTAGRAM_APP_SECRET`, `FACEBOOK_APP_SECRET`
 - Live webhook payloads that contain user data
+- `SAV_BRIDGE_TOKEN` (shared only by OpenReply and `yoyaku-sav-engine`)
+
+The public nginx vhost must return 404 for `/api/internal/sav/*`. The SAV engine
+uses the loopback application port and a constant-time bearer check. Auth
+mismatch logs contain only presence flags and a short SHA-256 fingerprint of
+the presented credential, never either token.
 
 ## Disclosure
 
