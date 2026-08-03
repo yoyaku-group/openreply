@@ -15,7 +15,11 @@ const { mockPrisma, mockTx, mockSendDirectMessage } = vi.hoisted(() => {
     upsert: vi.fn(),
     update: vi.fn(),
   };
-  const tx = { savTransportItem, savConversationFence };
+  const tx = {
+    savTransportItem,
+    savConversationFence,
+    $queryRaw: vi.fn(),
+  };
   return {
     mockTx: tx,
     mockPrisma: {
@@ -70,6 +74,7 @@ function baseItem(overrides: Record<string, unknown> = {}) {
     deliveryTokenHash: null,
     deliveryTokenExpiresAt: null,
     deliveryIdempotencyKey: null,
+    deliveryAttemptedAt: null,
     outboundFingerprint: null,
     metaReplyMessageId: null,
     sentAt: null,
@@ -88,6 +93,7 @@ beforeEach(() => {
   mockPrisma.$transaction.mockImplementation(
     async (callback: (tx: typeof mockTx) => unknown) => callback(mockTx)
   );
+  mockTx.$queryRaw.mockResolvedValue([{ pg_advisory_xact_lock: null }]);
   mockPrisma.savTransportItem.deleteMany.mockResolvedValue({ count: 0 });
 });
 
@@ -340,11 +346,19 @@ describe("sendSavReply", () => {
       "ig_customer",
       "Reply"
     );
+    expect(mockTx.savTransportItem.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({ deliveryAttemptedAt: null }),
+        data: expect.objectContaining({ deliveryAttemptedAt: NOW }),
+      })
+    );
   });
 
-  it("opens the circuit before state change or Meta delivery", async () => {
+  it("never lets the environment raise the immutable 10-attempt hard cap", async () => {
     const { tokenHash } = await import("@/lib/sav/security");
     const token = "c".repeat(43);
+    vi.stubEnv("SAV_SENDS_PER_HOUR", "999");
     mockPrisma.savTransportItem.findUnique.mockResolvedValue(
       baseItem({
         deliveryTokenHash: tokenHash(token),
@@ -365,6 +379,85 @@ describe("sendSavReply", () => {
       })
     ).rejects.toMatchObject({ code: "CIRCUIT_OPEN", status: 429 });
     expect(mockSendDirectMessage).not.toHaveBeenCalled();
+  });
+
+  it("counts every failed or uncertain reserved attempt by its immutable timestamp", async () => {
+    const { tokenHash } = await import("@/lib/sav/security");
+    const token = "e".repeat(43);
+    mockPrisma.savTransportItem.findUnique.mockResolvedValue(
+      baseItem({
+        deliveryTokenHash: tokenHash(token),
+        deliveryTokenExpiresAt: new Date(NOW.getTime() + 60_000),
+        instagramAccount: { accessToken: encryptSavText("plain-access-token") },
+      })
+    );
+    mockTx.savConversationFence.update.mockResolvedValue({ revision: 1 });
+    // The aggregate includes rows in any state, including FAILED. Only the
+    // immutable reservation timestamp defines membership in the hour window.
+    mockTx.savTransportItem.count.mockResolvedValue(10);
+
+    await expect(
+      sendSavReply({
+        id: "item_1",
+        deliveryToken: token,
+        idempotencyKey: "approval:failed-budget",
+        text: "Reply",
+        now: NOW,
+      })
+    ).rejects.toMatchObject({ code: "CIRCUIT_OPEN", status: 429 });
+
+    expect(mockTx.savTransportItem.count).toHaveBeenCalledWith({
+      where: {
+        deliveryAttemptedAt: {
+          gte: new Date(NOW.getTime() - 60 * 60 * 1000),
+        },
+      },
+    });
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+  });
+
+  it("serializes the global count before reserving a delivery attempt", async () => {
+    const { tokenHash } = await import("@/lib/sav/security");
+    const token = "s".repeat(43);
+    mockPrisma.savTransportItem.findUnique.mockResolvedValue(
+      baseItem({
+        deliveryTokenHash: tokenHash(token),
+        deliveryTokenExpiresAt: new Date(NOW.getTime() + 60_000),
+        instagramAccount: { accessToken: encryptSavText("plain-access-token") },
+      })
+    );
+    mockTx.savConversationFence.update.mockResolvedValue({ revision: 1 });
+    mockTx.savTransportItem.count.mockResolvedValue(9);
+    mockTx.savTransportItem.updateMany.mockResolvedValue({ count: 1 });
+    mockSendDirectMessage.mockResolvedValue({
+      recipient_id: "ig_customer",
+      message_id: "reply_serialized",
+    });
+
+    await expect(
+      sendSavReply({
+        id: "item_1",
+        deliveryToken: token,
+        idempotencyKey: "approval:serialized",
+        text: "Reply",
+        now: NOW,
+      })
+    ).resolves.toEqual({
+      status: "SENT",
+      metaMessageId: "reply_serialized",
+    });
+
+    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
+    const [queryParts, namespace, lockId] = mockTx.$queryRaw.mock.calls[0];
+    expect(Array.from(queryParts as TemplateStringsArray).join(" ")).toContain(
+      "pg_advisory_xact_lock"
+    );
+    expect([namespace, lockId]).toEqual([0x534156, 1]);
+    const lockOrder = mockTx.$queryRaw.mock.invocationCallOrder[0];
+    const countOrder = mockTx.savTransportItem.count.mock.invocationCallOrder[0];
+    const reserveOrder = mockTx.savTransportItem.updateMany.mock.invocationCallOrder[0];
+    expect(lockOrder).toBeLessThan(countOrder);
+    expect(countOrder).toBeLessThan(reserveOrder);
   });
 
   it("fails closed after an uncertain Meta error and preserves the idempotency key", async () => {
