@@ -1,4 +1,5 @@
-import { signIn } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import { auth, signIn } from "@/lib/auth";
 import { getCampaignTemplate } from "@/lib/templates/campaign-templates";
 
 export const metadata = {
@@ -38,6 +39,17 @@ export default async function LoginPage({
     ? `/campaigns/new?template=${selectedTemplate.slug}`
     : null;
   const callbackUrl = params.callbackUrl ?? templateCallbackUrl ?? "/dashboard";
+
+  // An authenticated visitor has no business on the login form — send them to
+  // the tool (nginx also 302s the marketing root here, so this is the landing
+  // path for everyone). Skipped when an auth error is being displayed: the
+  // error belongs to a sign-in attempt that must stay visible.
+  if (!params.error) {
+    const session = await auth();
+    if (session?.user) {
+      redirect(callbackUrl);
+    }
+  }
   const googleConfigured = Boolean(process.env.GOOGLE_CLIENT_ID);
 
   async function signInWithGoogle() {
