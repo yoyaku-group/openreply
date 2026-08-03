@@ -118,9 +118,13 @@ window and conversation revision. It returns one of:
 }
 ```
 
-Send revalidates the window and revision, enforces the hourly circuit breaker,
-then atomically changes REVIEWED to SENDING before calling Meta's normal direct
-message endpoint. It never uses `HUMAN_AGENT`. Results are `SENT`,
+Send revalidates the window and revision, then reserves a rolling-hour circuit
+slot under a database-wide transaction advisory lock before calling Meta's
+normal direct message endpoint. `deliveryAttemptedAt` is written once during
+that REVIEWED-to-SENDING reservation and never changed, so SENT, FAILED,
+uncertain, and still-SENDING attempts all consume the same global budget. The
+configured limit may be lowered but can never exceed the immutable hard cap of
+10 attempts per hour. It never uses `HUMAN_AGENT`. Results are `SENT`,
 `WINDOW_EXPIRED`, `STALE_CONTEXT`, or `ALREADY_SENT`.
 
 SENDING is deliberately at-most-once. If the process dies after Meta accepts a

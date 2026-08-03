@@ -359,6 +359,7 @@ model SavTransportItem {
   deliveryTokenHash      String?
   deliveryTokenExpiresAt DateTime?
   deliveryIdempotencyKey String?           @unique
+  deliveryAttemptedAt    DateTime?
   outboundFingerprint    String?
   metaReplyMessageId     String?
   sentAt                 DateTime?
@@ -371,6 +372,7 @@ model SavTransportItem {
   @@index([state, receivedAt])
   @@index([instagramAccountId, senderInstagramId, receivedAt])
   @@index([claimExpiresAt])
+  @@index([deliveryAttemptedAt])
   @@index([updatedAt])
 }
 

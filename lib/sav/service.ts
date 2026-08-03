@@ -21,7 +21,12 @@ const DELIVERY_TOKEN_MS = 5 * 60 * 1000;
 const TERMINAL_RETENTION_MS = 7 * DAY_MS;
 const PENDING_RETENTION_MS = 30 * DAY_MS;
 const MAX_CLAIM_LIMIT = 20;
-const DEFAULT_SENDS_PER_HOUR = 10;
+const HARD_MAX_SENDS_PER_HOUR = 10;
+const DEFAULT_SENDS_PER_HOUR = HARD_MAX_SENDS_PER_HOUR;
+// Database-wide transaction advisory lock namespace/id. Every SAV send must
+// acquire this lock before counting and reserving a rolling-hour slot.
+const SAV_SEND_CIRCUIT_LOCK_NAMESPACE = 0x534156;
+const SAV_SEND_CIRCUIT_LOCK_ID = 1;
 const CONTEXT_MAX_MESSAGES = 10;
 const CONTEXT_MAX_CHARS = 20_000;
 const CONTEXT_MAX_AGE_MS = 30 * DAY_MS;
@@ -144,7 +149,7 @@ function decodeContext(ciphertext: string): SavContextMessage[] {
 function sendLimit(): number {
   const parsed = Number.parseInt(process.env.SAV_SENDS_PER_HOUR ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0
-    ? Math.min(parsed, 100)
+    ? Math.min(parsed, HARD_MAX_SENDS_PER_HOUR)
     : DEFAULT_SENDS_PER_HOUR;
 }
 
@@ -624,13 +629,20 @@ export async function sendSavReply(input: {
     });
     if (fence.revision !== item.conversationRevision) return "STALE_CONTEXT" as const;
 
-    const sendsLastHour = await tx.savTransportItem.count({
+    // Serialize the global count + reservation boundary across every app
+    // process. A transaction isolation level alone cannot prevent two
+    // different rows from both observing the last available slot.
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(
+      ${SAV_SEND_CIRCUIT_LOCK_NAMESPACE},
+      ${SAV_SEND_CIRCUIT_LOCK_ID}
+    )`;
+
+    const attemptsLastHour = await tx.savTransportItem.count({
       where: {
-        state: { in: ["SENDING", "SENT"] },
-        updatedAt: { gte: new Date(now.getTime() - HOUR_MS) },
+        deliveryAttemptedAt: { gte: new Date(now.getTime() - HOUR_MS) },
       },
     });
-    if (sendsLastHour >= sendLimit()) {
+    if (attemptsLastHour >= sendLimit()) {
       throw new SavBridgeError("CIRCUIT_OPEN", 429);
     }
 
@@ -641,10 +653,12 @@ export async function sendSavReply(input: {
         conversationRevision: fence.revision,
         deliveryTokenHash: tokenHash(input.deliveryToken),
         deliveryTokenExpiresAt: { gt: now },
+        deliveryAttemptedAt: null,
       },
       data: {
         state: "SENDING",
         deliveryIdempotencyKey: input.idempotencyKey,
+        deliveryAttemptedAt: now,
         outboundFingerprint: savFingerprint(input.text),
       },
     });
