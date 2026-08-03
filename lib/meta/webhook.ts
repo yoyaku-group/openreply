@@ -61,8 +61,15 @@ interface WebhookEntry {
     };
   }>;
   messaging?: Array<{
-    sender?: { id?: string };
+    sender?: { id?: string; username?: string };
     recipient?: { id?: string };
+    timestamp?: number;
+    message?: {
+      mid?: string;
+      text?: string;
+      is_echo?: boolean;
+      attachments?: unknown[];
+    };
     postback?: { mid?: string; title?: string; payload?: string };
     read?: { watermark?: number; seq?: number };
   }>;
@@ -79,6 +86,17 @@ export interface WebhookReadEvent {
   instagramAccountId: string;
   userId: string;
   watermark?: number;
+}
+
+export interface WebhookMessageEvent {
+  instagramAccountId: string;
+  senderInstagramId: string;
+  senderUsername?: string;
+  conversationId: string;
+  metaMessageId: string;
+  text: string;
+  receivedAt: Date;
+  hasAttachments: boolean;
 }
 
 interface WebhookPayload {
@@ -184,6 +202,52 @@ export function parseReadEvents(payload: WebhookPayload): WebhookReadEvent[] {
         instagramAccountId: accountId,
         userId,
         watermark: messaging.read.watermark,
+      });
+    }
+  }
+
+  return events;
+}
+
+/**
+ * Parse inbound Instagram messages. Echoes and account-originated events are
+ * ignored before they can enter the SAV transport queue. Meta does not include
+ * a Graph conversation id in message webhooks, so conversationId is a stable
+ * account/contact key; bounded backfill may attach the Graph id separately.
+ */
+export function parseMessageEvents(
+  payload: WebhookPayload
+): WebhookMessageEvent[] {
+  const events: WebhookMessageEvent[] = [];
+  if (payload.object !== "instagram") return events;
+
+  for (const entry of payload.entry ?? []) {
+    for (const messaging of entry.messaging ?? []) {
+      const message = messaging.message;
+      const senderId = messaging.sender?.id;
+      const accountId = entry.id ?? messaging.recipient?.id;
+
+      if (!message?.mid || !senderId || !accountId) continue;
+      if (message.is_echo || senderId === accountId) continue;
+
+      const hasAttachments = Boolean(message.attachments?.length);
+      if (!message.text && !hasAttachments) continue;
+
+      const rawTimestamp = messaging.timestamp ?? entry.time;
+      const timestampMs =
+        rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp;
+      const receivedAt = new Date(timestampMs);
+      if (Number.isNaN(receivedAt.getTime())) continue;
+
+      events.push({
+        instagramAccountId: accountId,
+        senderInstagramId: senderId,
+        senderUsername: messaging.sender?.username,
+        conversationId: `${accountId}:${senderId}`,
+        metaMessageId: message.mid,
+        text: message.text ?? "",
+        receivedAt,
+        hasAttachments,
       });
     }
   }

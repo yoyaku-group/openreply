@@ -99,6 +99,9 @@ Copy `.env.example` to `.env` for local work, or set these in Vercel and Railway
 | `INSTAGRAM_APP_SECRET` | From the Meta app. |
 | `FACEBOOK_APP_SECRET` | From the Meta app. |
 | `WEBHOOK_VERIFY_TOKEN` | Any random string. You paste the same value into Meta's webhook config. |
+| `SAV_BRIDGE_TOKEN` | Optional loopback SAV bridge bearer, at least 32 characters. Generate once and copy the same value to OpenReply and `yoyaku-sav-engine`; never expose it to a browser. |
+| `SAV_IG_ACCOUNT_USERNAMES` | Optional comma-separated SAV accounts. YOYAKU production uses `yoyaku.fr,yoyakurecordstore`. |
+| `SAV_SENDS_PER_HOUR` | Optional Instagram SAV send circuit breaker. Defaults to `10`. |
 
 `ENCRYPTION_KEY` must be exactly 64 hex characters or the app throws on boot.
 

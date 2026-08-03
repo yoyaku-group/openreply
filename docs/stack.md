@@ -59,4 +59,6 @@ in the repo. Full descriptions are in [setup.md](setup.md#environment-variables)
 `NEXTAUTH_URL`, `NEXTAUTH_SECRET`, `CRON_SECRET`, `ENCRYPTION_KEY`, `DATABASE_URL`,
 `REDIS_URL`, `RESEND_API_KEY`, `EMAIL_FROM`, `META_GRAPH_API_VERSION`,
 `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET`, `FACEBOOK_APP_SECRET`,
-`WEBHOOK_VERIFY_TOKEN`.
+`WEBHOOK_VERIFY_TOKEN`. The optional loopback SAV control plane also uses
+`SAV_BRIDGE_TOKEN`, `SAV_IG_ACCOUNT_USERNAMES`, and `SAV_SENDS_PER_HOUR`; see
+[sav-bridge.md](sav-bridge.md).

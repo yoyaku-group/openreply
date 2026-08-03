@@ -3,12 +3,18 @@ import { prisma } from "@/lib/db/client";
 import { getDMQueue } from "@/lib/queue/client";
 import {
   parseCommentEvents,
+  parseMessageEvents,
   parsePostbackEvents,
   parseReadEvents,
   verifyWebhookSignature,
 } from "@/lib/meta/webhook";
 import { POSTBACK_JOB_NAME } from "@/lib/queue/client";
 import { Prisma } from "@/app/generated/prisma/client";
+import { ingestSavInboundEvent } from "@/lib/sav/service";
+import {
+  publicFingerprint,
+  redactWebhookPayload,
+} from "@/lib/sav/security";
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
 
@@ -45,7 +51,7 @@ export async function POST(request: NextRequest) {
           payload: {
             hadSignatureHeader: Boolean(signature),
             bodyLength: rawBody.length,
-            bodyPreview: rawBody.slice(0, 200),
+            bodyFingerprint: publicFingerprint(rawBody).slice(0, 16),
           },
         },
       })
@@ -72,7 +78,7 @@ export async function POST(request: NextRequest) {
         typeof payload === "object" && payload && "object" in payload
           ? String(payload.object)
           : null,
-      payload: payload as Prisma.InputJsonValue,
+      payload: redactWebhookPayload(payload) as Prisma.InputJsonValue,
       status: "PENDING",
     },
   });
@@ -82,6 +88,15 @@ export async function POST(request: NextRequest) {
       payload as Parameters<typeof parseCommentEvents>[0]
     );
     const queue = getDMQueue();
+
+    // Customer-authored DMs enter an encrypted, ephemeral transport queue for
+    // the Gmail-driven SAV worker. metaMessageId is a structural dedupe key.
+    const messageEvents = parseMessageEvents(
+      payload as Parameters<typeof parseMessageEvents>[0]
+    );
+    for (const event of messageEvents) {
+      await ingestSavInboundEvent(event);
+    }
 
     for (const event of commentEvents) {
       const account = await prisma.instagramAccount.findUnique({
@@ -197,13 +212,12 @@ export async function POST(request: NextRequest) {
     });
 
     return NextResponse.json({ success: true }, { status: 200 });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
+  } catch {
     await prisma.webhookEvent.update({
       where: { id: webhookEvent.id },
       data: {
         status: "FAILED",
-        errorMessage: message,
+        errorMessage: "WEBHOOK_PROCESSING_FAILED",
         processedAt: new Date(),
       },
     });

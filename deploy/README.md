@@ -18,6 +18,9 @@ and replicated to `yoyaku-hetzner:/opt/backups/openreply-automation` with
 1. Clone this fork into `/opt/openreply`.
 2. Copy `deploy/openreply.env.example` to `.env`, replace every placeholder,
    and set mode `0600`.
+   Generate `SAV_BRIDGE_TOKEN` once and install the identical value in both
+   `/opt/openreply/.env` and `/opt/yoyaku-sav-engine/.env`; those are its only
+   consumers. The public nginx vhost returns 404 for `/api/internal/sav/*`.
 3. Create `/mnt/data/openreply/{postgres,redis,backups}` with ownership suitable
    for the official container images.
 4. Run:
@@ -33,3 +36,8 @@ and replicated to `yoyaku-hetzner:/opt/backups/openreply-automation` with
 
 The populated `.env` must never enter Git. `ENCRYPTION_KEY` is irreplaceable:
 losing it forces every Instagram account to reconnect.
+
+The Instagram SAV bridge is documented in
+[`docs/sav-bridge.md`](../docs/sav-bridge.md). Start the engine with
+`accountKeys: ["yoyaku_fr"]` for the first canary; this leaves
+`yoyakurecordstore` rows unclaimed until the canary is expanded deliberately.

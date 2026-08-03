@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   verifyWebhookSignature,
   parseCommentEvents,
+  parseMessageEvents,
   parseReadEvents,
 } from "../lib/meta/webhook";
 import { createHmac } from "crypto";
@@ -337,5 +338,85 @@ describe("parseReadEvents", () => {
     };
 
     expect(parseReadEvents(payload)).toHaveLength(0);
+  });
+});
+
+describe("parseMessageEvents", () => {
+  it("parses an inbound text message with a deterministic conversation key", () => {
+    const events = parseMessageEvents({
+      object: "instagram",
+      entry: [
+        {
+          id: "ig_business",
+          time: 1_722_500_000,
+          messaging: [
+            {
+              sender: { id: "ig_customer", username: "eelco" },
+              recipient: { id: "ig_business" },
+              timestamp: 1_722_500_001_000,
+              message: { mid: "m_1", text: "Order 745614" },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      instagramAccountId: "ig_business",
+      senderInstagramId: "ig_customer",
+      senderUsername: "eelco",
+      conversationId: "ig_business:ig_customer",
+      metaMessageId: "m_1",
+      text: "Order 745614",
+      hasAttachments: false,
+    });
+    expect(events[0].receivedAt.toISOString()).toBe("2024-08-01T08:13:21.000Z");
+  });
+
+  it("ignores echoes and messages originating from the connected account", () => {
+    const payload = {
+      object: "instagram",
+      entry: [
+        {
+          id: "ig_business",
+          time: 1_722_500_000,
+          messaging: [
+            {
+              sender: { id: "ig_customer" },
+              message: { mid: "echo", text: "our reply", is_echo: true },
+            },
+            {
+              sender: { id: "ig_business" },
+              message: { mid: "self", text: "our reply" },
+            },
+          ],
+        },
+      ],
+    };
+    expect(parseMessageEvents(payload)).toEqual([]);
+  });
+
+  it("flags attachments for manual handling even without text", () => {
+    const events = parseMessageEvents({
+      object: "instagram",
+      entry: [
+        {
+          id: "ig_business",
+          time: 1_722_500_000,
+          messaging: [
+            {
+              sender: { id: "ig_customer" },
+              message: {
+                mid: "attachment",
+                attachments: [{ type: "image", payload: { url: "secret" } }],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ text: "", hasAttachments: true });
   });
 });
