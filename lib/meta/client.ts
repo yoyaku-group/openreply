@@ -559,6 +559,38 @@ const MEDIA_FIELDS =
 // Instagram caps a single media page at 100 items.
 const MEDIA_PAGE_SIZE = 100;
 
+export interface InstagramMediaPage {
+  data: InstagramMedia[];
+  nextCursor: string | null;
+}
+
+export async function getUserMediaPage(
+  accessToken: string,
+  after: string | null,
+  limit = MEDIA_PAGE_SIZE
+): Promise<InstagramMediaPage> {
+  const url = new URL(`${instagramGraphBase()}/me/media`);
+  url.searchParams.set("fields", MEDIA_FIELDS);
+  url.searchParams.set("limit", String(Math.min(MEDIA_PAGE_SIZE, Math.max(1, limit))));
+  if (after) url.searchParams.set("after", after);
+  url.searchParams.set("access_token", accessToken);
+
+  const response = await fetch(url.toString());
+  const page = await handleResponse<{
+    data: InstagramMedia[];
+    paging?: { cursors?: { after?: string }; next?: string };
+  }>(response);
+  let nextCursor = page.paging?.cursors?.after ?? null;
+  if (!nextCursor && page.paging?.next) {
+    try {
+      nextCursor = new URL(page.paging.next).searchParams.get("after");
+    } catch {
+      nextCursor = null;
+    }
+  }
+  return { data: page.data ?? [], nextCursor };
+}
+
 export async function getUserMedia(
   accessToken: string,
   limit = 25
