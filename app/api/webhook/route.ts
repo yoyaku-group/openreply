@@ -8,9 +8,13 @@ import {
   parseReadEvents,
   verifyWebhookSignature,
 } from "@/lib/meta/webhook";
-import { POSTBACK_JOB_NAME } from "@/lib/queue/client";
+import {
+  INBOUND_MESSAGE_JOB_NAME,
+  POSTBACK_JOB_NAME,
+} from "@/lib/queue/client";
 import { Prisma } from "@/app/generated/prisma/client";
 import { ingestSavInboundEvent } from "@/lib/sav/service";
+import { matchInboundDmAutomations } from "@/lib/automations/inbound-dm";
 import {
   publicFingerprint,
   redactWebhookPayload,
@@ -89,13 +93,80 @@ export async function POST(request: NextRequest) {
     );
     const queue = getDMQueue();
 
-    // Customer-authored DMs enter an encrypted, ephemeral transport queue for
-    // the Gmail-driven SAV worker. metaMessageId is a structural dedupe key.
+    // Exact inbound-DM campaign commands are classified before SAV. A unique
+    // match goes to the DM worker; normal messages and ambiguous matches stay
+    // on the existing encrypted SAV path.
     const messageEvents = parseMessageEvents(
       payload as Parameters<typeof parseMessageEvents>[0]
     );
     for (const event of messageEvents) {
-      await ingestSavInboundEvent(event);
+      const account = await prisma.instagramAccount.findUnique({
+        where: { instagramId: event.instagramAccountId },
+        select: { id: true, workspaceId: true },
+      });
+      const inboundCampaigns = account
+        ? await prisma.automation.findMany({
+            where: {
+              instagramAccountId: account.id,
+              triggerType: "INBOUND_DM",
+              isActive: true,
+            },
+            select: { id: true, keywords: true },
+            orderBy: { createdAt: "asc" },
+          })
+        : [];
+      const matches = matchInboundDmAutomations(
+        inboundCampaigns,
+        event.text,
+        event.hasAttachments
+      );
+
+      if (matches.length === 1) {
+        const match = matches[0];
+        await queue.add(
+          INBOUND_MESSAGE_JOB_NAME,
+          {
+            instagramAccountId: event.instagramAccountId,
+            senderInstagramId: event.senderInstagramId,
+            senderUsername: event.senderUsername,
+            metaMessageId: event.metaMessageId,
+            text: event.text,
+            hasAttachments: event.hasAttachments,
+            receivedAt: event.receivedAt.toISOString(),
+            automationId: match.automation.id,
+            matchedKeyword: match.matchedKeyword,
+          },
+          {
+            jobId: `inbound_${event.instagramAccountId}_${event.senderInstagramId}_${match.automation.id}_${event.metaMessageId.replace(/:/g, "_")}`,
+          }
+        );
+      } else {
+        if (matches.length > 1) {
+          await prisma.operationalEvent.create({
+            data: {
+              workspaceId: account?.workspaceId ?? null,
+              source: "SYSTEM",
+              level: "WARNING",
+              message:
+                "Inbound Instagram DM matched multiple active campaigns; auto-send blocked",
+              payload: {
+                instagramAccountId: event.instagramAccountId,
+                metaMessageId: event.metaMessageId,
+                automationIds: matches.map((match) => match.automation.id),
+                normalizedKeyword: matches[0].normalizedKeyword,
+              },
+            },
+          });
+        }
+        await ingestSavInboundEvent(event);
+      }
+
+      if (account) {
+        await prisma.webhookEvent.update({
+          where: { id: webhookEvent.id },
+          data: { workspaceId: account.workspaceId },
+        });
+      }
     }
 
     for (const event of commentEvents) {

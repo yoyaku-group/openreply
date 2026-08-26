@@ -55,6 +55,11 @@ const REVEAL_VARIANTS = ["Here you go:", "There you go:"] as const;
 
 type ReleaseShell = (facts: ReleaseFacts) => string;
 
+function asSentence(value: string): string {
+  const trimmed = value.trim();
+  return /[.!?]$/u.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
 interface ReleaseVariant {
   /** Whether the shell interpolates `facts.label` — see `hasUsableLabel`. */
   usesLabel: boolean;
@@ -72,7 +77,8 @@ const RELEASE_OPENINGS: Record<
   preorder_open: [
     {
       usesLabel: true,
-      render: (f) => `${f.artist}, ${f.title}. Preorder is open on ${f.label}.`,
+      render: (f) =>
+        `${asSentence(`${f.artist}, ${f.title}`)} Preorder is open on ${f.label}.`,
     },
     {
       usesLabel: true,
@@ -80,9 +86,14 @@ const RELEASE_OPENINGS: Record<
     },
     {
       usesLabel: true,
-      render: (f) => `New on ${f.label}: ${f.artist}, ${f.title}. Preorders are open.`,
+      render: (f) =>
+        `${asSentence(`New on ${f.label}: ${f.artist}, ${f.title}`)} Preorders are open.`,
     },
-    { usesLabel: false, render: (f) => `${f.artist}, ${f.title}. Preorder is open.` },
+    {
+      usesLabel: false,
+      render: (f) =>
+        `${asSentence(`${f.artist}, ${f.title}`)} Preorder is open.`,
+    },
   ],
   release_live: [
     { usesLabel: true, render: (f) => `${f.artist}, ${f.title} is out now on ${f.label}.` },

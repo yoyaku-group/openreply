@@ -15,6 +15,7 @@ import { readCache, writeCache } from "@/lib/client-cache";
 interface Campaign {
   id: string;
   name: string;
+  triggerType: "COMMENT" | "INBOUND_DM";
   goal: string | null;
   postId: string | null;
   postUrl: string | null;
@@ -26,6 +27,7 @@ interface Campaign {
   openingDmEnabled: boolean;
   openingDmMessage: string | null;
   openingDmButtonLabel: string | null;
+  linkButtonLabel: string | null;
   publicReplyEnabled: boolean;
   publicReplyMessage: string | null;
   publicReplyMessages: string[];
@@ -81,6 +83,7 @@ export default function CampaignsPage() {
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [actionError, setActionError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "paused">(
     "all"
   );
@@ -198,17 +201,24 @@ export default function CampaignsPage() {
   }
 
   async function toggleActive(id: string, isActive: boolean) {
+    setActionError(null);
     try {
-      await fetch(`/api/automations?id=${id}`, {
+      const response = await fetch(`/api/automations?id=${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ isActive: !isActive }),
       });
+      const payload = await response.json();
+      if (!payload.success) {
+        setActionError(payload.error ?? "Campaign status could not be changed");
+        return;
+      }
       setAutomations((prev) =>
         prev.map((a) => (a.id === id ? { ...a, isActive: !isActive } : a))
       );
     } catch (err) {
       console.error("Failed to toggle:", err);
+      setActionError("Campaign status could not be changed");
     }
   }
 
@@ -239,7 +249,10 @@ export default function CampaignsPage() {
 
   async function duplicateAutomation(auto: Campaign) {
     setMenuOpenId(null);
-    const specific = !auto.matchAnyPost && !auto.pendingNextReel;
+    const specific =
+      auto.triggerType === "COMMENT" &&
+      !auto.matchAnyPost &&
+      !auto.pendingNextReel;
     try {
       const res = await fetch("/api/automations", {
         method: "POST",
@@ -247,6 +260,7 @@ export default function CampaignsPage() {
         body: JSON.stringify({
           name: `${auto.name} copy`,
           instagramAccountId: auto.instagramAccountId,
+          triggerType: auto.triggerType,
           postId: specific ? auto.postId : null,
           postUrl: specific ? auto.postUrl : null,
           matchAnyPost: auto.matchAnyPost,
@@ -257,6 +271,7 @@ export default function CampaignsPage() {
           openingDmEnabled: auto.openingDmEnabled,
           openingDmMessage: auto.openingDmMessage,
           openingDmButtonLabel: auto.openingDmButtonLabel,
+          linkButtonLabel: auto.linkButtonLabel,
           publicReplyEnabled: auto.publicReplyEnabled,
           publicReplyMessages: auto.publicReplyMessages,
           trackedDestinationUrl: auto.trackedLinks[0]?.destinationUrl ?? "",
@@ -335,6 +350,15 @@ export default function CampaignsPage() {
         </div>
       </div>
 
+      {actionError && (
+        <div
+          role="alert"
+          className="rounded border border-error/20 bg-error/10 p-3 text-sm text-error"
+        >
+          {actionError}
+        </div>
+      )}
+
       {/* Search + status filter */}
       {automations.length > 0 && (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -368,7 +392,8 @@ export default function CampaignsPage() {
         <div className="panel rounded p-12 text-center">
           <h3 className="text-lg font-semibold mb-2">No campaigns yet</h3>
           <p className="text-sm text-muted mb-6 max-w-sm mx-auto">
-            Create your first comment-to-DM campaign to turn a post or reel into a measurable conversation flow.
+            Create a comment-to-DM or exact inbound-DM campaign and measure the
+            resulting conversations.
           </p>
           <Link
             href="/campaigns/new"
@@ -439,7 +464,7 @@ export default function CampaignsPage() {
                 )
               )}
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-2">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
                   <h3 className="text-sm font-semibold truncate">{auto.name}</h3>
                   <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs text-muted">
                     @{auto.instagramAccount.username}
@@ -456,6 +481,11 @@ export default function CampaignsPage() {
                   {auto.pendingNextReel && (
                     <span className="shrink-0 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-400">
                       Waiting for next reel
+                    </span>
+                  )}
+                  {auto.triggerType === "INBOUND_DM" && (
+                    <span className="shrink-0 rounded-full bg-cyan-500/10 px-2 py-0.5 text-xs font-medium text-cyan-300">
+                      Inbound DM keyword
                     </span>
                   )}
                   {auto.requireFollow && (

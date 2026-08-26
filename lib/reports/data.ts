@@ -36,6 +36,7 @@ export async function getCampaignReportBySlug(shareSlug: string) {
       workspaceId: true,
       name: true,
       goal: true,
+      triggerType: true,
       postUrl: true,
       keywords: true,
       isActive: true,
@@ -160,6 +161,7 @@ export async function getCampaignReportBySlug(shareSlug: string) {
     campaign: {
       name: automation.name,
       goal: automation.goal,
+      triggerType: automation.triggerType,
       postUrl: automation.postUrl,
       keywords: automation.keywords,
       isActive: automation.isActive,

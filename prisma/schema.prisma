@@ -175,6 +175,7 @@ model Automation {
 
   name           String
   goal           String?
+  triggerType    AutomationTriggerType @default(COMMENT)
   postId         String?
   postUrl        String?
   pendingNextReel Boolean @default(false)
@@ -214,6 +215,7 @@ model Automation {
 
   @@index([workspaceId])
   @@index([instagramAccountId])
+  @@index([instagramAccountId, triggerType, isActive])
   @@index([postId])
 }
 
@@ -427,12 +429,19 @@ enum WorkspaceInvitationStatus {
 
 enum DmStatus {
   PENDING
+  SENDING
   SENT
   FAILED
   SKIPPED_DEDUP
   SKIPPED_RATE_LIMIT
   SKIPPED_PLAN_LIMIT
   SKIPPED_NO_MATCH
+  SKIPPED_WINDOW_EXPIRED
+}
+
+enum AutomationTriggerType {
+  COMMENT
+  INBOUND_DM
 }
 
 enum WebhookStatus {

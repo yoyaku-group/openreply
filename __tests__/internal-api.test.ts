@@ -91,15 +91,50 @@ describe("GET /api/internal/campaign-stats", () => {
 
   it("returns the newest matching campaign with SENT + click counts", async () => {
     mockPrisma.automation.findFirst.mockResolvedValue({
-      id: "a1", name: "HCLP008", isActive: true, postId: "p1", createdAt: new Date(0),
+      id: "a1",
+      name: "HCLP008",
+      triggerType: "COMMENT",
+      keywords: ["LINK"],
+      isActive: true,
+      postId: "p1",
+      createdAt: new Date(0),
     });
     mockPrisma.dmLog.count.mockResolvedValue(37);
     mockPrisma.linkClick.count.mockResolvedValue(35);
     const res = await campaignStats(statsRequest("?sku=hclp008"));
     const json = await res.json();
-    expect(json.data.automation).toMatchObject({ id: "a1", dmSent: 37, clicks: 35 });
+    expect(json.data.automation).toMatchObject({
+      id: "a1",
+      triggerType: "COMMENT",
+      keywords: ["LINK"],
+      dmSent: 37,
+      clicks: 35,
+    });
     expect(mockPrisma.dmLog.count).toHaveBeenCalledWith({
       where: { automationId: "a1", status: "SENT" },
+    });
+  });
+
+  it("returns the exact inbound keyword for non-post campaigns", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      id: "a2",
+      name: "MB059",
+      triggerType: "INBOUND_DM",
+      keywords: ["MB059"],
+      isActive: true,
+      postId: null,
+      createdAt: new Date(0),
+    });
+    mockPrisma.dmLog.count.mockResolvedValue(4);
+    mockPrisma.linkClick.count.mockResolvedValue(3);
+
+    const res = await campaignStats(statsRequest("?sku=MB059"));
+    const json = await res.json();
+
+    expect(json.data.automation).toMatchObject({
+      triggerType: "INBOUND_DM",
+      keywords: ["MB059"],
+      postId: null,
     });
   });
 });

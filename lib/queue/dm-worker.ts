@@ -2,9 +2,11 @@ import { Worker, type Job } from "bullmq";
 import {
   getDMQueue,
   getRedisConnection,
+  INBOUND_MESSAGE_JOB_NAME,
   POSTBACK_JOB_NAME,
   type DmQueueJob,
   type ProcessCommentJob,
+  type ProcessInboundMessageJob,
   type ProcessPostbackJob,
 } from "./client";
 import { prisma } from "@/lib/db/client";
@@ -21,6 +23,8 @@ import {
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
+import { matchInboundDmAutomations } from "@/lib/automations/inbound-dm";
+import { ingestSavInboundEvent } from "@/lib/sav/service";
 import { reserveDMSlot } from "@/lib/utils/rate-limiter";
 import {
   releaseWorkspaceDMReservation,
@@ -34,6 +38,7 @@ import {
 } from "@/lib/tracking/message";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
+const INBOUND_CLAIM_LEASE_MS = 2 * 60 * 1000;
 
 function formatError(error: unknown): string {
   if (error instanceof MetaApiError) {
@@ -43,6 +48,13 @@ function formatError(error: unknown): string {
     return error.message;
   }
   return "Unknown error";
+}
+
+function canFallbackFromButtonTemplate(error: unknown): boolean {
+  // A Meta API rejection means the template was not accepted, so a plain-text
+  // retry is safe. A transport/network error has an unknown delivery outcome;
+  // trying a second format could send the campaign twice.
+  return error instanceof MetaApiError;
 }
 
 type WorkerTrackedLink = {
@@ -77,11 +89,85 @@ function buildInlineLinkFallback(
   trackedLinks: WorkerTrackedLink[],
   bodyText: string
 ): string {
-  const base =
+  let base =
     renderMessageWithTracking({ message, commenterName, trackedLinks }) ||
     bodyText;
+  const primaryUrl = trackedLinks[0]
+    ? buildTrackedUrl(trackedLinks[0].slug)
+    : null;
+  if (primaryUrl && !base.includes(primaryUrl)) {
+    base = `${base}\n${primaryUrl}`;
+  }
   const extraUrls = trackedLinks.slice(1).map((link) => buildTrackedUrl(link.slug));
   return extraUrls.length > 0 ? `${base}\n${extraUrls.join("\n")}` : base;
+}
+
+type DirectDeliveryAutomation = {
+  dmMessage: string;
+  linkButtonLabel: string | null;
+  trackedLinks: WorkerTrackedLink[];
+  instagramAccount: { instagramId: string };
+};
+
+/** Shared direct-message delivery for postbacks and inbound keyword jobs. */
+async function sendDirectCampaignDelivery(input: {
+  accessToken: string;
+  automation: DirectDeliveryAutomation;
+  userId: string;
+  commenterName: string | null | undefined;
+  context: string;
+}) {
+  const { accessToken, automation, userId, commenterName, context } = input;
+  if (automation.trackedLinks.length > 0) {
+    const bodyText =
+      renderMessageWithoutLink({
+        message: automation.dmMessage,
+        commenterName,
+      }) || "Here's your link:";
+    const buttons = buildLinkButtons(
+      automation.trackedLinks,
+      automation.linkButtonLabel
+    );
+
+    try {
+      await sendDirectMessageWithLinkButton(
+        accessToken,
+        automation.instagramAccount.instagramId,
+        userId,
+        bodyText,
+        buttons
+      );
+    } catch (buttonError) {
+      if (!canFallbackFromButtonTemplate(buttonError)) throw buttonError;
+      console.log(
+        `[DM Worker] Button template rejected in ${context}, falling back to inline link:`,
+        formatError(buttonError)
+      );
+      await sendDirectMessage(
+        accessToken,
+        automation.instagramAccount.instagramId,
+        userId,
+        buildInlineLinkFallback(
+          automation.dmMessage,
+          commenterName,
+          automation.trackedLinks,
+          bodyText
+        )
+      );
+    }
+    return;
+  }
+
+  await sendDirectMessage(
+    accessToken,
+    automation.instagramAccount.instagramId,
+    userId,
+    renderMessageWithTracking({
+      message: automation.dmMessage,
+      commenterName,
+      trackedLinks: automation.trackedLinks,
+    })
+  );
 }
 
 async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
@@ -99,6 +185,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     where: {
       // Match campaigns bound to this specific post, plus any-post campaigns.
       OR: [{ postId: mediaId }, { matchAnyPost: true }],
+      triggerType: "COMMENT",
       isActive: true,
       instagramAccount: {
         instagramId: instagramAccountId,
@@ -460,6 +547,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
             buttons
           );
         } catch (buttonError) {
+          if (!canFallbackFromButtonTemplate(buttonError)) throw buttonError;
           // Button template rejected; send as text with inline links instead.
           console.log(
             "[DM Worker] Button template rejected, falling back to inline link:",
@@ -526,6 +614,337 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       });
       throw error;
     }
+  }
+}
+
+/**
+ * Respond once per campaign/user to a user-initiated exact DM keyword.
+ * Classification is repeated here so a configuration race fails closed.
+ */
+async function processInboundMessage(
+  job: Job<ProcessInboundMessageJob>
+): Promise<void> {
+  const {
+    instagramAccountId,
+    senderInstagramId,
+    senderUsername,
+    text,
+    hasAttachments,
+    automationId,
+  } = job.data;
+  const requeueAttempt = job.data.requeueAttempt ?? 0;
+
+  const automations = await prisma.automation.findMany({
+    where: {
+      triggerType: "INBOUND_DM",
+      isActive: true,
+      instagramAccount: { instagramId: instagramAccountId },
+    },
+    include: {
+      instagramAccount: true,
+      workspace: true,
+      trackedLinks: {
+        select: { slug: true, label: true, destinationUrl: true },
+        orderBy: { createdAt: "asc" },
+      },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  const matches = matchInboundDmAutomations(
+    automations,
+    text,
+    hasAttachments
+  );
+  const match = matches.length === 1 ? matches[0] : null;
+
+  if (!match || match.automation.id !== automationId) {
+    await ingestSavInboundEvent({
+      instagramAccountId,
+      senderInstagramId,
+      senderUsername,
+      conversationId: `${instagramAccountId}:${senderInstagramId}`,
+      metaMessageId: job.data.metaMessageId,
+      text,
+      receivedAt: new Date(job.data.receivedAt),
+      hasAttachments,
+    });
+    const account = await prisma.instagramAccount.findUnique({
+      where: { instagramId: instagramAccountId },
+      select: { workspaceId: true },
+    });
+    await prisma.operationalEvent.create({
+      data: {
+        workspaceId: account?.workspaceId ?? null,
+        source: "WORKER",
+        level: "WARNING",
+        message:
+          "Inbound Instagram DM campaign classification changed; auto-send blocked",
+        payload: {
+          jobAutomationId: automationId,
+          matchingAutomationIds: matches.map((item) => item.automation.id),
+          instagramAccountId,
+          metaMessageId: job.data.metaMessageId,
+        },
+      },
+    });
+    return;
+  }
+
+  const automation = match.automation;
+  const dedupeId = `inbound:${senderInstagramId}`;
+  const logWhere = {
+    automationId_commentId: {
+      automationId: automation.id,
+      commentId: dedupeId,
+    },
+  };
+  const existingLog = await prisma.dmLog.findUnique({ where: logWhere });
+  if (
+    existingLog?.status === "SENT" ||
+    existingLog?.status === "SENDING"
+  ) {
+    return;
+  }
+  // PENDING is a short preflight lease. Once the Meta request starts the row
+  // moves to SENDING, which is intentionally never retried automatically: its
+  // external delivery outcome may be unknown. A stale PENDING lease is safe to
+  // reclaim because the final PENDING -> SENDING transition is a CAS on the
+  // monotonically increasing attempts value.
+  const pendingUpdatedAt = existingLog?.updatedAt
+    ? new Date(existingLog.updatedAt).getTime()
+    : Number.NaN;
+  const pendingLeaseIsFresh =
+    existingLog?.status === "PENDING" &&
+    (Number.isNaN(pendingUpdatedAt) ||
+      Date.now() - pendingUpdatedAt < INBOUND_CLAIM_LEASE_MS);
+  if (pendingLeaseIsFresh) {
+    const pendingAge = Number.isNaN(pendingUpdatedAt)
+      ? 0
+      : Math.max(0, Date.now() - pendingUpdatedAt);
+    const claimRecoveryAttempt = job.data.claimRecoveryAttempt ?? 0;
+    await getDMQueue().add(
+      INBOUND_MESSAGE_JOB_NAME,
+      { ...job.data, claimRecoveryAttempt: claimRecoveryAttempt + 1 },
+      {
+        delay: Math.max(1_000, INBOUND_CLAIM_LEASE_MS - pendingAge + 1_000),
+        jobId: `inbound_${instagramAccountId}_${senderInstagramId}_${automation.id}_${job.data.metaMessageId.replace(/:/g, "_")}_claim_recovery_${claimRecoveryAttempt + 1}`,
+      }
+    );
+    return;
+  }
+
+  const receivedAt = new Date(job.data.receivedAt);
+  const isExpired =
+    Number.isNaN(receivedAt.getTime()) ||
+    Date.now() - receivedAt.getTime() > 24 * 60 * 60 * 1000;
+  if (isExpired) {
+    await prisma.dmLog.upsert({
+      where: logWhere,
+      create: {
+        workspaceId: automation.workspaceId,
+        automationId: automation.id,
+        instagramAccountId: automation.instagramAccountId,
+        commenterId: senderInstagramId,
+        commenterName: senderUsername,
+        commentText: "(inbound DM keyword)",
+        commentId: dedupeId,
+        matchedKeyword: match.matchedKeyword,
+        status: "SKIPPED_WINDOW_EXPIRED",
+        errorMessage: "Instagram 24-hour messaging window expired",
+      },
+      update: {
+        status: "SKIPPED_WINDOW_EXPIRED",
+        errorMessage: "Instagram 24-hour messaging window expired",
+      },
+    });
+    return;
+  }
+
+  let claimAttempt: number;
+  if (existingLog) {
+    claimAttempt = existingLog.attempts + 1;
+    const claim = await prisma.dmLog.updateMany({
+      where: {
+        id: existingLog.id,
+        status: existingLog.status,
+        attempts: existingLog.attempts,
+      },
+      data: {
+        status: "PENDING",
+        attempts: { increment: 1 },
+        matchedKeyword: match.matchedKeyword,
+        errorMessage: null,
+      },
+    });
+    if (claim.count !== 1) return;
+  } else {
+    claimAttempt = 1;
+    try {
+      await prisma.dmLog.create({
+        data: {
+          workspaceId: automation.workspaceId,
+          automationId: automation.id,
+          instagramAccountId: automation.instagramAccountId,
+          commenterId: senderInstagramId,
+          commenterName: senderUsername,
+          commentText: "(inbound DM keyword)",
+          commentId: dedupeId,
+          matchedKeyword: match.matchedKeyword,
+          status: "PENDING",
+          attempts: claimAttempt,
+        },
+      });
+    } catch (error) {
+      // A concurrent keyword event won the unique automation/user insert.
+      const concurrentLog = await prisma.dmLog.findUnique({ where: logWhere });
+      if (concurrentLog) return;
+      throw error;
+    }
+  }
+
+  if (!automation.instagramAccount.accessToken) {
+    await prisma.dmLog.update({
+      where: logWhere,
+      data: {
+        status: "FAILED",
+        errorMessage: "No Instagram access token available",
+      },
+    });
+    return;
+  }
+
+  let accessToken: string;
+  try {
+    accessToken = decryptToken(automation.instagramAccount.accessToken);
+  } catch {
+    await prisma.dmLog.update({
+      where: logWhere,
+      data: {
+        status: "FAILED",
+        errorMessage: "Failed to decrypt Instagram access token",
+      },
+    });
+    return;
+  }
+
+  let usage;
+  try {
+    usage = await reserveWorkspaceDMSend(automation.workspaceId);
+  } catch (error) {
+    await prisma.dmLog.update({
+      where: logWhere,
+      data: { status: "FAILED", errorMessage: formatError(error) },
+    });
+    throw error;
+  }
+  if (!usage.allowed) {
+    await prisma.dmLog.update({
+      where: logWhere,
+      data: {
+        status: "SKIPPED_PLAN_LIMIT",
+        errorMessage: `Monthly DM limit reached (${usage.limit})`,
+      },
+    });
+    return;
+  }
+
+  let rateLimit;
+  try {
+    rateLimit = await reserveDMSlot(instagramAccountId, requeueAttempt);
+  } catch (error) {
+    await releaseWorkspaceDMReservation(automation.workspaceId, usage.periodStart);
+    await prisma.dmLog.update({
+      where: logWhere,
+      data: { status: "FAILED", errorMessage: formatError(error) },
+    });
+    throw error;
+  }
+
+  if (!rateLimit.allowed) {
+    await releaseWorkspaceDMReservation(automation.workspaceId, usage.periodStart);
+    if (rateLimit.shouldRequeue) {
+      await prisma.dmLog.update({
+        where: logWhere,
+        data: {
+          status: "FAILED",
+          errorMessage: "Hourly rate limit hit; retry scheduled",
+        },
+      });
+      await getDMQueue().add(
+        INBOUND_MESSAGE_JOB_NAME,
+        { ...job.data, requeueAttempt: requeueAttempt + 1 },
+        {
+          delay: rateLimit.requeueDelayMs,
+          jobId: `inbound_${instagramAccountId}_${senderInstagramId}_${automation.id}_${job.data.metaMessageId.replace(/:/g, "_")}_retry_${requeueAttempt + 1}`,
+        }
+      );
+      return;
+    }
+
+    await prisma.dmLog.update({
+      where: logWhere,
+      data: {
+        status: "SKIPPED_RATE_LIMIT",
+        errorMessage: "Hourly Instagram DM rate limit reached",
+      },
+    });
+    return;
+  }
+
+  const sendingClaim = await prisma.dmLog.updateMany({
+    where: {
+      automationId: automation.id,
+      commentId: dedupeId,
+      status: "PENDING",
+      attempts: claimAttempt,
+    },
+    data: { status: "SENDING", errorMessage: null },
+  });
+  if (sendingClaim.count !== 1) {
+    await releaseWorkspaceDMReservation(
+      automation.workspaceId,
+      usage.periodStart
+    );
+    return;
+  }
+
+  try {
+    await sendDirectCampaignDelivery({
+      accessToken,
+      automation,
+      userId: senderInstagramId,
+      commenterName: senderUsername,
+      context: "inbound DM keyword",
+    });
+    await prisma.dmLog.update({
+      where: logWhere,
+      data: { status: "SENT", dmSentAt: new Date(), errorMessage: null },
+    });
+  } catch (error) {
+    if (error instanceof MetaApiError) {
+      // Meta explicitly rejected the request, so no DM was accepted and a
+      // later retry is safe. Release the monthly reservation as well.
+      await releaseWorkspaceDMReservation(
+        automation.workspaceId,
+        usage.periodStart
+      );
+      await prisma.dmLog.update({
+        where: logWhere,
+        data: { status: "FAILED", errorMessage: formatError(error) },
+      });
+    } else {
+      // A network/transport failure can happen after Meta accepted the DM.
+      // Keep both the SENDING fence and quota reservation to guarantee that an
+      // automatic retry cannot produce a duplicate or under-count usage.
+      await prisma.dmLog.update({
+        where: logWhere,
+        data: {
+          status: "SENDING",
+          errorMessage: `Delivery outcome unknown: ${formatError(error)}`,
+        },
+      });
+    }
+    throw error;
   }
 }
 
@@ -651,58 +1070,13 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   }
 
   try {
-    if (automation.trackedLinks.length > 0) {
-      // Try button template first; if Meta rejects it, fall back to inline links.
-      const bodyText =
-        renderMessageWithoutLink({
-          message: automation.dmMessage,
-          commenterName,
-        }) || "Here's your link:";
-      const buttons = buildLinkButtons(
-        automation.trackedLinks,
-        automation.linkButtonLabel
-      );
-
-      try {
-        await sendDirectMessageWithLinkButton(
-          accessToken,
-          automation.instagramAccount.instagramId,
-          userId,
-          bodyText,
-          buttons
-        );
-      } catch (buttonError) {
-        // Button template rejected; send as text with inline links instead.
-        console.log(
-          "[DM Worker] Button template rejected in postback, falling back to inline link:",
-          formatError(buttonError)
-        );
-        const fallbackMessage = buildInlineLinkFallback(
-          automation.dmMessage,
-          commenterName,
-          automation.trackedLinks,
-          bodyText
-        );
-        await sendDirectMessage(
-          accessToken,
-          automation.instagramAccount.instagramId,
-          userId,
-          fallbackMessage
-        );
-      }
-    } else {
-      const revealMessage = renderMessageWithTracking({
-        message: automation.dmMessage,
-        commenterName,
-        trackedLinks: automation.trackedLinks,
-      });
-      await sendDirectMessage(
-        accessToken,
-        automation.instagramAccount.instagramId,
-        userId,
-        revealMessage
-      );
-    }
+    await sendDirectCampaignDelivery({
+      accessToken,
+      automation,
+      userId,
+      commenterName,
+      context: "postback",
+    });
     // Optional appreciation follow-up: once the link has been delivered on a
     // confirmed follow, send a short thank-you. Best-effort — a failure here
     // must not flip the reveal (already sent) to a failed state.
@@ -768,6 +1142,9 @@ async function processJob(job: Job<DmQueueJob>): Promise<void> {
   if (job.name === POSTBACK_JOB_NAME) {
     return processPostback(job as Job<ProcessPostbackJob>);
   }
+  if (job.name === INBOUND_MESSAGE_JOB_NAME) {
+    return processInboundMessage(job as Job<ProcessInboundMessageJob>);
+  }
   return processComment(job as Job<ProcessCommentJob>);
 }
 
@@ -777,8 +1154,13 @@ async function recordWorkerFailure(
 ) {
   try {
     const instagramAccountId = job?.data.instagramAccountId;
-    const commentId =
-      job && "commentId" in job.data ? job.data.commentId : null;
+    const commentId = job
+      ? "commentId" in job.data
+        ? job.data.commentId
+        : "senderInstagramId" in job.data
+          ? `inbound:${job.data.senderInstagramId}`
+          : null
+      : null;
     const account = instagramAccountId
       ? await prisma.instagramAccount.findUnique({
           where: { instagramId: instagramAccountId },
@@ -863,4 +1245,3 @@ export function createDMWorker(): Worker<DmQueueJob> {
 
   return worker;
 }
-

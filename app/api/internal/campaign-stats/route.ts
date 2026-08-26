@@ -6,8 +6,8 @@ import { prisma } from "@/lib/db/client";
  * label-platform marketing calendar) show, per SKU, whether an OpenReply
  * campaign exists and how it performs.
  *
- * GET ?sku=<catno> → { automation: {id, name, isActive, postId, dmSent,
- * clicks, createdAt} | null }
+ * GET ?sku=<catno> → { automation: {id, name, triggerType, keywords, isActive,
+ * postId, dmSent, clicks, createdAt} | null }
  *
  * Matching mirrors the attach cron's binding key: Automation.catnoTag,
  * case-insensitive. The newest campaign wins when a SKU was re-campaigned.
@@ -36,7 +36,15 @@ export async function GET(request: NextRequest) {
   const automation = await prisma.automation.findFirst({
     where: { catnoTag: { equals: sku, mode: "insensitive" } },
     orderBy: { createdAt: "desc" },
-    select: { id: true, name: true, isActive: true, postId: true, createdAt: true },
+    select: {
+      id: true,
+      name: true,
+      triggerType: true,
+      keywords: true,
+      isActive: true,
+      postId: true,
+      createdAt: true,
+    },
   });
 
   if (!automation) {

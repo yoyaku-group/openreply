@@ -16,6 +16,7 @@ import CampaignPreview, { type PreviewTab } from "@/components/campaign-preview"
 interface Campaign {
   id: string;
   name: string;
+  triggerType: "COMMENT" | "INBOUND_DM";
   postId: string | null;
   postUrl: string | null;
   pendingNextReel: boolean;
@@ -62,6 +63,7 @@ export default function CampaignDetailPage() {
   const [tab, setTab] = useState<Tab>("insights");
   const [previewTab, setPreviewTab] = useState<PreviewTab>("dm");
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/automations", { cache: "no-store" })
@@ -106,14 +108,22 @@ export default function CampaignDetailPage() {
 
   async function toggleActive() {
     if (!campaign) return;
+    setActionError(null);
     setBusy(true);
     try {
-      await fetch(`/api/automations?id=${campaign.id}`, {
+      const response = await fetch(`/api/automations?id=${campaign.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ isActive: !campaign.isActive }),
       });
+      const payload = await response.json();
+      if (!payload.success) {
+        setActionError(payload.error ?? "Campaign status could not be changed");
+        return;
+      }
       setCampaign({ ...campaign, isActive: !campaign.isActive });
+    } catch {
+      setActionError("Campaign status could not be changed");
     } finally {
       setBusy(false);
     }
@@ -145,11 +155,14 @@ export default function CampaignDetailPage() {
   const hasLink = Boolean(campaign.trackedLinks?.[0]?.destinationUrl);
   const hasSecondLink = Boolean(campaign.trackedLinks?.[1]?.destinationUrl);
 
-  const trigger = campaign.matchAnyPost
-    ? "Any post or reel"
-    : campaign.pendingNextReel
-      ? "Your next reel"
-      : "A specific post or reel";
+  const trigger =
+    campaign.triggerType === "INBOUND_DM"
+      ? "Exact inbound Instagram DM"
+      : campaign.matchAnyPost
+        ? "Any post or reel"
+        : campaign.pendingNextReel
+          ? "Your next reel"
+          : "A specific post or reel";
   const matchText = campaign.matchAnyWord
     ? "Any comment"
     : campaign.keywords.join(", ") || "No keywords";
@@ -186,6 +199,8 @@ export default function CampaignDetailPage() {
           </span>
         </div>
 
+        {campaign.triggerType === "COMMENT" ? (
+        <>
         <Summary title="When someone comments on">
           <div className="flex items-center gap-3">
             {postThumb ? (
@@ -215,6 +230,12 @@ export default function CampaignDetailPage() {
             </div>
           )}
         </Summary>
+        </>
+        ) : (
+          <Summary title="When someone sends an exact DM keyword">
+            <FieldBox>{campaign.keywords.join(", ")}</FieldBox>
+          </Summary>
+        )}
 
         {campaign.openingDmEnabled && (
           <Summary title="They will get an opening DM">
@@ -279,6 +300,14 @@ export default function CampaignDetailPage() {
             </button>
           </div>
         </div>
+        {actionError && (
+          <div
+            role="alert"
+            className="rounded border border-error/20 bg-error/10 p-3 text-sm text-error"
+          >
+            {actionError}
+          </div>
+        )}
 
         {tab === "insights" && (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -298,6 +327,8 @@ export default function CampaignDetailPage() {
           <CampaignPreview
             tab={previewTab}
             onTabChange={setPreviewTab}
+            triggerType={campaign.triggerType}
+            inboundKeyword={campaign.keywords[0] ?? ""}
             username={campaign.instagramAccount.username}
             avatarUrl={avatarUrl}
             postThumb={postThumb}

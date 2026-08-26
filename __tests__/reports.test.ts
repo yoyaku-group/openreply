@@ -22,12 +22,14 @@ vi.mock("@/lib/db/client", () => ({
 
 import { getCampaignReportBySlug } from "../lib/reports/data";
 import { buildReportUrl, isReportBranded } from "../lib/reports/share";
+import { generateMetadata } from "../app/reports/[shareSlug]/page";
 
 const baseAutomation = {
   id: "automation_123",
   workspaceId: "workspace_123",
   name: "Product Link Drop",
   goal: "Product link request",
+  triggerType: "COMMENT",
   postUrl: "https://instagram.com/p/example",
   keywords: ["LINK", "SHOP"],
   isActive: true,
@@ -116,5 +118,21 @@ describe("campaign reports", () => {
       "https://manychat-alternative.com/reports/abc123"
     );
     expect(isReportBranded()).toBe(false);
+  });
+
+  it("labels inbound keyword reports without comment-to-DM metadata", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      ...baseAutomation,
+      triggerType: "INBOUND_DM",
+      postUrl: null,
+      keywords: ["MB059"],
+    });
+
+    const metadata = await generateMetadata({
+      params: Promise.resolve({ shareSlug: "report_123" }),
+    });
+
+    expect(metadata.description).toContain("inbound DM keyword");
+    expect(metadata.description).not.toContain("comment-to-DM");
   });
 });

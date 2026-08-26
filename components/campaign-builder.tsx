@@ -26,10 +26,12 @@ import {
 
 type TriggerScope = "specific" | "any" | "next";
 type MatchMode = "specific" | "any";
+type TriggerType = "COMMENT" | "INBOUND_DM";
 
 interface LoadedCampaign {
   id: string;
   name: string;
+  triggerType: TriggerType;
   postId: string | null;
   postUrl: string | null;
   pendingNextReel: boolean;
@@ -87,6 +89,7 @@ function Radio({
     <button
       type="button"
       onClick={onSelect}
+      aria-pressed={checked}
       className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
         checked ? "border-accent bg-accent/5" : "border-border hover:border-border-hover"
       }`}
@@ -142,6 +145,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [isActive, setIsActive] = useState(true);
 
+  const [triggerType, setTriggerType] = useState<TriggerType>("COMMENT");
   const [triggerScope, setTriggerScope] = useState<TriggerScope>("specific");
   const [postId, setPostId] = useState<string | null>(null);
   const [postUrl, setPostUrl] = useState<string | null>(null);
@@ -247,6 +251,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         if (!c) return setNotFound(true);
         setName(c.name);
         setSelectedAccountId(c.instagramAccountId);
+        setTriggerType(c.triggerType ?? "COMMENT");
         setTriggerScope(
           c.matchAnyPost ? "any" : c.pendingNextReel ? "next" : "specific"
         );
@@ -316,6 +321,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   // unset so the user picks it per row.
   function prefillFromRow(row: ImportRow) {
     setName(row.name ?? "");
+    setTriggerType("COMMENT");
     setTriggerScope("specific");
     setPostId(null);
     setPostUrl(null);
@@ -381,12 +387,18 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
     setError(null);
 
     if (!selectedAccountId) return setError("Connect an Instagram account first.");
-    if (triggerScope === "specific" && !postId)
+    if (triggerType === "COMMENT" && triggerScope === "specific" && !postId)
       return setError("Pick a post or reel to trigger the campaign.");
-    if (matchMode === "specific" && keywords.length === 0)
+    if (triggerType === "COMMENT" && matchMode === "specific" && keywords.length === 0)
       return setError("Add at least one keyword, or switch to any word.");
+    if (triggerType === "INBOUND_DM" && keywords.length === 0)
+      return setError("Add at least one exact inbound DM keyword.");
     if (!dmMessage.trim()) return setError("Add the DM with the link.");
-    if (openingDmEnabled && (!openingDmMessage.trim() || !openingDmButtonLabel.trim()))
+    if (
+      triggerType === "COMMENT" &&
+      openingDmEnabled &&
+      (!openingDmMessage.trim() || !openingDmButtonLabel.trim())
+    )
       return setError("Your opening DM needs a message and a button label.");
 
     setSaving(true);
@@ -394,31 +406,45 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
     const payload = {
       name: name.trim() || `Campaign for @${username}`,
       instagramAccountId: selectedAccountId,
-      postId: triggerScope === "specific" ? postId : null,
-      postUrl: triggerScope === "specific" ? postUrl : null,
-      matchAnyPost: triggerScope === "any",
-      pendingNextReel: triggerScope === "next",
-      matchAnyWord: matchMode === "any",
-      keywords: matchMode === "any" ? [] : keywords,
+      triggerType,
+      postId:
+        triggerType === "COMMENT" && triggerScope === "specific" ? postId : null,
+      postUrl:
+        triggerType === "COMMENT" && triggerScope === "specific" ? postUrl : null,
+      matchAnyPost: triggerType === "COMMENT" && triggerScope === "any",
+      pendingNextReel: triggerType === "COMMENT" && triggerScope === "next",
+      matchAnyWord: triggerType === "COMMENT" && matchMode === "any",
+      keywords:
+        triggerType === "COMMENT" && matchMode === "any" ? [] : keywords,
       dmMessage,
-      openingDmEnabled,
-      openingDmMessage: openingDmEnabled ? openingDmMessage : null,
-      openingDmButtonLabel: openingDmEnabled ? openingDmButtonLabel : null,
-      publicReplyEnabled,
-      publicReplyMessages: publicReplyEnabled
+      openingDmEnabled: triggerType === "COMMENT" && openingDmEnabled,
+      openingDmMessage:
+        triggerType === "COMMENT" && openingDmEnabled ? openingDmMessage : null,
+      openingDmButtonLabel:
+        triggerType === "COMMENT" && openingDmEnabled
+          ? openingDmButtonLabel
+          : null,
+      publicReplyEnabled: triggerType === "COMMENT" && publicReplyEnabled,
+      publicReplyMessages: triggerType === "COMMENT" && publicReplyEnabled
         ? publicReplyMessages.map((m) => m.trim()).filter(Boolean)
         : [],
       trackedDestinationUrl: trackedDestinationUrl.trim() || "",
       linkButtonLabel: linkButtonLabel.trim() || "Open link",
       secondaryDestinationUrl: secondaryDestinationUrl.trim() || "",
       secondaryButtonLabel: secondaryButtonLabel.trim() || "Open link",
-      requireFollow,
-      followPromptMessage: requireFollow ? followPromptMessage.trim() : "",
-      followPromptButtonLabel: requireFollow
+      requireFollow: triggerType === "COMMENT" && requireFollow,
+      followPromptMessage:
+        triggerType === "COMMENT" && requireFollow
+          ? followPromptMessage.trim()
+          : "",
+      followPromptButtonLabel: triggerType === "COMMENT" && requireFollow
         ? followPromptButtonLabel.trim() || "i'm following"
         : "",
-      followUpEnabled,
-      followUpMessage: followUpEnabled ? followUpMessage.trim() : "",
+      followUpEnabled: triggerType === "COMMENT" && followUpEnabled,
+      followUpMessage:
+        triggerType === "COMMENT" && followUpEnabled
+          ? followUpMessage.trim()
+          : "",
       isActive: activeValue,
     };
 
@@ -441,7 +467,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         // the picker flags it on the next imported row — the fetch that builds
         // this map doesn't re-run while the builder stays mounted through the
         // import queue.
-        if (triggerScope === "specific" && postId) {
+        if (triggerType === "COMMENT" && triggerScope === "specific" && postId) {
           const assignedPostId = postId;
           setUsedPosts((prev) => ({ ...prev, [assignedPostId]: payload.name }));
         }
@@ -557,7 +583,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
       )}
 
       {/* Top bar */}
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           {mode === "edit" ? (
             <>
@@ -576,7 +602,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             <span className="text-sm text-muted">New campaign</span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           {importQueue && (
             <button
               type="button"
@@ -605,8 +631,18 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted hover:text-foreground disabled:opacity-50"
               >
                 Go Live
-              </button>
-            ))}
+                </button>
+              ))}
+          {mode === "new" && (
+            <button
+              type="button"
+              onClick={() => handleSubmit(false)}
+              disabled={saving}
+              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted hover:text-foreground disabled:opacity-50"
+            >
+              Save draft
+            </button>
+          )}
           <button
             type="button"
             onClick={() => handleSubmit(mode === "new" ? true : isActive)}
@@ -622,7 +658,10 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
       {/* Left: controls */}
       <div className="space-y-8">
         {error && (
-          <div className="rounded border border-error/20 bg-error/10 p-3 text-sm text-error">
+          <div
+            role="alert"
+            className="rounded border border-error/20 bg-error/10 p-3 text-sm text-error"
+          >
             {error}
           </div>
         )}
@@ -657,6 +696,26 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
           )}
         </div>
 
+        <Section title="Campaign trigger">
+          <Radio
+            checked={triggerType === "COMMENT"}
+            onSelect={() => setTriggerType("COMMENT")}
+          >
+            Comment on a post or reel
+          </Radio>
+          <Radio
+            checked={triggerType === "INBOUND_DM"}
+            onSelect={() => {
+              setTriggerType("INBOUND_DM");
+              setPreviewTab("dm");
+            }}
+          >
+            Exact keyword sent by Instagram DM
+          </Radio>
+        </Section>
+
+        {triggerType === "COMMENT" ? (
+          <>
         <Section title="When someone comments on">
           <Radio
             checked={triggerScope === "specific"}
@@ -770,7 +829,29 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             </div>
           )}
         </Section>
+          </>
+        ) : (
+          <Section title="When someone sends this DM keyword">
+            <div className="space-y-1">
+              <label htmlFor="inbound-dm-keyword" className="sr-only">
+                Exact inbound DM keyword
+              </label>
+              <input
+                id="inbound-dm-keyword"
+                value={keywordText}
+                onChange={(e) => setKeywordText(e.target.value)}
+                placeholder="MB059"
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
+              />
+              <p className="text-xs text-muted">
+                Exact tokens only. Case, one leading #, and a final . ! ? are
+                ignored. Normal messages are never auto-replied to.
+              </p>
+            </div>
+          </Section>
+        )}
 
+        {triggerType === "COMMENT" && (
         <Section title="They will get">
           <div className="rounded-lg border border-border p-3">
             <div className="flex items-center justify-between">
@@ -836,6 +917,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             )}
           </div>
         </Section>
+        )}
 
         <Section title="And then, they will get">
           <div className="rounded-lg border border-border p-3 space-y-2">
@@ -903,6 +985,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               {"{link}"} inserts the tracked link; {"{username}"} personalizes.
             </p>
           </div>
+          {triggerType === "COMMENT" && (
           <div className="mt-3 rounded-lg border border-border p-3">
             <div className="flex items-center justify-between">
               <span className="text-sm text-foreground">
@@ -930,6 +1013,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               </div>
             )}
           </div>
+          )}
         </Section>
       </div>
 
@@ -940,14 +1024,16 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
           <CampaignPreview
             tab={previewTab}
             onTabChange={setPreviewTab}
+            triggerType={triggerType}
+            inboundKeyword={keywords[0] ?? ""}
             username={username}
             avatarUrl={avatarUrl}
             postThumb={postThumb}
             caption={postCaption}
             sampleComment={keywords[0] ?? ""}
-            publicReplyEnabled={publicReplyEnabled}
+            publicReplyEnabled={triggerType === "COMMENT" && publicReplyEnabled}
             publicReplyMessage={publicReplyMessages.find((m) => m.trim()) ?? ""}
-            openingDmEnabled={openingDmEnabled}
+            openingDmEnabled={triggerType === "COMMENT" && openingDmEnabled}
             openingDmMessage={openingDmMessage}
             openingDmButtonLabel={openingDmButtonLabel}
             revealMessage={dmMessage}
@@ -957,10 +1043,10 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               secondLinkOpen && Boolean(secondaryDestinationUrl.trim())
             }
             secondLinkButtonLabel={secondaryButtonLabel || "Open link"}
-            requireFollow={requireFollow}
+            requireFollow={triggerType === "COMMENT" && requireFollow}
             followPromptMessage={followPromptMessage}
             followPromptButtonLabel={followPromptButtonLabel || "i'm following"}
-            followUpEnabled={followUpEnabled}
+            followUpEnabled={triggerType === "COMMENT" && followUpEnabled}
             followUpMessage={followUpMessage}
           />
         </div>

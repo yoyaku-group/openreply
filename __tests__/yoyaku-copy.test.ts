@@ -58,6 +58,17 @@ describe("yoyaku patterns", () => {
     expect(buildCampaignCopy(RELEASE)).toEqual(buildCampaignCopy(RELEASE));
   });
 
+  it("does not double terminal punctuation in release titles", () => {
+    const copy = buildCampaignCopy({
+      ...RELEASE,
+      artist: "Sweely",
+      title: "Le chat botté e.p.",
+      catno: "MB059",
+      label: "Minibar",
+    });
+    expect(copy.openingDmMessage).not.toContain("e.p..");
+  });
+
   it("keeps the preorder button inside Meta's 20-char limit", () => {
     const short = buildCampaignCopy(RELEASE);
     expect(short.linkButtonLabel).toBe("Preorder TO001");
