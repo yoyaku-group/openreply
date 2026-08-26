@@ -556,6 +556,19 @@ export async function getUserInfo(accessToken: string): Promise<InstagramUser> {
 const MEDIA_FIELDS =
   "id,caption,media_type,media_product_type,media_url,thumbnail_url,timestamp,permalink,like_count,comments_count";
 
+/** Read one media object using the selected professional account token. */
+export async function getMediaById(
+  accessToken: string,
+  mediaId: string
+): Promise<InstagramMedia> {
+  const url = new URL(`${instagramGraphBase()}/${mediaId}`);
+  url.searchParams.set("fields", MEDIA_FIELDS);
+  url.searchParams.set("access_token", accessToken);
+
+  const response = await fetch(url.toString());
+  return handleResponse<InstagramMedia>(response);
+}
+
 // Instagram caps a single media page at 100 items.
 const MEDIA_PAGE_SIZE = 100;
 

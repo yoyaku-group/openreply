@@ -44,9 +44,28 @@ export interface ProcessPostbackJob {
   fallback?: boolean;
 }
 
-export type DmQueueJob = ProcessCommentJob | ProcessPostbackJob;
+/** A user-authored DM that uniquely matched one exact-keyword campaign. */
+export interface ProcessInboundMessageJob {
+  instagramAccountId: string;
+  senderInstagramId: string;
+  senderUsername?: string;
+  metaMessageId: string;
+  text: string;
+  hasAttachments: boolean;
+  receivedAt: string;
+  automationId: string;
+  matchedKeyword: string;
+  requeueAttempt?: number;
+  claimRecoveryAttempt?: number;
+}
+
+export type DmQueueJob =
+  | ProcessCommentJob
+  | ProcessPostbackJob
+  | ProcessInboundMessageJob;
 
 export const POSTBACK_JOB_NAME = "process-postback";
+export const INBOUND_MESSAGE_JOB_NAME = "process-inbound-message";
 
 let dmQueue: Queue<DmQueueJob> | null = null;
 

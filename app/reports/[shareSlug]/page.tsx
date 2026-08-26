@@ -53,7 +53,11 @@ export async function generateMetadata({
 
   return {
     title: `${report.campaign.name} Campaign Report`,
-    description: `Read-only Instagram comment-to-DM campaign report for ${report.campaign.name}.`,
+    description: `Read-only Instagram ${
+      report.campaign.triggerType === "INBOUND_DM"
+        ? "inbound DM keyword"
+        : "comment-to-DM"
+    } campaign report for ${report.campaign.name}.`,
     robots: { index: false, follow: false },
   };
 }
@@ -256,7 +260,9 @@ export default async function ReportPage({ params }: ReportPageProps) {
           <div className="mt-5 grid gap-5 md:grid-cols-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                Keywords
+                {report.campaign.triggerType === "INBOUND_DM"
+                  ? "Inbound DM keyword"
+                  : "Comment keywords"}
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {report.campaign.keywords.map((keyword) => (
@@ -279,9 +285,13 @@ export default async function ReportPage({ params }: ReportPageProps) {
             </div>
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                Source post
+                Trigger
               </p>
-              {report.campaign.postUrl ? (
+              {report.campaign.triggerType === "INBOUND_DM" ? (
+                <p className="mt-3 text-sm text-zinc-300">
+                  Exact inbound Instagram DM
+                </p>
+              ) : report.campaign.postUrl ? (
                 <a
                   href={report.campaign.postUrl}
                   target="_blank"
@@ -299,7 +309,7 @@ export default async function ReportPage({ params }: ReportPageProps) {
 
         {report.branded && (
           <footer className="mt-8 border-t border-white/10 pt-6 text-center text-xs text-zinc-500">
-            Built with OpenReply, the Instagram comment-to-DM campaign OS.
+            Built with OpenReply, the Instagram conversation campaign OS.
           </footer>
         )}
       </section>

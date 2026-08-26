@@ -15,6 +15,8 @@ export type PreviewTab = "post" | "comments" | "dm";
 interface CampaignPreviewProps {
   tab: PreviewTab;
   onTabChange: (tab: PreviewTab) => void;
+  triggerType?: "COMMENT" | "INBOUND_DM";
+  inboundKeyword?: string;
   username: string;
   avatarUrl: string | null;
   postThumb: string | null;
@@ -88,9 +90,9 @@ const Ico = {
 /* ----------------------------- helpers ----------------------------- */
 
 function renderMessage(text: string, hasLink: boolean) {
-  const withName = text.replace(/\{username\}/g, SAMPLE_USER);
-  return withName.split(/(\{link\})/g).map((part, i) =>
-    part === "{link}" ? (
+  const withName = text.replace(/\{username\}/gi, SAMPLE_USER);
+  return withName.split(/(\{link\})/gi).map((part, i) =>
+    part.toLowerCase() === "{link}" ? (
       <span key={i} className={hasLink ? "text-sky-400 underline break-all" : "text-zinc-500 italic"}>
         {hasLink ? "yourlink.com/offer" : "{link}"}
       </span>
@@ -306,6 +308,7 @@ function DmScreen({
   followPromptButtonLabel,
   followUpEnabled,
   followUpMessage,
+  inboundKeyword,
 }: {
   username: string;
   avatarUrl: string | null;
@@ -322,6 +325,7 @@ function DmScreen({
   followPromptButtonLabel: string;
   followUpEnabled: boolean;
   followUpMessage: string;
+  inboundKeyword?: string;
 }) {
   return (
     <div className="flex h-full flex-col text-white">
@@ -337,6 +341,13 @@ function DmScreen({
       </div>
 
       <div className="flex-1 space-y-3 px-3 py-4">
+        {inboundKeyword !== undefined && (
+          <div className="flex justify-end">
+            <div className="rounded-2xl rounded-br-md bg-accent px-3 py-2 text-sm">
+              {inboundKeyword || "Your keyword"}
+            </div>
+          </div>
+        )}
         {openingDmEnabled && (
           <>
             <div className="flex items-end gap-2">
@@ -377,11 +388,13 @@ function DmScreen({
           </>
         )}
         {(() => {
-          const resolved = revealMessage.replace(/\{username\}/g, SAMPLE_USER);
-          const hasToken = resolved.includes("{link}");
-          const showCard = hasLink && hasToken;
+          const resolved = revealMessage.replace(/\{username\}/gi, SAMPLE_USER);
+          const hasToken = /\{link\}/i.test(resolved);
+          const showCard = hasLink;
           const bodyText = showCard
-            ? resolved.replace(/\s*\{link\}\s*/g, " ").trim()
+            ? hasToken
+              ? resolved.replace(/\s*\{link\}\s*/gi, " ").trim()
+              : resolved
             : resolved;
           return (
             <div className="flex items-end gap-2">
@@ -418,7 +431,7 @@ function DmScreen({
             <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-zinc-800 px-3 py-2">
               <p className="whitespace-pre-wrap text-sm">
                 {followUpMessage.trim()
-                  ? followUpMessage.replace(/\{username\}/g, SAMPLE_USER)
+                  ? followUpMessage.replace(/\{username\}/gi, SAMPLE_USER)
                   : "Btw just wanted to say thanks for following me, I appreciate the support 🙌"}
               </p>
             </div>
@@ -439,12 +452,16 @@ function DmScreen({
 /* ----------------------------- root ----------------------------- */
 
 export default function CampaignPreview(props: CampaignPreviewProps) {
-  const { tab, onTabChange } = props;
-  const tabs: { key: PreviewTab; label: string }[] = [
-    { key: "post", label: "Post" },
-    { key: "comments", label: "Comments" },
-    { key: "dm", label: "DM" },
-  ];
+  const { onTabChange } = props;
+  const isInboundDm = props.triggerType === "INBOUND_DM";
+  const tab: PreviewTab = isInboundDm ? "dm" : props.tab;
+  const tabs: { key: PreviewTab; label: string }[] = isInboundDm
+    ? [{ key: "dm", label: "Inbound DM" }]
+    : [
+        { key: "post", label: "Post" },
+        { key: "comments", label: "Comments" },
+        { key: "dm", label: "DM" },
+      ];
 
   return (
     <div className="flex flex-col items-center gap-5">
@@ -483,6 +500,7 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
             followPromptButtonLabel={props.followPromptButtonLabel}
             followUpEnabled={props.followUpEnabled}
             followUpMessage={props.followUpMessage}
+            inboundKeyword={isInboundDm ? props.inboundKeyword ?? "" : undefined}
           />
         )}
       </Phone>

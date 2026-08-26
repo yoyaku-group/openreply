@@ -6,10 +6,12 @@ const statusConfig: Record<string, { text: string; label: string }> = {
   SENT: { text: "text-success", label: "Sent" },
   FAILED: { text: "text-error", label: "Failed" },
   PENDING: { text: "text-warning", label: "Pending" },
+  SENDING: { text: "text-warning", label: "Sending" },
   SKIPPED_DEDUP: { text: "text-muted", label: "Dedup" },
   SKIPPED_RATE_LIMIT: { text: "text-warning", label: "Rate limited" },
   SKIPPED_PLAN_LIMIT: { text: "text-warning", label: "Skipped" },
   SKIPPED_NO_MATCH: { text: "text-muted", label: "No match" },
+  SKIPPED_WINDOW_EXPIRED: { text: "text-warning", label: "Window expired" },
 };
 
 interface StatusBadgeProps {

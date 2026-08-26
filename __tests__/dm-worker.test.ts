@@ -15,6 +15,7 @@ const {
   mockQueueAdd,
   mockReserveWorkspaceDMSend,
   mockReleaseWorkspaceDMReservation,
+  mockIngestSavInboundEvent,
 } = vi.hoisted(() => ({
   mockPrisma: {
     automation: {
@@ -26,6 +27,7 @@ const {
       findFirst: vi.fn(),
       upsert: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
       create: vi.fn(),
     },
     instagramAccount: {
@@ -48,6 +50,7 @@ const {
   mockQueueAdd: vi.fn(),
   mockReserveWorkspaceDMSend: vi.fn(),
   mockReleaseWorkspaceDMReservation: vi.fn(),
+  mockIngestSavInboundEvent: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -99,12 +102,17 @@ vi.mock("@/lib/ops/worker-health", () => ({
   recordWorkerAlert: vi.fn(),
 }));
 
+vi.mock("@/lib/sav/service", () => ({
+  ingestSavInboundEvent: mockIngestSavInboundEvent,
+}));
+
 vi.mock("@/lib/queue/client", () => ({
   getDMQueue: () => ({
     add: mockQueueAdd,
   }),
   getRedisConnection: vi.fn(),
   POSTBACK_JOB_NAME: "process-postback",
+  INBOUND_MESSAGE_JOB_NAME: "process-inbound-message",
 }));
 
 vi.mock("bullmq", () => {
@@ -121,11 +129,13 @@ vi.mock("bullmq", () => {
 });
 
 import { createDMWorker } from "../lib/queue/dm-worker";
+import { MetaApiError } from "../lib/meta/client";
 
 const usagePeriodStart = new Date("2026-05-01T00:00:00.000Z");
 
 const mockAutomation = {
   id: "auto_789",
+  triggerType: "COMMENT",
   workspaceId: "workspace_123",
   instagramAccountId: "ig_account_row_1",
   postId: "media_101",
@@ -151,6 +161,23 @@ const mockAutomation = {
     id: "workspace_123",
   },
   trackedLinks: [],
+};
+
+const mockInboundAutomation = {
+  ...mockAutomation,
+  id: "auto_inbound",
+  triggerType: "INBOUND_DM",
+  postId: null,
+  keywords: ["MB059"],
+  dmMessage: "Sweely's Le chat botté e.p. (MB059) is available to pre-order on YOYAKU.",
+  linkButtonLabel: "Pre-order MB059",
+  trackedLinks: [
+    {
+      slug: "mb059-link",
+      label: "Primary campaign link",
+      destinationUrl: "https://yoyaku.io/release/mb059/",
+    },
+  ],
 };
 
 const mockJobData = {
@@ -200,6 +227,26 @@ function createMockPostbackJob(
   };
 }
 
+function createMockInboundJob(overrides: Record<string, unknown> = {}) {
+  return {
+    name: "process-inbound-message",
+    data: {
+      instagramAccountId: "ig_456",
+      senderInstagramId: "commenter_999",
+      senderUsername: "commenter_user",
+      metaMessageId: "mid_mb059",
+      text: "MB059",
+      hasAttachments: false,
+      receivedAt: new Date().toISOString(),
+      automationId: "auto_inbound",
+      matchedKeyword: "MB059",
+      ...overrides,
+    },
+    id: "inbound_job_001",
+    attemptsMade: 0,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 
@@ -207,6 +254,7 @@ beforeEach(() => {
   mockPrisma.automation.findFirst.mockResolvedValue(null);
   mockPrisma.dmLog.findUnique.mockResolvedValue(null);
   mockPrisma.dmLog.create.mockResolvedValue({});
+  mockPrisma.dmLog.updateMany.mockResolvedValue({ count: 1 });
   mockPrisma.dmLog.findFirst.mockResolvedValue({
     commenterName: "commenter_user",
   });
@@ -235,6 +283,10 @@ beforeEach(() => {
     reserved: true,
   });
   mockReleaseWorkspaceDMReservation.mockResolvedValue({ count: 1 });
+  mockIngestSavInboundEvent.mockResolvedValue({
+    status: "created",
+    id: "sav_item_1",
+  });
   mockSendPrivateReply.mockResolvedValue({
     recipient_id: "commenter_999",
     message_id: "msg_001",
@@ -271,6 +323,7 @@ describe("DM Worker — Full Pipeline", () => {
     expect(mockPrisma.automation.findMany).toHaveBeenCalledWith({
       where: {
         OR: [{ postId: "media_101" }, { matchAnyPost: true }],
+        triggerType: "COMMENT",
         isActive: true,
         instagramAccount: { instagramId: "ig_456" },
       },
@@ -747,6 +800,256 @@ describe("DM Worker — Full Pipeline", () => {
       "ig_456",
       "commenter_999",
       "Hey commenter_user! Here is the link: https://example.com"
+    );
+  });
+});
+
+describe("DM Worker — exact inbound keyword", () => {
+  it("sends the tracked link as a direct-message button", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([mockInboundAutomation]);
+    const processor = getProcessor();
+
+    await processor(createMockInboundJob());
+
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      mockInboundAutomation.dmMessage,
+      [
+        {
+          title: "Pre-order MB059",
+          url: "http://localhost:3000/r/mb059-link",
+        },
+      ]
+    );
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "SENT" }),
+      })
+    );
+  });
+
+  it("falls back to a direct text message containing the tracked URL", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([mockInboundAutomation]);
+    mockSendDirectMessageWithLinkButton.mockRejectedValueOnce(
+      new MetaApiError(100, undefined, undefined, "template rejected")
+    );
+    const processor = getProcessor();
+
+    await processor(createMockInboundJob());
+
+    expect(mockSendDirectMessage).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      expect.stringContaining("http://localhost:3000/r/mb059-link")
+    );
+  });
+
+  it("does not retry inline when the button delivery outcome is unknown", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([mockInboundAutomation]);
+    mockSendDirectMessageWithLinkButton.mockRejectedValueOnce(
+      new Error("network connection reset")
+    );
+    const processor = getProcessor();
+
+    await expect(processor(createMockInboundJob())).rejects.toThrow(
+      "network connection reset"
+    );
+
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockReleaseWorkspaceDMReservation).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "SENDING",
+          errorMessage: expect.stringContaining("Delivery outcome unknown"),
+        }),
+      })
+    );
+  });
+
+  it("skips jobs outside Meta's 24-hour window", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([mockInboundAutomation]);
+    const receivedAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    const processor = getProcessor();
+
+    await processor(createMockInboundJob({ receivedAt }));
+
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          status: "SKIPPED_WINDOW_EXPIRED",
+        }),
+      })
+    );
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+  });
+
+  it("does not send twice for the same campaign and user", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([mockInboundAutomation]);
+    mockPrisma.dmLog.findUnique.mockResolvedValue({
+      id: "existing_inbound",
+      status: "SENT",
+    });
+    const processor = getProcessor();
+
+    await processor(createMockInboundJob({ metaMessageId: "mid_repeat" }));
+
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+  });
+
+  it("does not retry an inbound delivery with an unknown outcome", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([mockInboundAutomation]);
+    mockPrisma.dmLog.findUnique.mockResolvedValue({
+      id: "existing_inbound",
+      status: "SENDING",
+    });
+    const processor = getProcessor();
+
+    await processor(createMockInboundJob({ metaMessageId: "mid_repeat" }));
+
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+  });
+
+  it("claims a failed delivery atomically before trying again", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([mockInboundAutomation]);
+    mockPrisma.dmLog.findUnique.mockResolvedValue({
+      id: "existing_inbound",
+      status: "FAILED",
+      attempts: 2,
+      updatedAt: new Date(),
+    });
+    mockPrisma.dmLog.updateMany.mockResolvedValueOnce({ count: 0 });
+    const processor = getProcessor();
+
+    await processor(createMockInboundJob({ metaMessageId: "mid_concurrent" }));
+
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+  });
+
+  it("schedules recovery instead of wedging behind a fresh preflight claim", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([mockInboundAutomation]);
+    mockPrisma.dmLog.findUnique.mockResolvedValue({
+      id: "existing_inbound",
+      status: "PENDING",
+      attempts: 1,
+      updatedAt: new Date(),
+    });
+    const processor = getProcessor();
+
+    await processor(createMockInboundJob({ metaMessageId: "mid_recover" }));
+
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      "process-inbound-message",
+      expect.objectContaining({ claimRecoveryAttempt: 1 }),
+      expect.objectContaining({
+        jobId: expect.stringContaining("claim_recovery_1"),
+      })
+    );
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+  });
+
+  it("reclaims an expired preflight lease using compare-and-swap", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([mockInboundAutomation]);
+    mockPrisma.dmLog.findUnique.mockResolvedValue({
+      id: "existing_inbound",
+      status: "PENDING",
+      attempts: 1,
+      updatedAt: new Date(Date.now() - 3 * 60 * 1000),
+    });
+    const processor = getProcessor();
+
+    await processor(createMockInboundJob({ metaMessageId: "mid_stale" }));
+
+    expect(mockPrisma.dmLog.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "existing_inbound",
+          status: "PENDING",
+          attempts: 1,
+        }),
+      })
+    );
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledTimes(1);
+  });
+
+  it("honors the workspace DM quota", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([mockInboundAutomation]);
+    mockReserveWorkspaceDMSend.mockResolvedValue({
+      allowed: false,
+      reserved: false,
+      remaining: 0,
+      limit: 100,
+      periodStart: usagePeriodStart,
+    });
+    const processor = getProcessor();
+
+    await processor(createMockInboundJob());
+
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "SKIPPED_PLAN_LIMIT" }),
+      })
+    );
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+  });
+
+  it("requeues safely when the account rate limit is temporarily full", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([mockInboundAutomation]);
+    mockReserveDMSlot.mockResolvedValue({
+      allowed: false,
+      currentCount: 190,
+      remainingDMs: 0,
+      shouldRequeue: true,
+      requeueDelayMs: 1800000,
+      shouldSkip: false,
+      reserved: false,
+    });
+    const processor = getProcessor();
+
+    await processor(createMockInboundJob());
+
+    expect(mockReleaseWorkspaceDMReservation).toHaveBeenCalledWith(
+      "workspace_123",
+      usagePeriodStart
+    );
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      "process-inbound-message",
+      expect.objectContaining({ requeueAttempt: 1 }),
+      expect.objectContaining({ delay: 1800000 })
+    );
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when active keyword ownership becomes ambiguous", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      mockInboundAutomation,
+      { ...mockInboundAutomation, id: "auto_inbound_2" },
+    ]);
+    const processor = getProcessor();
+
+    await processor(createMockInboundJob());
+
+    expect(mockPrisma.operationalEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ level: "WARNING" }),
+      })
+    );
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+    expect(mockIngestSavInboundEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metaMessageId: "mid_mb059",
+        text: "MB059",
+      })
     );
   });
 });
