@@ -11,6 +11,10 @@ import { normalizeInboundDmKeywords } from "@/lib/automations/inbound-dm";
 import { getMediaById } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import {
+  MissingCommentScopeError,
+  assertCommentScope,
+} from "@/lib/meta/scope-check";
+import {
   canManageWorkspace,
   getCurrentWorkspaceContext,
 } from "@/lib/workspace-access";
@@ -282,14 +286,36 @@ async function lockInboundKeywordAccount(
 }
 
 async function postAccessibilityError(
-  account: { username: string; accessToken: string },
-  postId: string
+  account: { id: string; username: string; accessToken: string },
+  postId: string,
+  triggerType: "COMMENT" | "INBOUND_DM" = "COMMENT"
 ) {
   try {
     const accessToken = decryptToken(account.accessToken);
     await getMediaById(accessToken, postId);
+    if (triggerType === "COMMENT") {
+      // COMMENT-trigger automations also need read access to the post's
+      // comment stream — silently dead without instagram_business_manage_comments
+      // (see logs-yoyaku-io/interventions/2026-08-27-openreply-slapfunk-reel-automation.md).
+      await assertCommentScope({ accountId: account.id, postId });
+    }
     return null;
-  } catch {
+  } catch (error) {
+    if (error instanceof MissingCommentScopeError) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: error.code,
+          error: error.message,
+          missing: error.missing,
+          fixUrl: error.fixUrl,
+          accountId: error.accountId,
+          accountUsername: error.accountUsername,
+          postId: error.postId,
+        },
+        { status: 409 }
+      );
+    }
     return NextResponse.json(
       {
         success: false,
@@ -455,6 +481,33 @@ export async function GET(request: NextRequest) {
   );
 }
 
+// A COMMENT automation whose account token lacks the comments scope can never
+// fire: the webhook never delivers the comment and the reconciler reads the
+// same empty list. Block creation/activation up front when the scope probe has
+// a definite answer (empty scopes = not yet probed; archived accounts are
+// audit-only zombies and stay out of the check).
+const COMMENTS_SCOPE = "instagram_business_manage_comments";
+
+function commentsScopeError(account: {
+  username: string;
+  scopes: string[];
+  archivedAt: Date | null;
+}): NextResponse | null {
+  if (account.archivedAt) return null;
+  if (account.scopes.length === 0) return null;
+  if (account.scopes.includes(COMMENTS_SCOPE)) return null;
+  return NextResponse.json(
+    {
+      success: false,
+      error:
+        `@${account.username} was connected before the "${COMMENTS_SCOPE}" permission existed — ` +
+        "its comments are invisible to the API, so this campaign would never trigger. " +
+        "Re-connect the account first (Settings → Instagram → disconnect + reconnect).",
+    },
+    { status: 400 }
+  );
+}
+
 export async function POST(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) {
@@ -526,6 +579,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (
+    parsed.data.triggerType !== "INBOUND_DM" &&
+    parsed.data.isActive &&
+    instagramAccount.archivedAt === null
+  ) {
+    const scopeError = commentsScopeError(instagramAccount);
+    if (scopeError) return scopeError;
+  }
+
   const isInboundDm = parsed.data.triggerType === "INBOUND_DM";
   const isSpecificPost =
     !isInboundDm && !parsed.data.pendingNextReel && !parsed.data.matchAnyPost;
@@ -533,7 +595,8 @@ export async function POST(request: NextRequest) {
   if (isSpecificPost && parsed.data.isActive && parsed.data.postId) {
     const inaccessible = await postAccessibilityError(
       instagramAccount,
-      parsed.data.postId
+      parsed.data.postId,
+      parsed.data.triggerType
     );
     if (inaccessible) return inaccessible;
   }
@@ -710,7 +773,13 @@ export async function PATCH(request: NextRequest) {
     where: { id: automationId, workspaceId },
     include: {
       instagramAccount: {
-        select: { username: true, accessToken: true },
+        select: {
+          id: true,
+          username: true,
+          accessToken: true,
+          scopes: true,
+          archivedAt: true,
+        },
       },
     },
   });
@@ -720,6 +789,15 @@ export async function PATCH(request: NextRequest) {
       { success: false, error: "Campaign not found" },
       { status: 404 }
     );
+  }
+
+  if (
+    (parsed.data.triggerType ?? existing.triggerType) !== "INBOUND_DM" &&
+    (parsed.data.isActive ?? existing.isActive) &&
+    existing.instagramAccount.archivedAt === null
+  ) {
+    const scopeError = commentsScopeError(existing.instagramAccount);
+    if (scopeError) return scopeError;
   }
 
   const effectiveConfiguration: AutomationConfiguration = {
@@ -784,7 +862,8 @@ export async function PATCH(request: NextRequest) {
   ) {
     const inaccessible = await postAccessibilityError(
       existing.instagramAccount,
-      effectiveConfiguration.postId
+      effectiveConfiguration.postId,
+      effectiveConfiguration.triggerType
     );
     if (inaccessible) return inaccessible;
   }

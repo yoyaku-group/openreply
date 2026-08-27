@@ -3,6 +3,41 @@ import { debugToken } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 
 /**
+ * Error raised when a COMMENT-trigger automation is being created or
+ * activated on an Instagram account whose token does not carry
+ * `instagram_business_manage_comments`. The route handler converts this
+ * into a 409 response with code MISSING_COMMENT_SCOPE so the dashboard
+ * can surface a re-auth prompt with a direct deep link.
+ */
+export class MissingCommentScopeError extends Error {
+  readonly code = "MISSING_COMMENT_SCOPE" as const;
+  readonly accountId: string;
+  readonly accountUsername: string;
+  readonly postId: string;
+  readonly missing: RequiredInstagramScope[];
+  readonly fixUrl: string;
+
+  constructor(args: {
+    accountId: string;
+    accountUsername: string;
+    postId: string;
+    missing: RequiredInstagramScope[];
+  }) {
+    super(
+      `Account @${args.accountUsername} is missing scopes ${args.missing.join(
+        ", "
+      )} required to read comments on post ${args.postId}.`
+    );
+    this.name = "MissingCommentScopeError";
+    this.accountId = args.accountId;
+    this.accountUsername = args.accountUsername;
+    this.postId = args.postId;
+    this.missing = args.missing;
+    this.fixUrl = "/settings/instagram/reconnect";
+  }
+}
+
+/**
  * OAuth scopes an OpenReply Instagram account must hold for the platform to
  * deliver on its comment-to-DM contract. `instagram_business_manage_comments`
  * is the silent-killer scope: without it, the Graph API returns `data: []` on
@@ -139,6 +174,30 @@ export async function probeAccountScopes(
 
 export function computeMissing(granted: readonly string[]): RequiredInstagramScope[] {
   return REQUIRED_INSTAGRAM_SCOPES.filter((s) => !granted.includes(s));
+}
+
+/**
+ * Pre-flight check for COMMENT-trigger automations. Validates that the
+ * connected Instagram account holds the scopes needed to read comments on
+ * the supplied post. Uses `probeAccountScopes` so the cached `scopes` field
+ * avoids a fresh /debug_token call when the probe is <1h old — keeping the
+ * automation-create hot path cheap.
+ *
+ * Throws MissingCommentScopeError when any required scope is missing.
+ */
+export async function assertCommentScope(args: {
+  accountId: string;
+  postId: string;
+}): Promise<void> {
+  const probe = await probeAccountScopes(args.accountId, { forceRefresh: false });
+  if (probe.missing.length > 0) {
+    throw new MissingCommentScopeError({
+      accountId: args.accountId,
+      accountUsername: probe.username,
+      postId: args.postId,
+      missing: probe.missing,
+    });
+  }
 }
 
 /**
