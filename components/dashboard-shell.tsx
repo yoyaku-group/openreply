@@ -9,6 +9,8 @@ interface DashboardShellProps {
   workspaceName: string;
   instagramUsername: string | null;
   instagramAccountCount: number;
+  workspaces?: { id: string; name: string }[];
+  activeWorkspaceId?: string;
 }
 
 export default function DashboardShell({
@@ -16,6 +18,8 @@ export default function DashboardShell({
   workspaceName,
   instagramUsername,
   instagramAccountCount,
+  workspaces,
+  activeWorkspaceId,
 }: DashboardShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -25,6 +29,8 @@ export default function DashboardShell({
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         workspaceName={workspaceName}
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
       />
 
       <div className="flex flex-1 flex-col overflow-hidden">

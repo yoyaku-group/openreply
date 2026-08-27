@@ -1,8 +1,14 @@
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import DashboardShell from "@/components/dashboard-shell";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
-import { ensureWorkspaceForUser } from "@/lib/workspace";
+import {
+  ACTIVE_WORKSPACE_COOKIE,
+  ensureWorkspaceForUser,
+  listWorkspaceMemberships,
+  resolveActiveWorkspace,
+} from "@/lib/workspace";
 
 export default async function DashboardLayout({
   children,
@@ -15,10 +21,16 @@ export default async function DashboardLayout({
     redirect("/login");
   }
 
-  const workspace = await ensureWorkspaceForUser(
+  const store = await cookies();
+  const preferredWorkspaceId = store.get(ACTIVE_WORKSPACE_COOKIE)?.value;
+  const active = await resolveActiveWorkspace(
     session.user.id,
-    session.user.email
+    preferredWorkspaceId
   );
+  const workspace =
+    active?.workspace ??
+    (await ensureWorkspaceForUser(session.user.id, session.user.email));
+  const workspaces = await listWorkspaceMemberships(session.user.id);
   const accounts = await prisma.instagramAccount.findMany({
     where: { workspaceId: workspace.id },
     orderBy: { connectedAt: "desc" },
@@ -30,6 +42,8 @@ export default async function DashboardLayout({
       workspaceName={workspace.name}
       instagramUsername={accounts[0]?.username ?? null}
       instagramAccountCount={accounts.length}
+      workspaces={workspaces}
+      activeWorkspaceId={workspace.id}
     >
       {children}
     </DashboardShell>

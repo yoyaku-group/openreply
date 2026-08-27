@@ -3,7 +3,8 @@ import Resend from "next-auth/providers/resend";
 import Google from "next-auth/providers/google";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@/lib/db/client";
-import { ensureWorkspaceForUser, getPrimaryWorkspace } from "@/lib/workspace";
+import { getActiveWorkspace } from "@/lib/active-workspace";
+import { ensureWorkspaceForUser } from "@/lib/workspace";
 import { isAuthSignInAllowed } from "@/lib/auth-allowlist";
 
 type AdapterPrismaClient = Parameters<typeof PrismaAdapter>[0];
@@ -78,8 +79,8 @@ export async function getCurrentWorkspaceId(): Promise<string | null> {
   const userId = await getCurrentUserId();
   if (!userId) return null;
 
-  const workspace = await getPrimaryWorkspace(userId);
-  if (workspace) return workspace.id;
+  const active = await getActiveWorkspace(userId);
+  if (active) return active.workspace.id;
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
