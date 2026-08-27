@@ -7,11 +7,15 @@ import {
 } from "crypto";
 import { getEncryptionKeyHex, requireEnv } from "@/lib/env";
 
-const INSTAGRAM_OAUTH_SCOPE = [
+// Exported as an array so the regression test (oauth.test.ts) can assert
+// individual scopes without re-parsing the comma-joined string. Order is
+// not significant — Meta treats each scope independently.
+export const INSTAGRAM_OAUTH_SCOPE_VALUES = [
   "instagram_business_basic",
   "instagram_business_manage_messages",
   "instagram_business_manage_comments",
-].join(",");
+] as const;
+const INSTAGRAM_OAUTH_SCOPE = INSTAGRAM_OAUTH_SCOPE_VALUES.join(",");
 const INSTAGRAM_OAUTH_URL = "https://api.instagram.com/oauth/authorize";
 const INSTAGRAM_TOKEN_URL = "https://api.instagram.com/oauth/access_token";
 const ALGORITHM = "aes-256-gcm";

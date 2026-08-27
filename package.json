@@ -15,7 +15,8 @@
     "db:migrate": "prisma migrate deploy",
     "worker": "tsx worker/dm-worker.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:scope": "vitest run __tests__/oauth.test.ts __tests__/token-scope.test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.2",
