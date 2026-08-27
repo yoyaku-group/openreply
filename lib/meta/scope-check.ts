@@ -65,15 +65,65 @@ export interface AccountScopeProbe {
 }
 
 /**
+ * Read-only snapshot of an account's scope state from the local DB. NO
+ * network call to Meta — this is what /api/health and any unauthenticated
+ * route surface, so unauthenticated traffic cannot burn Meta rate limits
+ * by spamming probes. To trigger a live Meta call, use `probeAccountScopes`
+ * behind an authenticated admin endpoint.
+ */
+export interface CachedAccountScopes {
+  accountId: string;
+  username: string;
+  granted: string[];
+  missing: RequiredInstagramScope[];
+  lastProbeAt: Date | null;
+  archivedAt: Date | null;
+}
+
+export async function listCachedAccountScopes(): Promise<CachedAccountScopes[]> {
+  const rows = await prisma.instagramAccount.findMany({
+    where: { archivedAt: null },
+    select: {
+      id: true,
+      username: true,
+      scopes: true,
+      lastScopeProbeAt: true,
+      archivedAt: true,
+    },
+    orderBy: { connectedAt: "asc" },
+  });
+  return rows.map((r) => ({
+    accountId: r.id,
+    username: r.username,
+    granted: r.scopes,
+    missing: computeMissing(r.scopes),
+    lastProbeAt: r.lastScopeProbeAt,
+    archivedAt: r.archivedAt,
+  }));
+}
+
+/**
  * Probe a single Instagram account's current OAuth scopes via
  * `/debug_token`, write the result back to the DB (so subsequent health
  * sweeps don't re-call Graph API unless the cache TTL has expired), and
  * return what is missing from the required list.
  *
+ * SECURITY: this function hits Meta. It MUST only be called from
+ * authenticated admin endpoints, never from public health/read endpoints —
+ * otherwise unauthenticated traffic can burn through Meta rate limits by
+ * spamming probes. Public callers should use `listCachedAccountScopes`.
+ *
+ * Concurrency: a per-process in-flight lock prevents the cache-defeat
+ * pattern where N concurrent expired-cache calls each fire a Graph
+ * request. While a probe is running, concurrent callers receive the
+ * last-known cached value (possibly stale) instead of joining the stampede.
+ *
  * The probe is best-effort: a rate-limit or transient error is surfaced
  * to the caller via `error` and `ok=false`, but never throws — health
  * routes need to keep responding even when the upstream is flaky.
  */
+const PROBE_INFLIGHT = new Map<string, Promise<AccountScopeProbe>>();
+
 export async function probeAccountScopes(
   accountId: string,
   opts: { forceRefresh?: boolean; cacheMs?: number } = {}
@@ -132,8 +182,28 @@ export async function probeAccountScopes(
     };
   }
 
+  // Cache-expired path: serialize via in-process lock so a load-balancer
+  // health-check stampede only triggers one Meta call per account per TTL.
+  const existing = PROBE_INFLIGHT.get(accountId);
+  if (existing) return existing;
+
+  const probe = runProbe(accountId, account.accessToken, account.scopes, account.lastScopeProbeAt);
+  PROBE_INFLIGHT.set(accountId, probe);
   try {
-    const accessToken = decryptToken(account.accessToken);
+    return await probe;
+  } finally {
+    PROBE_INFLIGHT.delete(accountId);
+  }
+}
+
+async function runProbe(
+  accountId: string,
+  encryptedToken: string,
+  fallbackGranted: string[],
+  fallbackLastProbeAt: Date | null
+): Promise<AccountScopeProbe> {
+  try {
+    const accessToken = decryptToken(encryptedToken);
     const probed = (await debugToken(accessToken, accessToken)) as {
       data?: { scopes?: string[] };
     };
@@ -149,24 +219,23 @@ export async function probeAccountScopes(
 
     return {
       accountId,
-      username: account.username,
+      username: "<unknown>",
       ok: true,
       grantedScopes: granted,
       missing: computeMissing(granted),
       lastProbeAt: probedAt,
     };
   } catch (error) {
-    // Fail-open: log, mark lastProbeAt so the next sweep can decide whether
-    // to retry, and surface the error to the caller. The DB row keeps its
-    // previous (possibly empty) scopes so /api/health reflects reality.
+    // Fail-open: surface the error, keep the cached scopes. The next sweep
+    // can decide whether to retry.
     const message = error instanceof Error ? error.message : String(error);
     return {
       accountId,
-      username: account.username,
+      username: "<unknown>",
       ok: false,
-      grantedScopes: account.scopes,
-      missing: computeMissing(account.scopes),
-      lastProbeAt: account.lastScopeProbeAt,
+      grantedScopes: fallbackGranted,
+      missing: computeMissing(fallbackGranted),
+      lastProbeAt: fallbackLastProbeAt,
       error: message,
     };
   }
@@ -179,9 +248,10 @@ export function computeMissing(granted: readonly string[]): RequiredInstagramSco
 /**
  * Pre-flight check for COMMENT-trigger automations. Validates that the
  * connected Instagram account holds the scopes needed to read comments on
- * the supplied post. Uses `probeAccountScopes` so the cached `scopes` field
- * avoids a fresh /debug_token call when the probe is <1h old — keeping the
- * automation-create hot path cheap.
+ * the supplied post. Uses the cached scopes field (1h TTL from
+ * `probeAccountScopes`) so the automation-create hot path is cheap — but
+ * if the cache is expired this triggers a live Meta probe, so callers
+ * should be authenticated operators (the route handler enforces it).
  *
  * Throws MissingCommentScopeError when any required scope is missing.
  */
@@ -190,10 +260,18 @@ export async function assertCommentScope(args: {
   postId: string;
 }): Promise<void> {
   const probe = await probeAccountScopes(args.accountId, { forceRefresh: false });
+  // Patch in the username from the cached snapshot — runProbe doesn't load
+  // it (keeps the live-probe path lean).
+  const username = probe.username === "<unknown>"
+    ? (await prisma.instagramAccount.findUnique({
+        where: { id: args.accountId },
+        select: { username: true },
+      }))?.username ?? "<unknown>"
+    : probe.username;
   if (probe.missing.length > 0) {
     throw new MissingCommentScopeError({
       accountId: args.accountId,
-      accountUsername: probe.username,
+      accountUsername: username,
       postId: args.postId,
       missing: probe.missing,
     });

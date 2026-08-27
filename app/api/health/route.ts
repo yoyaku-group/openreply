@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { getDMQueue, getRedisConnection } from "@/lib/queue/client";
 import { getWorkerHealth } from "@/lib/ops/worker-health";
-import { probeAllAccountScopes } from "@/lib/meta/scope-check";
+import { listCachedAccountScopes } from "@/lib/meta/scope-check";
 
 export const runtime = "nodejs";
 // Health must reflect live state (worker heartbeat, queue depth), never a
@@ -57,43 +57,53 @@ async function checkQueue(): Promise<HealthCheck & { counts?: unknown }> {
   }
 }
 
+const SCOPE_STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24h
+
 /**
- * Token-scope probe for every live Instagram account. Returns "ok" only
- * when every account holds the three required scopes; "degraded" flags
- * missing scopes or transient probe failures. The /api/health wrapper does
- * NOT propagate this status to the overall `healthy` flag — a scope drift
- * on one account should not take down the rest of the API. Operators read
- * the `checks.instagram_scopes` field directly or fire a Discord alert via
- * the rules/40 circuit breaker when degraded_count > 0.
+ * Token-scope check, read-only from the local DB. NO Meta calls.
+ *
+ * SECURITY: this endpoint is unauthenticated (load-balancer probes), so it
+ * MUST NOT trigger live /debug_token probes or expose per-account scope
+ * detail — unauthenticated callers would otherwise burn Meta rate limits
+ * by spamming the probe and learn which accounts hold which scopes. Per-
+ * account detail lives at /api/admin/instagram-scopes (auth-gated).
+ *
+ * A `stale` flag tells operators when the cached scope data is too old to
+ * be useful — usually that means a scheduled cron probe hasn't run, not
+ * that scopes just drifted.
  */
 async function checkInstagramScopes(): Promise<
   HealthCheck & {
     ok_count?: number;
     degraded_count?: number;
-    accounts?: unknown;
+    stale?: boolean;
   }
 > {
   try {
-    const { accounts, okCount, degradedCount } = await probeAllAccountScopes();
-    const status: CheckStatus = degradedCount === 0 ? "ok" : "degraded";
+    const rows = await listCachedAccountScopes();
+    const okCount = rows.filter((r) => r.missing.length === 0).length;
+    const degradedCount = rows.length - okCount;
+    const now = Date.now();
+    const oldest = rows
+      .map((r) => r.lastProbeAt?.getTime() ?? 0)
+      .reduce((a, b) => Math.max(a, b), 0);
+    const stale =
+      rows.length > 0 &&
+      (oldest === 0 || now - oldest > SCOPE_STALE_THRESHOLD_MS);
+    const status: CheckStatus =
+      degradedCount === 0 && !stale ? "ok" : "degraded";
     const detail =
-      degradedCount === 0
-        ? `${okCount}/${accounts.length} accounts hold all required scopes`
-        : `${degradedCount}/${accounts.length} accounts missing one or more scopes — re-auth via Settings → Instagram`;
+      degradedCount === 0 && !stale
+        ? `${okCount}/${rows.length} accounts hold all required scopes`
+        : degradedCount > 0
+          ? `${degradedCount}/${rows.length} accounts missing one or more scopes — re-auth via Settings → Instagram`
+          : `Scope data stale (oldest probe >${SCOPE_STALE_THRESHOLD_MS / 3600000}h ago) — run admin probe`;
     return {
       status,
       detail,
       ok_count: okCount,
       degraded_count: degradedCount,
-      accounts: accounts.map((a) => ({
-        id: a.accountId,
-        username: a.username,
-        ok: a.ok && a.missing.length === 0,
-        granted: a.grantedScopes,
-        missing: a.missing,
-        lastProbeAt: a.lastProbeAt,
-        error: a.error,
-      })),
+      stale,
     };
   } catch (error) {
     return {
@@ -101,7 +111,7 @@ async function checkInstagramScopes(): Promise<
       detail:
         error instanceof Error
           ? error.message
-          : "Instagram scope probe failed",
+          : "Instagram scope snapshot failed",
     };
   }
 }
