@@ -38,6 +38,22 @@ export class MissingCommentScopeError extends Error {
 }
 
 /**
+ * Thrown when a caller asks to probe or list an account that does not
+ * belong to their workspace. Surfaced as 403 by the admin route handler —
+ * never silently downgraded to "not found" (which would mask the boundary).
+ */
+export class CrossTenantAccessError extends Error {
+  readonly code = "CROSS_TENANT_ACCESS" as const;
+  constructor(
+    public readonly accountId: string,
+    public readonly workspaceId: string
+  ) {
+    super(`Account ${accountId} is not accessible from workspace ${workspaceId}.`);
+    this.name = "CrossTenantAccessError";
+  }
+}
+
+/**
  * OAuth scopes an OpenReply Instagram account must hold for the platform to
  * deliver on its comment-to-DM contract. `instagram_business_manage_comments`
  * is the silent-killer scope: without it, the Graph API returns `data: []` on
@@ -70,6 +86,12 @@ export interface AccountScopeProbe {
  * route surface, so unauthenticated traffic cannot burn Meta rate limits
  * by spamming probes. To trigger a live Meta call, use `probeAccountScopes`
  * behind an authenticated admin endpoint.
+ *
+ * SECURITY: `workspaceId` is OPTIONAL only because /api/health is
+ * unauthenticated and needs the operational roll-up across workspaces
+ * for the load-balancer probe. Per-account detail lives at
+ * /api/admin/instagram-scopes (auth-gated, workspace-scoped). All
+ * authenticated callers MUST pass `workspaceId`.
  */
 export interface CachedAccountScopes {
   accountId: string;
@@ -80,9 +102,14 @@ export interface CachedAccountScopes {
   archivedAt: Date | null;
 }
 
-export async function listCachedAccountScopes(): Promise<CachedAccountScopes[]> {
+export async function listCachedAccountScopes(
+  workspaceId?: string
+): Promise<CachedAccountScopes[]> {
+  const where = workspaceId
+    ? { workspaceId, archivedAt: null }
+    : { archivedAt: null };
   const rows = await prisma.instagramAccount.findMany({
-    where: { archivedAt: null },
+    where,
     select: {
       id: true,
       username: true,
@@ -113,6 +140,10 @@ export async function listCachedAccountScopes(): Promise<CachedAccountScopes[]> 
  * otherwise unauthenticated traffic can burn through Meta rate limits by
  * spamming probes. Public callers should use `listCachedAccountScopes`.
  *
+ * SECURITY: `workspaceId` is REQUIRED. Throws CrossTenantAccessError if
+ * the account does not belong to that workspace — caller is responsible
+ * for proving it can access this row.
+ *
  * Concurrency: a per-process in-flight lock prevents the cache-defeat
  * pattern where N concurrent expired-cache calls each fire a Graph
  * request. While a probe is running, concurrent callers receive the
@@ -126,7 +157,7 @@ const PROBE_INFLIGHT = new Map<string, Promise<AccountScopeProbe>>();
 
 export async function probeAccountScopes(
   accountId: string,
-  opts: { forceRefresh?: boolean; cacheMs?: number } = {}
+  opts: { workspaceId: string; forceRefresh?: boolean; cacheMs?: number }
 ): Promise<AccountScopeProbe> {
   const cacheMs = opts.cacheMs ?? 60 * 60 * 1000; // 1h default
   const account = await prisma.instagramAccount.findUnique({
@@ -134,12 +165,31 @@ export async function probeAccountScopes(
     select: {
       id: true,
       username: true,
+      workspaceId: true,
       accessToken: true,
       scopes: true,
       lastScopeProbeAt: true,
       archivedAt: true,
     },
   });
+
+  if (!account) {
+    return {
+      accountId,
+      username: "<unknown>",
+      ok: false,
+      grantedScopes: [],
+      missing: [...REQUIRED_INSTAGRAM_SCOPES],
+      lastProbeAt: null,
+      error: "InstagramAccount not found",
+    };
+  }
+
+  if (account.workspaceId !== opts.workspaceId) {
+    // Refuse rather than silently return empty — caller must validate
+    // workspace ownership before probing another tenant's token.
+    throw new CrossTenantAccessError(accountId, opts.workspaceId);
+  }
 
   if (!account) {
     return {
@@ -253,21 +303,31 @@ export function computeMissing(granted: readonly string[]): RequiredInstagramSco
  * if the cache is expired this triggers a live Meta probe, so callers
  * should be authenticated operators (the route handler enforces it).
  *
- * Throws MissingCommentScopeError when any required scope is missing.
+ * SECURITY: `workspaceId` is REQUIRED and passed through to the probe.
+ * The automations route already loads the InstagramAccount row with the
+ * workspace filter, so this is always available there.
+ *
+ * Throws CrossTenantAccessError on workspace mismatch, or
+ * MissingCommentScopeError when any required scope is missing.
  */
 export async function assertCommentScope(args: {
   accountId: string;
+  workspaceId: string;
   postId: string;
 }): Promise<void> {
-  const probe = await probeAccountScopes(args.accountId, { forceRefresh: false });
+  const probe = await probeAccountScopes(args.accountId, {
+    workspaceId: args.workspaceId,
+    forceRefresh: false,
+  });
   // Patch in the username from the cached snapshot — runProbe doesn't load
   // it (keeps the live-probe path lean).
-  const username = probe.username === "<unknown>"
-    ? (await prisma.instagramAccount.findUnique({
-        where: { id: args.accountId },
-        select: { username: true },
-      }))?.username ?? "<unknown>"
-    : probe.username;
+  const username =
+    probe.username === "<unknown>"
+      ? (await prisma.instagramAccount.findUnique({
+          where: { id: args.accountId },
+          select: { username: true },
+        }))?.username ?? "<unknown>"
+      : probe.username;
   if (probe.missing.length > 0) {
     throw new MissingCommentScopeError({
       accountId: args.accountId,
@@ -279,20 +339,27 @@ export async function assertCommentScope(args: {
 }
 
 /**
- * Probe every non-archived Instagram account in parallel. Used by
- * `/api/health` to surface drift in a single call. Failures on individual
- * accounts are isolated — one rate-limited probe does not poison the rest.
+ * Probe every non-archived Instagram account in a workspace in parallel.
+ * Used by the admin route to surface drift in a single call. Failures on
+ * individual accounts are isolated — one rate-limited probe does not
+ * poison the rest.
+ *
+ * SECURITY: `workspaceId` is REQUIRED.
  */
-export async function probeAllAccountScopes(): Promise<{
+export async function probeAllAccountScopes(
+  workspaceId: string
+): Promise<{
   accounts: AccountScopeProbe[];
   okCount: number;
   degradedCount: number;
 }> {
   const live = await prisma.instagramAccount.findMany({
-    where: { archivedAt: null },
+    where: { workspaceId, archivedAt: null },
     select: { id: true },
   });
-  const probes = await Promise.all(live.map((a) => probeAccountScopes(a.id)));
+  const probes = await Promise.all(
+    live.map((a) => probeAccountScopes(a.id, { workspaceId }))
+  );
   const okCount = probes.filter((p) => p.ok && p.missing.length === 0).length;
   const degradedCount = probes.length - okCount;
   return { accounts: probes, okCount, degradedCount };

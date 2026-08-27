@@ -110,11 +110,13 @@ describe("MissingCommentScopeError", () => {
 });
 
 describe("probeAccountScopes (DB-cached path)", () => {
+  const WORKSPACE_A = "workspace-a";
   it("returns the cached snapshot when lastScopeProbeAt is fresh", async () => {
     const probedAt = new Date();
     instagramAccountFindUnique.mockResolvedValue({
       id: "acct-1",
       username: "yoyaku.fr",
+      workspaceId: WORKSPACE_A,
       accessToken: "encrypted",
       scopes: [
         "instagram_business_basic",
@@ -124,7 +126,7 @@ describe("probeAccountScopes (DB-cached path)", () => {
       lastScopeProbeAt: probedAt,
       archivedAt: null,
     });
-    const result = await probeAccountScopes("acct-1");
+    const result = await probeAccountScopes("acct-1", { workspaceId: WORKSPACE_A });
     expect(result.ok).toBe(true);
     expect(result.missing).toEqual([]);
     expect(result.grantedScopes).toContain("instagram_business_manage_comments");
@@ -135,12 +137,13 @@ describe("probeAccountScopes (DB-cached path)", () => {
     instagramAccountFindUnique.mockResolvedValue({
       id: "acct-2",
       username: "yoyakurecordstore",
+      workspaceId: WORKSPACE_A,
       accessToken: "encrypted",
       scopes: ["instagram_business_basic", "instagram_business_manage_messages"],
       lastScopeProbeAt: new Date(),
       archivedAt: null,
     });
-    const result = await probeAccountScopes("acct-2");
+    const result = await probeAccountScopes("acct-2", { workspaceId: WORKSPACE_A });
     // `ok` reflects probe success (cache hit = ok=true). The missing-scope
     // signal lives on `missing` — the assertion callers actually check.
     expect(result.missing).toEqual(["instagram_business_manage_comments"]);
@@ -151,23 +154,42 @@ describe("probeAccountScopes (DB-cached path)", () => {
     instagramAccountFindUnique.mockResolvedValue({
       id: "acct-3",
       username: "archived-account",
+      workspaceId: WORKSPACE_A,
       accessToken: "encrypted",
       scopes: [],
       lastScopeProbeAt: null,
       archivedAt: new Date(),
     });
-    const result = await probeAccountScopes("acct-3");
+    const result = await probeAccountScopes("acct-3", { workspaceId: WORKSPACE_A });
     expect(result.ok).toBe(true);
     expect(result.missing).toEqual([]);
+    expect(debugToken).not.toHaveBeenCalled();
+  });
+
+  it("throws CrossTenantAccessError when workspaceId mismatches", async () => {
+    instagramAccountFindUnique.mockResolvedValue({
+      id: "acct-other",
+      username: "other",
+      workspaceId: "workspace-b",
+      accessToken: "encrypted",
+      scopes: ["instagram_business_basic"],
+      lastScopeProbeAt: new Date(),
+      archivedAt: null,
+    });
+    await expect(
+      probeAccountScopes("acct-other", { workspaceId: WORKSPACE_A })
+    ).rejects.toMatchObject({ code: "CROSS_TENANT_ACCESS" });
     expect(debugToken).not.toHaveBeenCalled();
   });
 });
 
 describe("probeAccountScopes (live-probe path)", () => {
+  const WORKSPACE_A = "workspace-a";
   it("calls debugToken when the cache is stale and writes the result back", async () => {
     instagramAccountFindUnique.mockResolvedValue({
       id: "acct-4",
       username: "yoyaku.fr",
+      workspaceId: WORKSPACE_A,
       accessToken: "encrypted",
       scopes: [],
       // Two hours ago — past the 1h cache TTL
@@ -184,7 +206,7 @@ describe("probeAccountScopes (live-probe path)", () => {
       },
     });
     instagramAccountUpdate.mockResolvedValue({});
-    const result = await probeAccountScopes("acct-4");
+    const result = await probeAccountScopes("acct-4", { workspaceId: WORKSPACE_A });
     expect(debugToken).toHaveBeenCalledTimes(1);
     expect(instagramAccountUpdate).toHaveBeenCalledWith({
       where: { id: "acct-4" },
@@ -204,13 +226,14 @@ describe("probeAccountScopes (live-probe path)", () => {
     instagramAccountFindUnique.mockResolvedValue({
       id: "acct-5",
       username: "yoyaku.fr",
+      workspaceId: WORKSPACE_A,
       accessToken: "encrypted",
       scopes: ["instagram_business_basic"],
       lastScopeProbeAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
       archivedAt: null,
     });
     debugToken.mockRejectedValue(new Error("rate-limited"));
-    const result = await probeAccountScopes("acct-5");
+    const result = await probeAccountScopes("acct-5", { workspaceId: WORKSPACE_A });
     expect(result.ok).toBe(false);
     expect(result.error).toBe("rate-limited");
     expect(result.missing).toContain("instagram_business_manage_comments");

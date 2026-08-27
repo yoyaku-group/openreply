@@ -80,6 +80,9 @@ async function checkInstagramScopes(): Promise<
   }
 > {
   try {
+    // /api/health is unauthenticated — workspaceId is omitted to fetch
+    // the cross-workspace roll-up used by the load-balancer probe.
+    // Per-account scope detail is gated behind /api/admin/instagram-scopes.
     const rows = await listCachedAccountScopes();
     const okCount = rows.filter((r) => r.missing.length === 0).length;
     const degradedCount = rows.length - okCount;

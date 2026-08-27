@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  CrossTenantAccessError,
   listCachedAccountScopes,
   probeAccountScopes,
   probeAllAccountScopes,
@@ -16,6 +17,9 @@ export const dynamic = "force-dynamic";
  * `/api/health` deliberately exposes only a count summary so an unauthenticated
  * caller cannot learn which accounts hold which scopes — and so a load-
  * balancer probe stampede cannot burn Meta rate limits.
+ *
+ * Every query is workspace-scoped via context.workspaceId; an admin from
+ * workspace A cannot see or probe accounts belonging to workspace B.
  *
  * Usage:
  *   GET  /api/admin/instagram-scopes             — cached snapshot, no Meta calls
@@ -40,18 +44,35 @@ export async function GET(request: NextRequest) {
   const wantProbe = request.nextUrl.searchParams.get("probe") === "1";
   const focusAccount = request.nextUrl.searchParams.get("account");
 
-  if (focusAccount) {
-    // Single-account live probe, even if `probe=0`. The admin explicitly
-    // asked about one account — give them fresh data.
-    const probe = await probeAccountScopes(focusAccount, { forceRefresh: true });
-    return NextResponse.json({ success: true, data: probe });
-  }
+  try {
+    if (focusAccount) {
+      // Single-account live probe, even if `probe=0`. The admin explicitly
+      // asked about one account — give them fresh data.
+      const probe = await probeAccountScopes(focusAccount, {
+        workspaceId: context.workspaceId,
+        forceRefresh: true,
+      });
+      return NextResponse.json({ success: true, data: probe });
+    }
 
-  if (wantProbe) {
-    const result = await probeAllAccountScopes();
-    return NextResponse.json({ success: true, data: result });
-  }
+    if (wantProbe) {
+      const result = await probeAllAccountScopes(context.workspaceId);
+      return NextResponse.json({ success: true, data: result });
+    }
 
-  const cached = await listCachedAccountScopes();
-  return NextResponse.json({ success: true, data: cached });
+    const cached = await listCachedAccountScopes(context.workspaceId);
+    return NextResponse.json({ success: true, data: cached });
+  } catch (error: unknown) {
+    if (error instanceof CrossTenantAccessError) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: error.code,
+          error: error.message,
+        },
+        { status: 403 }
+      );
+    }
+    throw error;
+  }
 }

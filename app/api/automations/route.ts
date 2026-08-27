@@ -286,7 +286,12 @@ async function lockInboundKeywordAccount(
 }
 
 async function postAccessibilityError(
-  account: { id: string; username: string; accessToken: string },
+  account: {
+    id: string;
+    username: string;
+    workspaceId: string;
+    accessToken: string;
+  },
   postId: string,
   triggerType: "COMMENT" | "INBOUND_DM" = "COMMENT"
 ) {
@@ -297,7 +302,11 @@ async function postAccessibilityError(
       // COMMENT-trigger automations also need read access to the post's
       // comment stream — silently dead without instagram_business_manage_comments
       // (see logs-yoyaku-io/interventions/2026-08-27-openreply-slapfunk-reel-automation.md).
-      await assertCommentScope({ accountId: account.id, postId });
+      await assertCommentScope({
+        accountId: account.id,
+        workspaceId: account.workspaceId,
+        postId,
+      });
     }
     return null;
   } catch (error) {
@@ -776,6 +785,7 @@ export async function PATCH(request: NextRequest) {
         select: {
           id: true,
           username: true,
+          workspaceId: true,
           accessToken: true,
           scopes: true,
           archivedAt: true,
