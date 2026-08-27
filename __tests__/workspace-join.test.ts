@@ -10,7 +10,7 @@ const { mockPrisma } = vi.hoisted(() => ({
 
 vi.mock("@/lib/db/client", () => ({ prisma: mockPrisma }));
 
-import { ensureWorkspaceForUser } from "../lib/workspace";
+import { ensureWorkspaceForUser, getDomainWorkspaceName } from "../lib/workspace";
 
 const OLDEST = { id: "ws_oldest", name: "b's workspace", ownerId: "user_b" };
 
@@ -77,5 +77,87 @@ describe("single-organization workspace join", () => {
 
     expect(workspace.id).toBe("ws_mine");
     expect(mockPrisma.workspaceMember.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe("domain-routed workspace join", () => {
+  const OBJECTS = { id: "ws_objects", name: "Objects Presswerk" };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockPrisma.workspaceInvitation.findMany.mockResolvedValue([]);
+    mockPrisma.workspaceMember.findFirst.mockResolvedValue(null);
+    mockPrisma.workspaceMember.upsert.mockResolvedValue({});
+    vi.stubEnv("AUTH_JOIN_EXISTING_WORKSPACE", "true");
+    vi.stubEnv("AUTH_DOMAIN_WORKSPACES", "objects.press=Objects Presswerk");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("routes a mapped email domain to the named workspace", async () => {
+    mockPrisma.workspace.findFirst.mockImplementation(
+      async ({ where }: { where?: { name?: string } }) =>
+        where?.name === OBJECTS.name ? OBJECTS : OLDEST
+    );
+
+    const workspace = await ensureWorkspaceForUser(
+      "user_ravi",
+      "ravi@objects.press"
+    );
+
+    expect(workspace.id).toBe("ws_objects");
+    expect(mockPrisma.workspaceMember.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          workspaceId: "ws_objects",
+          userId: "user_ravi",
+          role: "MEMBER",
+        }),
+      })
+    );
+  });
+
+  it("falls back to the oldest workspace when the mapped one is missing", async () => {
+    mockPrisma.workspace.findFirst.mockResolvedValue(OLDEST);
+
+    const workspace = await ensureWorkspaceForUser(
+      "user_ravi",
+      "ravi@objects.press"
+    );
+
+    expect(workspace.id).toBe("ws_oldest");
+  });
+
+  it("keeps the oldest-workspace default for unmapped domains", async () => {
+    mockPrisma.workspace.findFirst.mockResolvedValue(OLDEST);
+
+    const workspace = await ensureWorkspaceForUser(
+      "user_anna",
+      "anna@yoyaku.fr"
+    );
+
+    expect(workspace.id).toBe("ws_oldest");
+  });
+
+  it("parses AUTH_DOMAIN_WORKSPACES case-insensitively and skips bad pairs", () => {
+    vi.stubEnv(
+      "AUTH_DOMAIN_WORKSPACES",
+      " Objects.Press = Objects Presswerk , malformed ,a.com=Alpha"
+    );
+
+    expect(getDomainWorkspaceName("ravi@objects.press")).toBe(
+      "Objects Presswerk"
+    );
+    expect(getDomainWorkspaceName("x@a.com")).toBe("Alpha");
+    expect(getDomainWorkspaceName("anna@yoyaku.fr")).toBeNull();
+    expect(getDomainWorkspaceName(null)).toBeNull();
+  });
+
+  it("returns no mapping when the env is absent", () => {
+    vi.stubEnv("AUTH_DOMAIN_WORKSPACES", "");
+
+    expect(getDomainWorkspaceName("ravi@objects.press")).toBeNull();
   });
 });
