@@ -134,6 +134,17 @@ model InstagramAccount {
   accessToken       String
   tokenExpiresAt    DateTime?
   webhookSubscribed Boolean  @default(false)
+  /// OAuth scopes granted at token issue, populated at callback via
+  /// debug_token and refreshed by the /api/health probe. Capturing them here
+  /// turns the silent "scope missing" failure mode into a visible drift signal
+  /// instead of letting COMMENT automations die without explanation.
+  scopes            String[] @default([])
+  lastScopeProbeAt  DateTime?
+  /// Soft-delete marker for the Phase-4 audit of legacy automations (e.g.
+  /// the 45 zombies on @yoyakurecordstore). A row with archivedAt set is
+  /// excluded from /api/health and the automation create-time scope check,
+  /// but is kept on disk so audit reports still surface the historical truth.
+  archivedAt        DateTime?
   connectedAt       DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -146,6 +157,7 @@ model InstagramAccount {
   savConversationFences SavConversationFence[]
 
   @@index([workspaceId])
+  @@index([archivedAt])
 }
 
 /// Daily follower total for one account. Instagram only retains ~30 days of

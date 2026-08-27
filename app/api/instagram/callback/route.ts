@@ -3,7 +3,12 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
 import { getBaseUrl } from "@/lib/env";
 import { canConnectInstagramAccount } from "@/lib/instagram-accounts";
-import { getLongLivedToken, getUserInfo, subscribeInstagramAccountToWebhooks } from "@/lib/meta/client";
+import {
+  debugToken,
+  getLongLivedToken,
+  getUserInfo,
+  subscribeInstagramAccountToWebhooks,
+} from "@/lib/meta/client";
 import {
   encryptToken,
   exchangeCodeForToken,
@@ -83,6 +88,31 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Probe scopes via debug_token at connect time so the scope list is
+    // captured immediately, instead of waiting for the next /api/health sweep.
+    // debug_token requires an admin/app token to inspect another token — for
+    // self-debug, Meta accepts the same long-lived token in both slots on the
+    // Instagram Login flow. If Meta rejects it, we record the probe attempt
+    // timestamp anyway so /api/health knows it is fresh and can fall back to
+    // an app-token probe later.
+    let probeScopes: string[] = [];
+    let probeAt: Date | null = null;
+    try {
+      const probed = (await debugToken(longLivedToken, longLivedToken)) as {
+        data?: { scopes?: string[] };
+      };
+      const raw = probed?.data?.scopes;
+      if (Array.isArray(raw)) {
+        probeScopes = raw;
+        probeAt = new Date();
+      }
+    } catch (probeError) {
+      console.warn(
+        "[Instagram Callback] debug_token probe failed:",
+        probeError instanceof Error ? probeError.message : probeError
+      );
+    }
+
     await prisma.instagramAccount.upsert({
       where: { instagramId },
       create: {
@@ -93,6 +123,8 @@ export async function GET(request: NextRequest) {
         accessToken: encryptedToken,
         tokenExpiresAt,
         webhookSubscribed,
+        scopes: probeScopes,
+        lastScopeProbeAt: probeAt,
       },
       update: {
         workspaceId: state.workspaceId,
@@ -101,6 +133,12 @@ export async function GET(request: NextRequest) {
         accessToken: encryptedToken,
         tokenExpiresAt,
         webhookSubscribed,
+        scopes: probeScopes,
+        lastScopeProbeAt: probeAt,
+        // Re-connecting a previously archived account clears the soft-delete
+        // marker so it rejoins the health sweep and the automation create-time
+        // scope check.
+        archivedAt: null,
       },
     });
 
