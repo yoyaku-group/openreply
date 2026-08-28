@@ -29,6 +29,28 @@ const CTA_BY_WORKSPACE: Record<CalendarIntent["workspace_key"], ReadonlySet<stri
   objects: new Set(["PRESSING", "QUOTE", "DEVIS"]),
 };
 
+const DEFAULT_DESTINATION_DOMAINS: Record<CalendarIntent["workspace_key"], string[]> = {
+  yoyaku: ["yoyaku.io", "yoyaku.fr", "yy.link", "shotgun.live"],
+  objects: ["objects.press"],
+};
+
+function destinationDomains(workspaceKey: CalendarIntent["workspace_key"]): string[] {
+  const configured = String(
+    process.env[`CALENDAR_DESTINATION_HOSTS_${workspaceKey.toUpperCase()}`] || ""
+  )
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean);
+  return [...new Set([...DEFAULT_DESTINATION_DOMAINS[workspaceKey], ...configured])];
+}
+
+function destinationAllowed(url: string, workspaceKey: CalendarIntent["workspace_key"]): boolean {
+  const hostname = new URL(url).hostname.toLowerCase();
+  return destinationDomains(workspaceKey).some(
+    (domain) => hostname === domain || hostname.endsWith(`.${domain}`)
+  );
+}
+
 export function normalizeCalendarIntent(value: unknown): CalendarIntent | null {
   const parsed = calendarIntentSchema.safeParse(value);
   if (!parsed.success) return null;
@@ -41,6 +63,7 @@ export function normalizeCalendarIntent(value: unknown): CalendarIntent | null {
   if (!CTA_BY_WORKSPACE[intent.workspace_key].has(intent.cta_keyword)) return null;
   const expectedSender = intent.workspace_key === "objects" ? "objects.press" : "yoyakurecordstore";
   if (intent.account_owner !== expectedSender) return null;
+  if (!destinationAllowed(intent.destination_url, intent.workspace_key)) return null;
   return intent;
 }
 
@@ -49,10 +72,39 @@ export function parseCalendarWorkspaceIds(raw = process.env.CALENDAR_WORKSPACE_I
   const result = new Map<"yoyaku" | "objects", string>();
   for (const pair of raw.split(",")) {
     const [key, id, ...extra] = pair.split("=").map((part) => part.trim());
-    if (extra.length || !id || (key !== "yoyaku" && key !== "objects")) continue;
+    if (
+      extra.length ||
+      !/^[a-zA-Z0-9_-]{10,}$/.test(id || "") ||
+      /change[_-]?me/i.test(id) ||
+      (key !== "yoyaku" && key !== "objects")
+    ) continue;
     result.set(key, id);
   }
   return result;
+}
+
+export function calendarAutomationUpdateState(
+  existing: {
+    isActive: boolean;
+    postId: string | null;
+    keywords: string[];
+    destinationUrl: string | null;
+  },
+  intent: CalendarIntent
+) {
+  const postId = intent.external_id || null;
+  const materialChanged =
+    (existing.isActive && !postId) ||
+    existing.postId !== postId ||
+    existing.keywords.length !== 1 ||
+    existing.keywords[0] !== intent.cta_keyword ||
+    existing.destinationUrl !== intent.destination_url;
+  const isActive = existing.isActive && !materialChanged;
+  return {
+    isActive,
+    lifecycle: isActive ? "ACTIVE" : postId ? "READY" : "PLANNED",
+    materialChanged,
+  } as const;
 }
 
 export function calendarCampaignName(intent: CalendarIntent): string {

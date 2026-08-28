@@ -4,7 +4,6 @@ import DashboardShell from "@/components/dashboard-shell";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
 import {
-  ensureWorkspaceForUser,
   getHostWorkspaceTarget,
   listWorkspaceMemberships,
 } from "@/lib/workspace";
@@ -21,7 +20,6 @@ export default async function DashboardLayout({
     redirect("/login");
   }
 
-  await ensureWorkspaceForUser(session.user.id, session.user.email);
   const active = await getActiveWorkspace(session.user.id);
   if (!active) redirect("/login?error=AccessDenied");
   const workspace = active.workspace;
