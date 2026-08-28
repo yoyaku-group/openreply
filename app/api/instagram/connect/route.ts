@@ -1,15 +1,16 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { canManageWorkspace, getCurrentWorkspaceContext } from "@/lib/workspace-access";
-import { getBaseUrl, getMissingInstagramOAuthEnv } from "@/lib/env";
+import { getMissingInstagramOAuthEnv, getRequestBaseUrl } from "@/lib/env";
 import { createOAuthState, getAuthorizationUrl } from "@/lib/meta/oauth";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const baseUrl = getRequestBaseUrl(request);
   const context = await getCurrentWorkspaceContext();
   if (!context) {
-    return NextResponse.redirect(`${getBaseUrl()}/login`);
+    return NextResponse.redirect(`${baseUrl}/login`);
   }
   if (!canManageWorkspace(context.role)) {
-    return NextResponse.redirect(`${getBaseUrl()}/settings?instagram=forbidden`);
+    return NextResponse.redirect(`${baseUrl}/settings?instagram=forbidden`);
   }
 
   // getAuthorizationUrl and createOAuthState call requireEnv, which throws.
@@ -18,13 +19,13 @@ export async function GET() {
   const missingEnv = getMissingInstagramOAuthEnv();
   if (missingEnv.length > 0) {
     return NextResponse.redirect(
-      `${getBaseUrl()}/settings?instagram=misconfigured&missing=${encodeURIComponent(
+      `${baseUrl}/settings?instagram=misconfigured&missing=${encodeURIComponent(
         missingEnv.join(",")
       )}`
     );
   }
 
-  const redirectUri = `${getBaseUrl()}/api/instagram/callback`;
+  const redirectUri = `${baseUrl}/api/instagram/callback`;
   const state = createOAuthState(context.workspaceId);
 
   return NextResponse.redirect(getAuthorizationUrl(redirectUri, state));

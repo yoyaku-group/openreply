@@ -6,6 +6,8 @@ import {
   instoreDedupKey,
   type ShopProduct,
 } from "@/lib/release-sync/shop-feed";
+import { selectMediaForPendingAutomation } from "@/lib/release-sync/media-binding";
+import type { InstagramMedia } from "@/lib/meta/client";
 
 function product(overrides: Partial<ShopProduct>): ShopProduct {
   return {
@@ -102,5 +104,52 @@ describe("caption catno matching", () => {
   it("requires the hashtag form and a caption", () => {
     expect(captionMatchesCatno("TO001 without hash", "TO001")).toBe(false);
     expect(captionMatchesCatno(undefined, "TO001")).toBe(false);
+  });
+});
+
+describe("pending media binding", () => {
+  const createdAt = new Date("2026-08-01T10:00:00Z");
+  const reel = (
+    id: string,
+    timestamp: string,
+    caption?: string
+  ): InstagramMedia => ({
+    id,
+    timestamp,
+    caption,
+    media_type: "VIDEO",
+    media_product_type: "REELS",
+  });
+
+  it("fails closed when a SKU-tagged automation has no exact hashtag match", () => {
+    const media = [
+      reel("unrelated", "2026-08-02T10:00:00Z", "New reel #OTHER001"),
+    ];
+
+    expect(
+      selectMediaForPendingAutomation(media, createdAt, "TO001")
+    ).toBeUndefined();
+  });
+
+  it("binds a SKU-tagged automation only to its earliest exact match", () => {
+    const media = [
+      reel("later", "2026-08-03T10:00:00Z", "#TO001 out now"),
+      reel("earlier", "2026-08-02T10:00:00Z", "Preorder #to001"),
+    ];
+
+    expect(
+      selectMediaForPendingAutomation(media, createdAt, "TO001")?.id
+    ).toBe("earlier");
+  });
+
+  it("retains explicit next-reel behavior only without a SKU", () => {
+    const media = [
+      reel("next", "2026-08-02T10:00:00Z", "Instore announcement"),
+      reel("later", "2026-08-03T10:00:00Z", "Another reel"),
+    ];
+
+    expect(selectMediaForPendingAutomation(media, createdAt, null)?.id).toBe(
+      "next"
+    );
   });
 });

@@ -42,6 +42,7 @@ export const authConfig = {
     async session({ session, user }) {
       if (session.user) {
         session.user.id = user.id;
+        await ensureWorkspaceForUser(user.id, session.user.email);
       }
       return session;
     },
@@ -87,6 +88,7 @@ export async function getCurrentWorkspaceId(): Promise<string | null> {
     select: { email: true },
   });
 
-  const createdWorkspace = await ensureWorkspaceForUser(userId, user?.email);
-  return createdWorkspace.id;
+  await ensureWorkspaceForUser(userId, user?.email);
+  const reconciled = await getActiveWorkspace(userId);
+  return reconciled?.workspace.id ?? null;
 }

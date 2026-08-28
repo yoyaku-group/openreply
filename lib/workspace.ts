@@ -102,6 +102,69 @@ export function getDomainWorkspaceTarget(
 }
 
 /**
+ * Parses AUTH_DOMAIN_ADMIN_WORKSPACES:
+ * "yoyaku.fr=id:ws_y|id:ws_o,objects.press=id:ws_o".
+ */
+export function getDomainAdminWorkspaceTargets(email?: string | null): string[] {
+  const raw = process.env.AUTH_DOMAIN_ADMIN_WORKSPACES;
+  if (!raw || !email) return [];
+  const domain = email.split("@")[1]?.trim().toLowerCase();
+  if (!domain) return [];
+  for (const pair of raw.split(",")) {
+    const separator = pair.indexOf("=");
+    if (separator <= 0) continue;
+    if (pair.slice(0, separator).trim().toLowerCase() !== domain) continue;
+    return pair
+      .slice(separator + 1)
+      .split("|")
+      .map((target) => target.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+export function getHostWorkspaceTarget(host?: string | null): string | null {
+  const raw = process.env.OPENREPLY_HOST_WORKSPACES;
+  const hostname = String(host || "").split(":")[0].trim().toLowerCase();
+  if (!raw || !hostname) return null;
+  for (const pair of raw.split(",")) {
+    const separator = pair.indexOf("=");
+    if (separator <= 0) continue;
+    if (pair.slice(0, separator).trim().toLowerCase() === hostname) {
+      return pair.slice(separator + 1).trim() || null;
+    }
+  }
+  return null;
+}
+
+async function resolveWorkspaceTarget(target: string): Promise<Workspace | null> {
+  return prisma.workspace.findFirst({
+    where: target.startsWith("id:") ? { id: target.slice(3) } : { name: target },
+  });
+}
+
+/** Replays the domain policy on every session and never downgrades an OWNER. */
+export async function reconcileDomainAdminMemberships(
+  userId: string,
+  email?: string | null
+): Promise<void> {
+  for (const target of getDomainAdminWorkspaceTargets(email)) {
+    const workspace = await resolveWorkspaceTarget(target);
+    const domain = email?.split("@")[1]?.toLowerCase() ?? "configured domain";
+    if (!workspace) throw new DomainWorkspaceNotFoundError(domain);
+    const existing = await prisma.workspaceMember.findUnique({
+      where: { workspaceId_userId: { workspaceId: workspace.id, userId } },
+    });
+    if (existing?.role === "OWNER") continue;
+    await prisma.workspaceMember.upsert({
+      where: { workspaceId_userId: { workspaceId: workspace.id, userId } },
+      create: { workspaceId: workspace.id, userId, role: "ADMIN" },
+      update: { role: "ADMIN" },
+    });
+  }
+}
+
+/**
  * Single-organization mode for self-hosted instances: instead of provisioning
  * every new user their own empty OWNER workspace (upstream default, sensible
  * for a SaaS), a colleague passing the domain allowlist joins the oldest
@@ -158,6 +221,7 @@ export async function ensureWorkspaceForUser(
   email?: string | null
 ): Promise<Workspace> {
   await acceptPendingInvitationsForUser(userId, email);
+  await reconcileDomainAdminMemberships(userId, email);
 
   const existingMembership = await getWorkspaceMembership(userId);
   if (existingMembership) {
@@ -195,7 +259,8 @@ export async function getPrimaryWorkspace(userId: string): Promise<Workspace | n
  */
 export async function resolveActiveWorkspace(
   userId: string,
-  preferredWorkspaceId?: string | null
+  preferredWorkspaceId?: string | null,
+  requiredWorkspace = false
 ): Promise<{ workspace: Workspace; role: WorkspaceRole } | null> {
   if (preferredWorkspaceId) {
     const preferred = await prisma.workspaceMember.findFirst({
@@ -205,6 +270,7 @@ export async function resolveActiveWorkspace(
     if (preferred) {
       return { workspace: preferred.workspace, role: preferred.role };
     }
+    if (requiredWorkspace) return null;
   }
   return getWorkspaceMembership(userId);
 }
@@ -213,12 +279,21 @@ export async function resolveActiveWorkspace(
  * All workspaces the user belongs to, oldest first. Drives the switcher UI.
  */
 export async function listWorkspaceMemberships(
-  userId: string
+  userId: string,
+  pinnedWorkspaceId?: string | null
 ): Promise<{ id: string; name: string }[]> {
   const memberships = await prisma.workspaceMember.findMany({
-    where: { userId },
+    where: { userId, ...(pinnedWorkspaceId ? { workspaceId: pinnedWorkspaceId } : {}) },
     include: { workspace: { select: { id: true, name: true } } },
     orderBy: { createdAt: "asc" },
   });
   return memberships.map((membership) => membership.workspace);
+}
+
+export async function resolveHostWorkspaceId(host?: string | null): Promise<string | null> {
+  const target = getHostWorkspaceTarget(host);
+  if (!target) return null;
+  const workspace = await resolveWorkspaceTarget(target);
+  if (!workspace) throw new DomainWorkspaceNotFoundError(String(host || "host"));
+  return workspace.id;
 }

@@ -352,7 +352,7 @@ export async function GET(request: NextRequest) {
       : {};
 
   const automations = await prisma.automation.findMany({
-    where: { workspaceId, ...accountFilter },
+    where: { workspaceId, lifecycle: { not: "ARCHIVED" }, ...accountFilter },
     include: {
       instagramAccount: {
         select: { username: true, instagramId: true },
@@ -802,6 +802,20 @@ export async function PATCH(request: NextRequest) {
   }
 
   if (
+    existing.source === "CALENDAR" &&
+    parsed.data.isActive === true &&
+    (!existing.postId || existing.lifecycle !== "READY")
+  ) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: "Calendar campaign is waiting for exact Meta publication proof",
+      },
+      { status: 409 }
+    );
+  }
+
+  if (
     (parsed.data.triggerType ?? existing.triggerType) !== "INBOUND_DM" &&
     (parsed.data.isActive ?? existing.isActive) &&
     existing.instagramAccount.archivedAt === null
@@ -884,6 +898,10 @@ export async function PATCH(request: NextRequest) {
     secondaryButtonLabel,
     ...automationData
   } = parsed.data;
+  const lifecycleData =
+    existing.source === "CALENDAR" && parsed.data.isActive !== undefined
+      ? { lifecycle: parsed.data.isActive ? "ACTIVE" : "READY" }
+      : {};
 
   if (effectiveConfiguration.triggerType === "INBOUND_DM") {
     Object.assign(automationData, inboundDmOnlyFields());
@@ -940,7 +958,7 @@ export async function PATCH(request: NextRequest) {
       return {
         updated: await tx.automation.update({
           where: { id: automationId },
-          data: automationData,
+          data: { ...automationData, ...lifecycleData },
         }),
         conflicts: [] as InboundKeywordConflicts,
       };
@@ -952,7 +970,7 @@ export async function PATCH(request: NextRequest) {
   } else {
     updated = await prisma.automation.update({
       where: { id: automationId },
-      data: automationData,
+      data: { ...automationData, ...lifecycleData },
     });
   }
 

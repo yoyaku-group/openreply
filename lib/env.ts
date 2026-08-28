@@ -18,6 +18,18 @@ export function getBaseUrl(): string {
   return process.env.NEXTAUTH_URL ?? "http://localhost:3000";
 }
 
+export function getRequestBaseUrl(request: { nextUrl: URL }): string {
+  const allowed = new Set(
+    String(process.env.OPENREPLY_ALLOWED_HOSTS || "")
+      .split(",")
+      .map((host) => host.trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const hostname = request.nextUrl.hostname.toLowerCase();
+  if (allowed.has(hostname)) return request.nextUrl.origin;
+  return getBaseUrl();
+}
+
 export function getEncryptionKeyHex(): string {
   const value = readEnv("ENCRYPTION_KEY");
   if (!HEX_32_BYTE.test(value)) {

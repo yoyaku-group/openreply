@@ -192,8 +192,8 @@ model Automation {
   postUrl        String?
   pendingNextReel Boolean @default(false)
   /// Catalogue number for deterministic post binding: when set, the attach
-  /// cron binds this campaign to the first media whose caption contains
-  /// #<catnoTag> (any media type), falling back to next-reel behavior.
+  /// cron binds this campaign only to media whose caption contains
+  /// #<catnoTag>. Missing exact matches fail closed.
   catnoTag       String?
   matchAnyPost   Boolean @default(false)
   keywords       String[]
@@ -216,6 +216,17 @@ model Automation {
   reportShareSlug    String? @unique
   reportShareEnabled Boolean @default(true)
 
+  /// Durable provenance. Calendar campaigns are review drafts until a human
+  /// activates them; legacy release-sync drafts are soft-archived, never erased.
+  source              String   @default("MANUAL")
+  lifecycle           String   @default("ACTIVE")
+  publicationKey      String?  @unique
+  calendarEventId     String?
+  calendarScheduledAt DateTime?
+  sourceWorkspaceKey  String?
+  archivedAt          DateTime?
+  archivedReason      String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -229,6 +240,8 @@ model Automation {
   @@index([instagramAccountId])
   @@index([instagramAccountId, triggerType, isActive])
   @@index([postId])
+  @@index([source, lifecycle])
+  @@index([calendarEventId])
 }
 
 model DmLog {
