@@ -143,15 +143,22 @@ async function resolveWorkspaceTarget(target: string): Promise<Workspace | null>
   });
 }
 
-/** Replays the domain policy on every session and never downgrades an OWNER. */
+/** Applies the domain policy at sign-in and never downgrades an OWNER. */
 export async function reconcileDomainAdminMemberships(
   userId: string,
   email?: string | null
-): Promise<void> {
+): Promise<string[]> {
+  const missingTargets: string[] = [];
   for (const target of getDomainAdminWorkspaceTargets(email)) {
     const workspace = await resolveWorkspaceTarget(target);
-    const domain = email?.split("@")[1]?.toLowerCase() ?? "configured domain";
-    if (!workspace) throw new DomainWorkspaceNotFoundError(domain);
+    if (!workspace) {
+      missingTargets.push(target);
+      console.error("[workspace-policy] configured ADMIN workspace was not found", {
+        target,
+        domain: email?.split("@")[1]?.toLowerCase() ?? "configured domain",
+      });
+      continue;
+    }
     const existing = await prisma.workspaceMember.findUnique({
       where: { workspaceId_userId: { workspaceId: workspace.id, userId } },
     });
@@ -162,6 +169,7 @@ export async function reconcileDomainAdminMemberships(
       update: { role: "ADMIN" },
     });
   }
+  return missingTargets;
 }
 
 /**

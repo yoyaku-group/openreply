@@ -42,13 +42,17 @@ export const authConfig = {
     async session({ session, user }) {
       if (session.user) {
         session.user.id = user.id;
-        await ensureWorkspaceForUser(user.id, session.user.email);
       }
       return session;
     },
   },
   events: {
     async createUser({ user }) {
+      if (user.id) {
+        await ensureWorkspaceForUser(user.id, user.email);
+      }
+    },
+    async signIn({ user }) {
       if (user.id) {
         await ensureWorkspaceForUser(user.id, user.email);
       }

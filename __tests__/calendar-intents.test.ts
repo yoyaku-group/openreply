@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  calendarAutomationUpdateState,
   calendarCampaignName,
   normalizeCalendarIntent,
   parseCalendarWorkspaceIds,
@@ -42,11 +43,56 @@ describe("calendar intent contract", () => {
       normalizeCalendarIntent({ ...base, workspace_key: "objects", account_owner: "objects.press", cta_keyword: "LINK" })
     ).toBeNull();
     expect(normalizeCalendarIntent({ ...base, destination_url: "http://unsafe.test" })).toBeNull();
+    expect(normalizeCalendarIntent({ ...base, destination_url: "https://phishing.test/release" })).toBeNull();
+    expect(normalizeCalendarIntent({ ...base, destination_url: "https://shotgun.live/events/test" })).not.toBeNull();
+    expect(normalizeCalendarIntent({
+      ...base,
+      workspace_key: "objects",
+      account_owner: "objects.press",
+      cta_keyword: "PRESSING",
+      destination_url: "https://configurator.objects.press/start",
+    })).not.toBeNull();
   });
 
   it("requires stable mappings for both named tenants", () => {
     expect(
-      parseCalendarWorkspaceIds("yoyaku=ws_y,objects=ws_o,broken,foo=bar")
-    ).toEqual(new Map([["yoyaku", "ws_y"], ["objects", "ws_o"]]));
+      parseCalendarWorkspaceIds("yoyaku=ws_yoyaku_123,objects=ws_objects_456,broken,foo=bar")
+    ).toEqual(new Map([["yoyaku", "ws_yoyaku_123"], ["objects", "ws_objects_456"]]));
+    expect(parseCalendarWorkspaceIds("yoyaku=CHANGE_ME,objects=short")).toEqual(new Map());
+  });
+
+  it("deactivates a live campaign when a material intent changes", () => {
+    const intent = normalizeCalendarIntent(base)!;
+    expect(calendarAutomationUpdateState({
+      isActive: true,
+      postId: null,
+      keywords: ["LINK"],
+      destinationUrl: base.destination_url,
+    }, intent)).toEqual({ isActive: false, lifecycle: "PLANNED", materialChanged: true });
+
+    expect(calendarAutomationUpdateState({
+      isActive: true,
+      postId: null,
+      keywords: ["LINK"],
+      destinationUrl: "https://yoyaku.io/release/old/",
+    }, intent)).toEqual({ isActive: false, lifecycle: "PLANNED", materialChanged: true });
+
+    const published = normalizeCalendarIntent({
+      ...base,
+      external_id: "media-123",
+      published_url: "https://www.instagram.com/p/example/",
+    })!;
+    expect(calendarAutomationUpdateState({
+      isActive: true,
+      postId: "media-123",
+      keywords: ["LINK"],
+      destinationUrl: base.destination_url,
+    }, published)).toEqual({ isActive: true, lifecycle: "ACTIVE", materialChanged: false });
+    expect(calendarAutomationUpdateState({
+      isActive: true,
+      postId: "media-old",
+      keywords: ["LINK"],
+      destinationUrl: base.destination_url,
+    }, published)).toEqual({ isActive: false, lifecycle: "READY", materialChanged: true });
   });
 });

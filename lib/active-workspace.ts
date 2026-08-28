@@ -2,6 +2,8 @@ import { cookies, headers } from "next/headers";
 import type { Workspace, WorkspaceRole } from "@/app/generated/prisma/client";
 import {
   ACTIVE_WORKSPACE_COOKIE,
+  DomainWorkspaceNotFoundError,
+  getHostWorkspaceTarget,
   resolveActiveWorkspace,
   resolveHostWorkspaceId,
 } from "@/lib/workspace";
@@ -16,7 +18,15 @@ export async function getActiveWorkspace(
 ): Promise<{ workspace: Workspace; role: WorkspaceRole } | null> {
   const store = await cookies();
   const headerStore = await headers();
-  const pinnedWorkspaceId = await resolveHostWorkspaceId(headerStore.get("host"));
+  const host = headerStore.get("host");
+  const hostPinned = Boolean(getHostWorkspaceTarget(host));
+  let pinnedWorkspaceId: string | null = null;
+  try {
+    pinnedWorkspaceId = await resolveHostWorkspaceId(host);
+  } catch (error) {
+    if (error instanceof DomainWorkspaceNotFoundError && hostPinned) return null;
+    throw error;
+  }
   const preferred = pinnedWorkspaceId ?? store.get(ACTIVE_WORKSPACE_COOKIE)?.value ?? null;
-  return resolveActiveWorkspace(userId, preferred, Boolean(pinnedWorkspaceId));
+  return resolveActiveWorkspace(userId, preferred, hostPinned);
 }

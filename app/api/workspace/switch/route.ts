@@ -5,6 +5,7 @@ import { getCurrentUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
 import {
   ACTIVE_WORKSPACE_COOKIE,
+  DomainWorkspaceNotFoundError,
   resolveHostWorkspaceId,
 } from "@/lib/workspace";
 
@@ -29,7 +30,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const pinnedWorkspaceId = await resolveHostWorkspaceId(request.headers.get("host"));
+  let pinnedWorkspaceId: string | null;
+  try {
+    pinnedWorkspaceId = await resolveHostWorkspaceId(request.headers.get("host"));
+  } catch (error) {
+    if (error instanceof DomainWorkspaceNotFoundError) {
+      return NextResponse.json(
+        { success: false, error: "This host is not configured correctly" },
+        { status: 503 }
+      );
+    }
+    throw error;
+  }
   if (pinnedWorkspaceId && parsed.data.workspaceId !== pinnedWorkspaceId) {
     return NextResponse.json(
       { success: false, error: "This host is pinned to another workspace" },

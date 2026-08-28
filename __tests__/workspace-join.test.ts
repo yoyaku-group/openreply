@@ -209,6 +209,16 @@ describe("automatic domain ADMIN policy", () => {
     expect(mockPrisma.workspaceMember.upsert).not.toHaveBeenCalled();
   });
 
+  it("reports a missing ADMIN target without breaking sign-in", async () => {
+    mockPrisma.workspace.findFirst.mockResolvedValue(null);
+    const missing = await reconcileDomainAdminMemberships(
+      "user_gabrielle",
+      "gabrielle@yoyaku.fr"
+    );
+    expect(missing).toEqual(["id:ws_yoyaku", "id:ws_objects"]);
+    expect(mockPrisma.workspaceMember.upsert).not.toHaveBeenCalled();
+  });
+
   it("parses domain and host policies case-insensitively", () => {
     vi.stubEnv("OPENREPLY_HOST_WORKSPACES", "OpenReply.Objects.Press=id:ws_objects");
     expect(getDomainAdminWorkspaceTargets("g@yoyaku.fr")).toEqual([
