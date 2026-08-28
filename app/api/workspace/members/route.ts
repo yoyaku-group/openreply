@@ -14,12 +14,12 @@ import {
 
 const inviteSchema = z.object({
   email: z.string().email(),
-  role: z.enum(["ADMIN", "MEMBER"]).default("MEMBER"),
+  role: z.enum(["ADMIN", "EDITOR", "MEMBER"]).default("MEMBER"),
 });
 
 const updateMemberSchema = z.object({
   memberId: z.string().min(1),
-  role: z.enum(["ADMIN", "MEMBER"]),
+  role: z.enum(["ADMIN", "EDITOR", "MEMBER"]),
 });
 
 const deleteSchema = z.object({
@@ -29,7 +29,7 @@ const deleteSchema = z.object({
 
 async function getMemberPayload(
   workspaceId: string,
-  currentUserRole?: "OWNER" | "ADMIN" | "MEMBER"
+  currentUserRole?: "OWNER" | "ADMIN" | "EDITOR" | "MEMBER"
 ) {
   const [members, invitations] = await Promise.all([
     prisma.workspaceMember.findMany({

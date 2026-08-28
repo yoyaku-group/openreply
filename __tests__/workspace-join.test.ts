@@ -10,7 +10,11 @@ const { mockPrisma } = vi.hoisted(() => ({
 
 vi.mock("@/lib/db/client", () => ({ prisma: mockPrisma }));
 
-import { ensureWorkspaceForUser, getDomainWorkspaceName } from "../lib/workspace";
+import {
+  DomainWorkspaceNotFoundError,
+  ensureWorkspaceForUser,
+  getDomainWorkspaceTarget,
+} from "../lib/workspace";
 
 const OLDEST = { id: "ws_oldest", name: "b's workspace", ownerId: "user_b" };
 
@@ -89,7 +93,7 @@ describe("domain-routed workspace join", () => {
     mockPrisma.workspaceMember.findFirst.mockResolvedValue(null);
     mockPrisma.workspaceMember.upsert.mockResolvedValue({});
     vi.stubEnv("AUTH_JOIN_EXISTING_WORKSPACE", "true");
-    vi.stubEnv("AUTH_DOMAIN_WORKSPACES", "objects.press=Objects Presswerk");
+    vi.stubEnv("AUTH_DOMAIN_WORKSPACES", "objects.press=id:ws_objects");
   });
 
   afterEach(() => {
@@ -98,8 +102,8 @@ describe("domain-routed workspace join", () => {
 
   it("routes a mapped email domain to the named workspace", async () => {
     mockPrisma.workspace.findFirst.mockImplementation(
-      async ({ where }: { where?: { name?: string } }) =>
-        where?.name === OBJECTS.name ? OBJECTS : OLDEST
+      async ({ where }: { where?: { id?: string } }) =>
+        where?.id === OBJECTS.id ? OBJECTS : OLDEST
     );
 
     const workspace = await ensureWorkspaceForUser(
@@ -113,21 +117,19 @@ describe("domain-routed workspace join", () => {
         create: expect.objectContaining({
           workspaceId: "ws_objects",
           userId: "user_ravi",
-          role: "MEMBER",
+          role: "EDITOR",
         }),
       })
     );
   });
 
-  it("falls back to the oldest workspace when the mapped one is missing", async () => {
-    mockPrisma.workspace.findFirst.mockResolvedValue(OLDEST);
+  it("fails closed when the mapped workspace is missing", async () => {
+    mockPrisma.workspace.findFirst.mockResolvedValue(null);
 
-    const workspace = await ensureWorkspaceForUser(
-      "user_ravi",
-      "ravi@objects.press"
-    );
-
-    expect(workspace.id).toBe("ws_oldest");
+    await expect(
+      ensureWorkspaceForUser("user_ravi", "ravi@objects.press")
+    ).rejects.toBeInstanceOf(DomainWorkspaceNotFoundError);
+    expect(mockPrisma.workspaceMember.upsert).not.toHaveBeenCalled();
   });
 
   it("keeps the oldest-workspace default for unmapped domains", async () => {
@@ -144,20 +146,18 @@ describe("domain-routed workspace join", () => {
   it("parses AUTH_DOMAIN_WORKSPACES case-insensitively and skips bad pairs", () => {
     vi.stubEnv(
       "AUTH_DOMAIN_WORKSPACES",
-      " Objects.Press = Objects Presswerk , malformed ,a.com=Alpha"
+      " Objects.Press = id:ws_objects , malformed ,a.com=Alpha"
     );
 
-    expect(getDomainWorkspaceName("ravi@objects.press")).toBe(
-      "Objects Presswerk"
-    );
-    expect(getDomainWorkspaceName("x@a.com")).toBe("Alpha");
-    expect(getDomainWorkspaceName("anna@yoyaku.fr")).toBeNull();
-    expect(getDomainWorkspaceName(null)).toBeNull();
+    expect(getDomainWorkspaceTarget("ravi@objects.press")).toBe("id:ws_objects");
+    expect(getDomainWorkspaceTarget("x@a.com")).toBe("Alpha");
+    expect(getDomainWorkspaceTarget("anna@yoyaku.fr")).toBeNull();
+    expect(getDomainWorkspaceTarget(null)).toBeNull();
   });
 
   it("returns no mapping when the env is absent", () => {
     vi.stubEnv("AUTH_DOMAIN_WORKSPACES", "");
 
-    expect(getDomainWorkspaceName("ravi@objects.press")).toBeNull();
+    expect(getDomainWorkspaceTarget("ravi@objects.press")).toBeNull();
   });
 });

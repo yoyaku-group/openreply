@@ -5,7 +5,7 @@ import { getWorkspaceInstagramAccount } from "@/lib/instagram-accounts";
 import { generateReportShareSlug } from "@/lib/reports/share";
 import { generateTrackedLinkSlug } from "@/lib/tracking/server";
 import {
-  canManageWorkspace,
+  canManageCampaigns,
   getCurrentWorkspaceContext,
 } from "@/lib/workspace-access";
 
@@ -35,9 +35,9 @@ export async function POST(request: NextRequest) {
       { status: 401 }
     );
   }
-  if (!canManageWorkspace(context.role)) {
+  if (!canManageCampaigns(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only owners and admins can import campaigns" },
+      { success: false, error: "Only editors, admins, and owners can import campaigns" },
       { status: 403 }
     );
   }

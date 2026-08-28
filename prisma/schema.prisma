@@ -429,6 +429,7 @@ model OperationalEvent {
 enum WorkspaceRole {
   OWNER
   ADMIN
+  EDITOR
   MEMBER
 }
 

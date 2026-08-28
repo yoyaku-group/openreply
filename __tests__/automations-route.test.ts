@@ -32,7 +32,7 @@ vi.mock("@/lib/workspace-access", () => ({
     workspaceId: "workspace_1",
     role: "OWNER",
   })),
-  canManageWorkspace: vi.fn(() => true),
+  canManageCampaigns: vi.fn(() => true),
 }));
 vi.mock("@/lib/meta/client", () => ({ getMediaById: mockGetMediaById }));
 vi.mock("@/lib/meta/oauth", () => ({ decryptToken: mockDecryptToken }));

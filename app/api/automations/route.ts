@@ -15,7 +15,7 @@ import {
   assertCommentScope,
 } from "@/lib/meta/scope-check";
 import {
-  canManageWorkspace,
+  canManageCampaigns,
   getCurrentWorkspaceContext,
 } from "@/lib/workspace-access";
 
@@ -526,9 +526,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!canManageWorkspace(context.role)) {
+  if (!canManageCampaigns(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only owners and admins can create campaigns" },
+      { success: false, error: "Only editors, admins, and owners can create campaigns" },
       { status: 403 }
     );
   }
@@ -747,9 +747,9 @@ export async function PATCH(request: NextRequest) {
     );
   }
 
-  if (!canManageWorkspace(context.role)) {
+  if (!canManageCampaigns(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only owners and admins can update campaigns" },
+      { success: false, error: "Only editors, admins, and owners can update campaigns" },
       { status: 403 }
     );
   }
@@ -1031,9 +1031,9 @@ export async function DELETE(request: NextRequest) {
     );
   }
 
-  if (!canManageWorkspace(context.role)) {
+  if (!canManageCampaigns(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only owners and admins can delete campaigns" },
+      { success: false, error: "Only editors, admins, and owners can delete campaigns" },
       { status: 403 }
     );
   }
