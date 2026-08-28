@@ -25,10 +25,25 @@ export async function POST(request: NextRequest) {
   const instagramAccountId =
     typeof body.instagramAccountId === "string" ? body.instagramAccountId : null;
 
+  // Guard (incident 2026-08-27): without this, an empty-body POST deleted
+  // EVERY account of the workspace — cascading to automations, DM logs and
+  // tracked links. The UI always sends the id; only raw calls ever hit the
+  // unfiltered branch. One account per call, never a workspace wipe.
+  if (!instagramAccountId) {
+    return NextResponse.json(
+      {
+        success: false,
+        error:
+          "instagramAccountId is required — disconnect one account at a time",
+      },
+      { status: 400 }
+    );
+  }
+
   await prisma.instagramAccount.deleteMany({
     where: {
       workspaceId: context.workspaceId,
-      ...(instagramAccountId ? { id: instagramAccountId } : {}),
+      id: instagramAccountId,
     },
   });
 
