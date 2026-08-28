@@ -1,19 +1,30 @@
 import { NextResponse } from "next/server";
-import { getCurrentWorkspaceId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
 import { getDMQueue } from "@/lib/queue/client";
 import { getWorkerAlerts, getWorkerHealth } from "@/lib/ops/worker-health";
+import {
+  canViewGlobalDiagnostics,
+  getCurrentWorkspaceContext,
+} from "@/lib/workspace-access";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  const workspaceId = await getCurrentWorkspaceId();
-  if (!workspaceId) {
+  const context = await getCurrentWorkspaceContext();
+  if (!context) {
     return NextResponse.json(
       { success: false, error: "Unauthorized" },
       { status: 401 }
     );
   }
+  if (!canViewGlobalDiagnostics(context.role)) {
+    return NextResponse.json(
+      { success: false, error: "Only workspace owners can read global diagnostics" },
+      { status: 403 }
+    );
+  }
+
+  const { workspaceId } = context;
 
   const [
     queueCounts,
