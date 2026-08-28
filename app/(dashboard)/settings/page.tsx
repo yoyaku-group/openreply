@@ -25,10 +25,10 @@ interface SettingsData {
 }
 
 interface WorkspaceMembersData {
-  currentUserRole: "OWNER" | "ADMIN" | "MEMBER";
+  currentUserRole: "OWNER" | "ADMIN" | "EDITOR" | "MEMBER";
   members: Array<{
     id: string;
-    role: "OWNER" | "ADMIN" | "MEMBER";
+    role: "OWNER" | "ADMIN" | "EDITOR" | "MEMBER";
     createdAt: string;
     user: {
       id: string;
@@ -39,7 +39,7 @@ interface WorkspaceMembersData {
   invitations: Array<{
     id: string;
     email: string;
-    role: "OWNER" | "ADMIN" | "MEMBER";
+    role: "OWNER" | "ADMIN" | "EDITOR" | "MEMBER";
     inviteUrl: string;
     expiresAt: string;
   }>;
@@ -53,7 +53,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"ADMIN" | "MEMBER">("MEMBER");
+  const [inviteRole, setInviteRole] = useState<"ADMIN" | "EDITOR" | "MEMBER">("MEMBER");
   const [memberError, setMemberError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -126,6 +126,7 @@ export default function SettingsPage() {
   const canManageMembers =
     membersData?.currentUserRole === "OWNER" ||
     membersData?.currentUserRole === "ADMIN";
+  const canManageInstagram = canManageMembers;
 
   return (
     <div className="max-w-2xl mx-auto space-y-8">
@@ -194,7 +195,7 @@ export default function SettingsPage() {
                     · {account.webhookSubscribed ? "Webhook ready" : "Webhook pending"}
                   </p>
                 </div>
-                <button
+                {canManageInstagram && <button
                   onClick={() => disconnectInstagram(account.id)}
                   disabled={busy === `disconnect:${account.id}`}
                   className="inline-flex items-center justify-center rounded border border-error/20 px-4 py-2 text-sm font-medium text-error transition-all hover:border-error/40 hover:bg-error/10 disabled:opacity-50"
@@ -202,20 +203,20 @@ export default function SettingsPage() {
                   {busy === `disconnect:${account.id}`
                     ? "Disconnecting..."
                     : "Disconnect"}
-                </button>
+                </button>}
               </div>
             ))}
           </div>
         </div>
 
-        <div className="mt-6 pt-4 border-t border-border flex gap-3">
+        {canManageInstagram && <div className="mt-6 pt-4 border-t border-border flex gap-3">
           <a
             href="/api/instagram/connect"
             className="px-4 py-2 rounded text-sm font-medium transition-colors bg-accent text-white hover:bg-accent-hover"
           >
             {accounts.length > 0 ? "Connect another account" : "Connect Instagram"}
           </a>
-        </div>
+        </div>}
       </section>
 
       <section className="panel rounded p-6">
@@ -299,11 +300,12 @@ export default function SettingsPage() {
             <select
               value={inviteRole}
               onChange={(event) =>
-                setInviteRole(event.target.value as "ADMIN" | "MEMBER")
+                setInviteRole(event.target.value as "ADMIN" | "EDITOR" | "MEMBER")
               }
               className="rounded border border-border bg-surface px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-accent/40"
             >
               <option value="MEMBER">Member</option>
+              <option value="EDITOR">Campaign editor</option>
               <option value="ADMIN">Admin</option>
             </select>
             <button

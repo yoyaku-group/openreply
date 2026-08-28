@@ -13,8 +13,9 @@ export type WorkspaceContext = {
 
 const ROLE_ORDER: Record<WorkspaceRole, number> = {
   MEMBER: 1,
-  ADMIN: 2,
-  OWNER: 3,
+  EDITOR: 2,
+  ADMIN: 3,
+  OWNER: 4,
 };
 
 export function hasWorkspaceRole(
@@ -26,6 +27,10 @@ export function hasWorkspaceRole(
 
 export function canManageWorkspace(role: WorkspaceRole) {
   return hasWorkspaceRole(role, "ADMIN");
+}
+
+export function canManageCampaigns(role: WorkspaceRole) {
+  return hasWorkspaceRole(role, "EDITOR");
 }
 
 export function canManageBilling(role: WorkspaceRole) {
@@ -68,4 +73,3 @@ export async function getCurrentWorkspaceContext(): Promise<WorkspaceContext | n
     role: createdMembership?.role ?? "OWNER",
   };
 }
-

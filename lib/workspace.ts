@@ -4,6 +4,13 @@ import type { Workspace, WorkspaceRole } from "@/app/generated/prisma/client";
 /** Cookie holding the workspace a multi-membership user switched to. */
 export const ACTIVE_WORKSPACE_COOKIE = "or_ws";
 
+export class DomainWorkspaceNotFoundError extends Error {
+  constructor(domain: string) {
+    super(`Configured workspace for ${domain} was not found`);
+    this.name = "DomainWorkspaceNotFoundError";
+  }
+}
+
 function normalizeInviteEmail(email: string) {
   return email.trim().toLowerCase();
 }
@@ -73,9 +80,10 @@ export async function getWorkspaceMembership(userId: string): Promise<{
 
 /**
  * Parses AUTH_DOMAIN_WORKSPACES ("objects.press=Objects Presswerk") and
- * returns the mapped workspace name for an email domain, or null.
+ * returns the mapped workspace target for an email domain, or null. Targets
+ * may be legacy names or stable `id:<workspaceId>` values.
  */
-export function getDomainWorkspaceName(
+export function getDomainWorkspaceTarget(
   email?: string | null
 ): string | null {
   const raw = process.env.AUTH_DOMAIN_WORKSPACES;
@@ -87,8 +95,8 @@ export function getDomainWorkspaceName(
     const separator = pair.indexOf("=");
     if (separator <= 0) continue;
     const mappedDomain = pair.slice(0, separator).trim().toLowerCase();
-    const mappedName = pair.slice(separator + 1).trim();
-    if (mappedDomain === domain && mappedName) return mappedName;
+    const mappedTarget = pair.slice(separator + 1).trim();
+    if (mappedDomain === domain && mappedTarget) return mappedTarget;
   }
   return null;
 }
@@ -102,10 +110,10 @@ export function getDomainWorkspaceName(
  * user still creates the workspace and owns it.
  *
  * Domain routing: an email domain mapped in AUTH_DOMAIN_WORKSPACES joins that
- * named workspace instead of the oldest one, so a second organization can
+ * configured workspace instead of the oldest one, so a second organization can
  * share the instance without seeing the first one's Instagram accounts,
- * campaigns, or DMs. A mapped workspace that does not exist yet falls back to
- * the oldest-workspace default.
+ * campaigns, or DMs. A mapped workspace that does not exist fails closed: a
+ * configuration mistake must never grant the first tenant's data by default.
  */
 async function joinExistingWorkspaceIfConfigured(
   userId: string,
@@ -113,19 +121,22 @@ async function joinExistingWorkspaceIfConfigured(
 ): Promise<Workspace | null> {
   if (process.env.AUTH_JOIN_EXISTING_WORKSPACE !== "true") return null;
 
-  const routedName = getDomainWorkspaceName(email);
-  if (routedName) {
+  const routedTarget = getDomainWorkspaceTarget(email);
+  if (routedTarget) {
+    const domain = email?.split("@")[1]?.trim().toLowerCase() ?? "configured domain";
     const routed = await prisma.workspace.findFirst({
-      where: { name: routedName },
+      where: routedTarget.startsWith("id:")
+        ? { id: routedTarget.slice(3) }
+        : { name: routedTarget },
     });
-    if (routed) {
-      await prisma.workspaceMember.upsert({
-        where: { workspaceId_userId: { workspaceId: routed.id, userId } },
-        create: { workspaceId: routed.id, userId, role: "MEMBER" },
-        update: {},
-      });
-      return routed;
-    }
+    if (!routed) throw new DomainWorkspaceNotFoundError(domain);
+
+    await prisma.workspaceMember.upsert({
+      where: { workspaceId_userId: { workspaceId: routed.id, userId } },
+      create: { workspaceId: routed.id, userId, role: "EDITOR" },
+      update: {},
+    });
+    return routed;
   }
 
   const oldest = await prisma.workspace.findFirst({
