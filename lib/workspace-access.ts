@@ -37,6 +37,14 @@ export function canManageBilling(role: WorkspaceRole) {
   return role === "OWNER";
 }
 
+/**
+ * Diagnostics include process-wide queue and worker state. They are not a
+ * workspace-scoped resource, so only the tenant owner may view them.
+ */
+export function canViewGlobalDiagnostics(role: WorkspaceRole) {
+  return role === "OWNER";
+}
+
 export async function getCurrentWorkspaceContext(): Promise<WorkspaceContext | null> {
   const userId = await getCurrentUserId();
   if (!userId) return null;
