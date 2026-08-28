@@ -3,7 +3,10 @@ import { cookies } from "next/headers";
 import { z } from "zod";
 import { getCurrentUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
-import { ACTIVE_WORKSPACE_COOKIE } from "@/lib/workspace";
+import {
+  ACTIVE_WORKSPACE_COOKIE,
+  resolveHostWorkspaceId,
+} from "@/lib/workspace";
 
 const switchSchema = z.object({
   workspaceId: z.string().min(1),
@@ -23,6 +26,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { success: false, error: "workspaceId required" },
       { status: 400 }
+    );
+  }
+
+  const pinnedWorkspaceId = await resolveHostWorkspaceId(request.headers.get("host"));
+  if (pinnedWorkspaceId && parsed.data.workspaceId !== pinnedWorkspaceId) {
+    return NextResponse.json(
+      { success: false, error: "This host is pinned to another workspace" },
+      { status: 403 }
     );
   }
 

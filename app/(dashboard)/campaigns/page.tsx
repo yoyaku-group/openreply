@@ -43,6 +43,8 @@ interface Campaign {
   };
   reportShareSlug: string | null;
   reportShareEnabled: boolean;
+  source: string;
+  lifecycle: string;
   reportUrl: string | null;
   createdAt: string;
   _count: { dmLogs: number };
@@ -481,6 +483,15 @@ export default function CampaignsPage() {
                   {auto.pendingNextReel && (
                     <span className="shrink-0 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-400">
                       Waiting for next reel
+                    </span>
+                  )}
+                  {auto.source === "CALENDAR" && (
+                    <span className="shrink-0 rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-medium text-violet-300">
+                      {auto.lifecycle === "PLANNED"
+                        ? "Calendar · awaiting post"
+                        : auto.lifecycle === "READY"
+                          ? "Calendar · ready for review"
+                          : "Calendar"}
                     </span>
                   )}
                   {auto.triggerType === "INBOUND_DM" && (

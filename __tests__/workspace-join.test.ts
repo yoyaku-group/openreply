@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { mockPrisma } = vi.hoisted(() => ({
   mockPrisma: {
     workspaceInvitation: { findMany: vi.fn() },
-    workspaceMember: { findFirst: vi.fn(), upsert: vi.fn() },
+    workspaceMember: { findFirst: vi.fn(), findUnique: vi.fn(), upsert: vi.fn() },
     workspace: { findFirst: vi.fn(), create: vi.fn() },
   },
 }));
@@ -14,6 +14,9 @@ import {
   DomainWorkspaceNotFoundError,
   ensureWorkspaceForUser,
   getDomainWorkspaceTarget,
+  getDomainAdminWorkspaceTargets,
+  getHostWorkspaceTarget,
+  reconcileDomainAdminMemberships,
 } from "../lib/workspace";
 
 const OLDEST = { id: "ws_oldest", name: "b's workspace", ownerId: "user_b" };
@@ -23,6 +26,7 @@ describe("single-organization workspace join", () => {
     vi.resetAllMocks();
     mockPrisma.workspaceInvitation.findMany.mockResolvedValue([]);
     mockPrisma.workspaceMember.findFirst.mockResolvedValue(null);
+    mockPrisma.workspaceMember.findUnique.mockResolvedValue(null);
     mockPrisma.workspaceMember.upsert.mockResolvedValue({});
     mockPrisma.workspace.create.mockImplementation(
       async ({ data }: { data: { name: string } }) => ({
@@ -91,6 +95,7 @@ describe("domain-routed workspace join", () => {
     vi.resetAllMocks();
     mockPrisma.workspaceInvitation.findMany.mockResolvedValue([]);
     mockPrisma.workspaceMember.findFirst.mockResolvedValue(null);
+    mockPrisma.workspaceMember.findUnique.mockResolvedValue(null);
     mockPrisma.workspaceMember.upsert.mockResolvedValue({});
     vi.stubEnv("AUTH_JOIN_EXISTING_WORKSPACE", "true");
     vi.stubEnv("AUTH_DOMAIN_WORKSPACES", "objects.press=id:ws_objects");
@@ -159,5 +164,59 @@ describe("domain-routed workspace join", () => {
     vi.stubEnv("AUTH_DOMAIN_WORKSPACES", "");
 
     expect(getDomainWorkspaceTarget("ravi@objects.press")).toBeNull();
+  });
+});
+
+describe("automatic domain ADMIN policy", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.stubEnv(
+      "AUTH_DOMAIN_ADMIN_WORKSPACES",
+      "yoyaku.fr=id:ws_yoyaku|id:ws_objects,objects.press=id:ws_objects"
+    );
+    mockPrisma.workspaceMember.findUnique.mockResolvedValue(null);
+    mockPrisma.workspaceMember.upsert.mockResolvedValue({});
+    mockPrisma.workspace.findFirst.mockImplementation(
+      async ({ where }: { where?: { id?: string } }) =>
+        where?.id ? { id: where.id, name: where.id } : null
+    );
+  });
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("makes every @yoyaku.fr user ADMIN in YOYAKU and Objects", async () => {
+    await reconcileDomainAdminMemberships("user_gabrielle", "gabrielle@yoyaku.fr");
+    expect(mockPrisma.workspaceMember.upsert).toHaveBeenCalledTimes(2);
+    expect(mockPrisma.workspaceMember.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ create: expect.objectContaining({ workspaceId: "ws_yoyaku", role: "ADMIN" }) })
+    );
+    expect(mockPrisma.workspaceMember.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ create: expect.objectContaining({ workspaceId: "ws_objects", role: "ADMIN" }) })
+    );
+  });
+
+  it("makes @objects.press ADMIN in Objects only", async () => {
+    await reconcileDomainAdminMemberships("user_objects", "team@objects.press");
+    expect(mockPrisma.workspaceMember.upsert).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.workspaceMember.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ create: expect.objectContaining({ workspaceId: "ws_objects", role: "ADMIN" }) })
+    );
+  });
+
+  it("never downgrades an OWNER", async () => {
+    mockPrisma.workspaceMember.findUnique.mockResolvedValue({ role: "OWNER" });
+    await reconcileDomainAdminMemberships("user_b", "b@yoyaku.fr");
+    expect(mockPrisma.workspaceMember.upsert).not.toHaveBeenCalled();
+  });
+
+  it("parses domain and host policies case-insensitively", () => {
+    vi.stubEnv("OPENREPLY_HOST_WORKSPACES", "OpenReply.Objects.Press=id:ws_objects");
+    expect(getDomainAdminWorkspaceTargets("g@yoyaku.fr")).toEqual([
+      "id:ws_yoyaku",
+      "id:ws_objects",
+    ]);
+    expect(getDomainAdminWorkspaceTargets("x@objects.press")).toEqual(["id:ws_objects"]);
+    expect(getHostWorkspaceTarget("openreply.objects.press:443")).toBe("id:ws_objects");
+    expect(getHostWorkspaceTarget("openreply.yoyaku.fr")).toBeNull();
   });
 });

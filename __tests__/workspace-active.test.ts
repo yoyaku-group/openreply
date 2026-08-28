@@ -63,6 +63,13 @@ describe("resolveActiveWorkspace", () => {
       })
     );
   });
+
+  it("fails closed instead of falling back when the host requires a workspace", async () => {
+    mockPrisma.workspaceMember.findFirst.mockResolvedValue(null);
+    const active = await resolveActiveWorkspace("user_objects", "ws_objects", true);
+    expect(active).toBeNull();
+    expect(mockPrisma.workspaceMember.findFirst).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("listWorkspaceMemberships", () => {
@@ -87,6 +94,16 @@ describe("listWorkspaceMemberships", () => {
         where: { userId: "user_b" },
         orderBy: { createdAt: "asc" },
       })
+    );
+  });
+
+  it("can restrict the switcher to a host-pinned workspace", async () => {
+    mockPrisma.workspaceMember.findMany.mockResolvedValue([
+      { workspace: { id: "ws_objects", name: "Objects Presswerk" } },
+    ]);
+    await listWorkspaceMemberships("user_b", "ws_objects");
+    expect(mockPrisma.workspaceMember.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: "user_b", workspaceId: "ws_objects" } })
     );
   });
 });

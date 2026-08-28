@@ -64,20 +64,14 @@ export async function getCurrentWorkspaceContext(): Promise<WorkspaceContext | n
     where: { id: userId },
     select: { email: true },
   });
-  const workspace = await ensureWorkspaceForUser(userId, user?.email);
-  const createdMembership = await prisma.workspaceMember.findUnique({
-    where: {
-      workspaceId_userId: {
-        workspaceId: workspace.id,
-        userId,
-      },
-    },
-  });
+  await ensureWorkspaceForUser(userId, user?.email);
+  const reconciled = await getActiveWorkspace(userId);
+  if (!reconciled) return null;
 
   return {
     userId,
-    workspaceId: workspace.id,
-    workspace,
-    role: createdMembership?.role ?? "OWNER",
+    workspaceId: reconciled.workspace.id,
+    workspace: reconciled.workspace,
+    role: reconciled.role,
   };
 }
