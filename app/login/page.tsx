@@ -54,9 +54,16 @@ export default async function LoginPage({
   // the tool (nginx also 302s the marketing root here, so this is the landing
   // path for everyone). Skipped when an auth error is being displayed: the
   // error belongs to a sign-in attempt that must stay visible.
+  //
+  // The check uses session?.user?.id (matching the (dashboard) layout) instead
+  // of just session?.user: a partial session where NextAuth populated the user
+  // object but the database-session callback failed to write user.id would
+  // otherwise auto-redirect to /dashboard, which then bounces back to /login
+  // because its own gate fails on !session.user.id — a tight ERR_TOO_MANY_REDIRECTS
+  // loop. Forcing both pages to require the same id check breaks the cycle.
   if (!params.error) {
     const session = await auth();
-    if (session?.user) {
+    if (session?.user?.id) {
       redirect(callbackUrl);
     }
   }
