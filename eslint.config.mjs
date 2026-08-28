@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Standalone Node utility scripts (CommonJS by design, not part of the
+    // Next.js app — typescript-eslint's no-require-imports does not apply).
+    "scripts/**",
   ]),
 ]);
 
