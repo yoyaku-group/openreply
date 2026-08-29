@@ -12,5 +12,6 @@
       "path": "/api/cron/snapshot-followers",
       "schedule": "0 7 * * *"
     }
-  ]
+  ],
+  "_note": "Canonical production cron is deploy/cron.sh (self-hosted on yoyaku-automation), including /api/cron/sync-calendar-intents which is intentionally NOT listed here. Keep both lists in sync when adding a cron."
 }

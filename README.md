@@ -16,6 +16,16 @@ ManyChat does this and charges a monthly fee. OpenReply is the same core feature
 
 > If this saves you a subscription or a weekend of building, a star on the repo genuinely helps other people find it.
 
+## YOYAKU deployment (internal)
+
+This fork runs YOYAKU's production instance at `openreply.yoyaku.fr` (Docker on
+yoyaku-automation, `/opt/openreply`). Beyond upstream comment-to-DM, it consumes
+Google Calendar publication intents (isolated YOYAKU / Objects workspaces,
+inactive campaigns until exact Instagram post binding + human activation).
+The end-to-end pipeline SSOT lives at
+`ecosystem/docs/social-media-pipeline.md` (private repo). Team onboarding:
+`onboarding.yoyaku.fr` → workflow « Communication & réseaux sociaux ».
+
 ## Why this exists
 
 Comment-to-DM is one feature, but every tool that offers it wants a recurring subscription for it. The actual work is a webhook, a keyword match, and one API call to Meta. That does not need to cost anything to run for a single account.
