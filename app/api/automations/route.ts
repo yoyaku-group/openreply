@@ -495,6 +495,16 @@ export async function GET(request: NextRequest) {
 // same empty list. Block creation/activation up front when the scope probe has
 // a definite answer (empty scopes = not yet probed; archived accounts are
 // audit-only zombies and stay out of the check).
+//
+// 2026-08-30: TEMPORARILY downgraded to advisory — the cached scopes array
+// is the result of a functional smoke probe, which produces false negatives
+// when (a) the account has no recently-commented media or (b) Meta has not
+// yet granted Advanced Access for `instagram_business_manage_comments` even
+// though it is in the OAuth URL. The previous hard 400 was preventing Ben
+// from building/testing campaigns. We log a server-side warning so the gap
+// is observable, and a follow-up campaign-validation step (see
+// `postAccessibilityError`) still surfaces the issue at activation time if
+// the runtime probe fails.
 const COMMENTS_SCOPE = "instagram_business_manage_comments";
 
 function commentsScopeError(account: {
@@ -505,16 +515,10 @@ function commentsScopeError(account: {
   if (account.archivedAt) return null;
   if (account.scopes.length === 0) return null;
   if (account.scopes.includes(COMMENTS_SCOPE)) return null;
-  return NextResponse.json(
-    {
-      success: false,
-      error:
-        `@${account.username} was connected before the "${COMMENTS_SCOPE}" permission existed — ` +
-        "its comments are invisible to the API, so this campaign would never trigger. " +
-        "Re-connect the account first (Settings → Instagram → disconnect + reconnect).",
-    },
-    { status: 400 }
+  console.warn(
+    `[commentsScopeError][advisory] @${account.username} is missing "${COMMENTS_SCOPE}" in cached scopes — letting campaign through pending App Review / probe fix.`,
   );
+  return null;
 }
 
 export async function POST(request: NextRequest) {
