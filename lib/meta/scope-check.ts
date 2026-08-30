@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db/client";
-import { debugToken } from "@/lib/meta/client";
+import { probeInstagramLoginScopes } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 
 /**
@@ -130,8 +130,9 @@ export async function listCachedAccountScopes(
 }
 
 /**
- * Probe a single Instagram account's current OAuth scopes via
- * `/debug_token`, write the result back to the DB (so subsequent health
+ * Probe a single Instagram account's current OAuth scopes via the functional
+ * probe (`probeInstagramLoginScopes` — debug_token cannot parse Instagram
+ * Login tokens), write the result back to the DB (so subsequent health
  * sweeps don't re-call Graph API unless the cache TTL has expired), and
  * return what is missing from the required list.
  *
@@ -254,12 +255,7 @@ async function runProbe(
 ): Promise<AccountScopeProbe> {
   try {
     const accessToken = decryptToken(encryptedToken);
-    const probed = (await debugToken(accessToken, accessToken)) as {
-      data?: { scopes?: string[] };
-    };
-    const granted = Array.isArray(probed?.data?.scopes)
-      ? probed!.data!.scopes!
-      : [];
+    const granted = await probeInstagramLoginScopes(accessToken);
     const probedAt = new Date();
 
     await prisma.instagramAccount.update({

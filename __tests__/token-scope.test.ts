@@ -1,11 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-// Mock prisma + debugToken BEFORE importing the module under test, so the
-// module-level singletons see the mock implementations.
+// Mock prisma + probeInstagramLoginScopes BEFORE importing the module under
+// test, so the module-level singletons see the mock implementations.
 const instagramAccountFindUnique = vi.fn();
 const instagramAccountFindMany = vi.fn();
 const instagramAccountUpdate = vi.fn();
-const debugToken = vi.fn();
+const probeInstagramLoginScopes = vi.fn();
 
 vi.mock("../lib/db/client", () => ({
   prisma: {
@@ -18,7 +18,8 @@ vi.mock("../lib/db/client", () => ({
 }));
 
 vi.mock("../lib/meta/client", () => ({
-  debugToken: (...args: unknown[]) => debugToken(...args),
+  probeInstagramLoginScopes: (...args: unknown[]) =>
+    probeInstagramLoginScopes(...args),
 }));
 
 vi.mock("../lib/meta/oauth", () => ({
@@ -130,7 +131,7 @@ describe("probeAccountScopes (DB-cached path)", () => {
     expect(result.ok).toBe(true);
     expect(result.missing).toEqual([]);
     expect(result.grantedScopes).toContain("instagram_business_manage_comments");
-    expect(debugToken).not.toHaveBeenCalled();
+    expect(probeInstagramLoginScopes).not.toHaveBeenCalled();
   });
 
   it("returns missing scopes without hitting Meta when the cache is fresh-but-incomplete", async () => {
@@ -147,7 +148,7 @@ describe("probeAccountScopes (DB-cached path)", () => {
     // `ok` reflects probe success (cache hit = ok=true). The missing-scope
     // signal lives on `missing` — the assertion callers actually check.
     expect(result.missing).toEqual(["instagram_business_manage_comments"]);
-    expect(debugToken).not.toHaveBeenCalled();
+    expect(probeInstagramLoginScopes).not.toHaveBeenCalled();
   });
 
   it("returns zero missing for archived accounts without probing Meta", async () => {
@@ -163,7 +164,7 @@ describe("probeAccountScopes (DB-cached path)", () => {
     const result = await probeAccountScopes("acct-3", { workspaceId: WORKSPACE_A });
     expect(result.ok).toBe(true);
     expect(result.missing).toEqual([]);
-    expect(debugToken).not.toHaveBeenCalled();
+    expect(probeInstagramLoginScopes).not.toHaveBeenCalled();
   });
 
   it("throws CrossTenantAccessError when workspaceId mismatches", async () => {
@@ -179,13 +180,13 @@ describe("probeAccountScopes (DB-cached path)", () => {
     await expect(
       probeAccountScopes("acct-other", { workspaceId: WORKSPACE_A })
     ).rejects.toMatchObject({ code: "CROSS_TENANT_ACCESS" });
-    expect(debugToken).not.toHaveBeenCalled();
+    expect(probeInstagramLoginScopes).not.toHaveBeenCalled();
   });
 });
 
 describe("probeAccountScopes (live-probe path)", () => {
   const WORKSPACE_A = "workspace-a";
-  it("calls debugToken when the cache is stale and writes the result back", async () => {
+  it("calls probeInstagramLoginScopes when the cache is stale and writes the result back", async () => {
     instagramAccountFindUnique.mockResolvedValue({
       id: "acct-4",
       username: "yoyaku.fr",
@@ -196,18 +197,14 @@ describe("probeAccountScopes (live-probe path)", () => {
       lastScopeProbeAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
       archivedAt: null,
     });
-    debugToken.mockResolvedValue({
-      data: {
-        scopes: [
-          "instagram_business_basic",
-          "instagram_business_manage_messages",
-          "instagram_business_manage_comments",
-        ],
-      },
-    });
+    probeInstagramLoginScopes.mockResolvedValue([
+      "instagram_business_basic",
+      "instagram_business_manage_messages",
+      "instagram_business_manage_comments",
+    ]);
     instagramAccountUpdate.mockResolvedValue({});
     const result = await probeAccountScopes("acct-4", { workspaceId: WORKSPACE_A });
-    expect(debugToken).toHaveBeenCalledTimes(1);
+    expect(probeInstagramLoginScopes).toHaveBeenCalledTimes(1);
     expect(instagramAccountUpdate).toHaveBeenCalledWith({
       where: { id: "acct-4" },
       data: {
@@ -232,7 +229,7 @@ describe("probeAccountScopes (live-probe path)", () => {
       lastScopeProbeAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
       archivedAt: null,
     });
-    debugToken.mockRejectedValue(new Error("rate-limited"));
+    probeInstagramLoginScopes.mockRejectedValue(new Error("rate-limited"));
     const result = await probeAccountScopes("acct-5", { workspaceId: WORKSPACE_A });
     expect(result.ok).toBe(false);
     expect(result.error).toBe("rate-limited");

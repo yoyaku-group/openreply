@@ -4,9 +4,9 @@ import { prisma } from "@/lib/db/client";
 import { getRequestBaseUrl } from "@/lib/env";
 import { canConnectInstagramAccount } from "@/lib/instagram-accounts";
 import {
-  debugToken,
   getLongLivedToken,
   getUserInfo,
+  probeInstagramLoginScopes,
   subscribeInstagramAccountToWebhooks,
 } from "@/lib/meta/client";
 import {
@@ -88,27 +88,19 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Probe scopes via debug_token at connect time so the scope list is
-    // captured immediately, instead of waiting for the next /api/health sweep.
-    // debug_token requires an admin/app token to inspect another token — for
-    // self-debug, Meta accepts the same long-lived token in both slots on the
-    // Instagram Login flow. If Meta rejects it, we record the probe attempt
-    // timestamp anyway so /api/health knows it is fresh and can fall back to
-    // an app-token probe later.
+    // Probe scopes at connect time so the scope list is captured immediately,
+    // instead of waiting for the next /api/health sweep. debug_token cannot
+    // parse Instagram Login tokens, so scopes are inferred via the functional
+    // probe (read-only capability smoke calls). If the probe fails, we leave
+    // lastScopeProbeAt null so /api/health retries on its next sweep.
     let probeScopes: string[] = [];
     let probeAt: Date | null = null;
     try {
-      const probed = (await debugToken(longLivedToken, longLivedToken)) as {
-        data?: { scopes?: string[] };
-      };
-      const raw = probed?.data?.scopes;
-      if (Array.isArray(raw)) {
-        probeScopes = raw;
-        probeAt = new Date();
-      }
+      probeScopes = await probeInstagramLoginScopes(longLivedToken);
+      probeAt = new Date();
     } catch (probeError) {
       console.warn(
-        "[Instagram Callback] debug_token probe failed:",
+        "[Instagram Callback] scope probe failed:",
         probeError instanceof Error ? probeError.message : probeError
       );
     }

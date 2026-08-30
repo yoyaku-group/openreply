@@ -134,8 +134,9 @@ model InstagramAccount {
   accessToken       String
   tokenExpiresAt    DateTime?
   webhookSubscribed Boolean  @default(false)
-  /// OAuth scopes granted at token issue, populated at callback via
-  /// debug_token and refreshed by the /api/health probe. Capturing them here
+  /// OAuth scopes granted at token issue, populated at callback via the
+  /// functional scope probe and refreshed by the /api/health probe. Capturing
+  /// them here
   /// turns the silent "scope missing" failure mode into a visible drift signal
   /// instead of letting COMMENT automations die without explanation.
   scopes            String[] @default([])

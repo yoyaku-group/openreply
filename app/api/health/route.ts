@@ -63,7 +63,7 @@ const SCOPE_STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24h
  * Token-scope check, read-only from the local DB. NO Meta calls.
  *
  * SECURITY: this endpoint is unauthenticated (load-balancer probes), so it
- * MUST NOT trigger live /debug_token probes or expose per-account scope
+ * MUST NOT trigger live Meta scope probes or expose per-account scope
  * detail — unauthenticated callers would otherwise burn Meta rate limits
  * by spamming the probe and learn which accounts hold which scopes. Per-
  * account detail lives at /api/admin/instagram-scopes (auth-gated).

@@ -4,10 +4,6 @@ function instagramGraphBase() {
   return `https://graph.instagram.com/${getMetaGraphApiVersion()}`;
 }
 
-function facebookGraphBase() {
-  return `https://graph.facebook.com/${getMetaGraphApiVersion()}`;
-}
-
 export class MetaApiError extends Error {
   constructor(
     public code: number,
@@ -803,10 +799,69 @@ export async function subscribeInstagramAccountToWebhooks(
   return handleResponse(response);
 }
 
-export async function debugToken(inputToken: string, accessToken: string) {
-  const url = new URL(`${facebookGraphBase()}/debug_token`);
-  url.searchParams.set("input_token", inputToken);
-  url.searchParams.set("access_token", accessToken);
-  const response = await fetch(url.toString());
-  return handleResponse(response);
+/**
+ * Functional scope probe for Instagram Login (IGAA*) tokens.
+ *
+ * `debug_token` on graph.facebook.com cannot parse Instagram Login tokens
+ * ("Invalid OAuth access token - Cannot parse access token"), so granted
+ * scopes are inferred from read-only capability smoke calls instead:
+ *   - GET /me                        → instagram_business_basic
+ *   - GET /me/conversations          → instagram_business_manage_messages
+ *   - GET /{media}/comments on a recent own media with comments_count > 0
+ *                                    → instagram_business_manage_comments
+ *     (the silent killer: without it Meta returns 200 + data: []).
+ *
+ * Limitation: an account with zero commented media cannot prove the comments
+ * scope — it is left ungranted (visible as missing) until a post attracts a
+ * comment. A false "missing" beats a false "granted": the former prompts a
+ * reconnect, the latter lets COMMENT automations die silently.
+ *
+ * Throws when the token itself is rejected (the /me call fails) — callers
+ * treat that as probe failure, not as "all scopes missing".
+ */
+export async function probeInstagramLoginScopes(
+  accessToken: string
+): Promise<string[]> {
+  const granted: string[] = [];
+  const auth = `access_token=${encodeURIComponent(accessToken)}`;
+
+  const me = await fetch(
+    `${instagramGraphBase()}/me?fields=id,username&${auth}`
+  );
+  if (!me.ok) {
+    throw new Error(`scope probe: /me failed with HTTP ${me.status}`);
+  }
+  granted.push("instagram_business_basic");
+
+  const conversations = await fetch(
+    `${instagramGraphBase()}/me/conversations?limit=1&${auth}`
+  );
+  if (conversations.ok) {
+    granted.push("instagram_business_manage_messages");
+  }
+
+  const media = await fetch(
+    `${instagramGraphBase()}/me/media?fields=id,comments_count&limit=25&${auth}`
+  );
+  if (media.ok) {
+    const body = (await media.json()) as {
+      data?: Array<{ id: string; comments_count?: number }>;
+    };
+    const commented = (body.data ?? []).find(
+      (m) => (m.comments_count ?? 0) > 0
+    );
+    if (commented) {
+      const comments = await fetch(
+        `${instagramGraphBase()}/${commented.id}/comments?limit=1&${auth}`
+      );
+      if (comments.ok) {
+        const commentsBody = (await comments.json()) as { data?: unknown[] };
+        if (Array.isArray(commentsBody.data) && commentsBody.data.length > 0) {
+          granted.push("instagram_business_manage_comments");
+        }
+      }
+    }
+  }
+
+  return granted;
 }

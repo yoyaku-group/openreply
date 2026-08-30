@@ -23,7 +23,7 @@ export const dynamic = "force-dynamic";
  *
  * Usage:
  *   GET  /api/admin/instagram-scopes             — cached snapshot, no Meta calls
- *   GET  /api/admin/instagram-scopes?probe=1     — live /debug_token for each account
+ *   GET  /api/admin/instagram-scopes?probe=1     — live functional scope probe for each account
  *   GET  /api/admin/instagram-scopes?account=<id>— focus on one account
  */
 export async function GET(request: NextRequest) {
