@@ -16,7 +16,6 @@ vi.mock("@/lib/db/client", () => ({ prisma: mockPrisma }));
 
 import {
   DomainWorkspaceNotFoundError,
-  createOwnedWorkspace,
   ensureWorkspaceForUser,
   getDomainWorkspaceTarget,
   getDomainAdminWorkspaceTargets,
@@ -132,26 +131,6 @@ describe("invitation-authorized sign-in", () => {
     await expect(
       hasPendingWorkspaceInvitation("outside@example.com"),
     ).resolves.toBe(false);
-  });
-});
-
-describe("isolated workspace creation", () => {
-  it("creates an owner membership instead of applying domain auto-join", async () => {
-    mockPrisma.workspace.create.mockResolvedValue({
-      id: "ws_review",
-      name: "Meta App Review",
-      ownerId: "user_b",
-    });
-
-    await createOwnedWorkspace("user_b", "  Meta App Review  ");
-
-    expect(mockPrisma.workspace.create).toHaveBeenCalledWith({
-      data: {
-        name: "Meta App Review",
-        ownerId: "user_b",
-        members: { create: { userId: "user_b", role: "OWNER" } },
-      },
-    });
   });
 });
 

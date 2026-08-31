@@ -122,6 +122,19 @@ export function evaluateInstagramFeature(
     blockers.push(`${feature.toLowerCase()}=STALE`);
   }
 
+  // COMMENT campaigns ultimately send a private reply. Comment visibility
+  // alone is not sufficient if the connected token cannot use messaging.
+  if (feature === "COMMENTS") {
+    const messages = capabilities.MESSAGES;
+    if (messages.status !== "READY") {
+      blockers.push(
+        `messages=${messages.status}:${messages.reason ?? "NO_REASON"}`,
+      );
+    } else if (!isFresh(messages.checkedAt)) {
+      blockers.push("messages=STALE");
+    }
+  }
+
   const subscribedField =
     feature === "COMMENTS"
       ? "comments"
@@ -455,40 +468,17 @@ export async function recordInstagramWebhookCapability(
 
   const subscribedFields = [...new Set([...account.subscribedFields, field])];
 
-  await prisma.$transaction([
-    prisma.instagramAccount.update({
-      where: { id: accountId },
-      data: {
-        subscribedFields,
-        subscriptionCheckedAt: now,
-        webhookSubscribed:
-          subscribedFields.includes("comments") &&
-          subscribedFields.includes("messages"),
-        ...(kind === "COMMENTS"
-          ? { lastCommentWebhookAt: now }
-          : { lastMessageWebhookAt: now }),
-      },
-    }),
-    prisma.instagramCapability.upsert({
-      where: {
-        instagramAccountId_kind: { instagramAccountId: accountId, kind },
-      },
-      create: {
-        instagramAccountId: accountId,
-        kind,
-        status: "READY",
-        reason: "WEBHOOK_RECEIVED",
-        evidence: { field },
-        checkedAt: now,
-        lastSuccessAt: now,
-      },
-      update: {
-        status: "READY",
-        reason: "WEBHOOK_RECEIVED",
-        evidence: { field },
-        checkedAt: now,
-        lastSuccessAt: now,
-      },
-    }),
-  ]);
+  await prisma.instagramAccount.update({
+    where: { id: accountId },
+    data: {
+      subscribedFields,
+      subscriptionCheckedAt: now,
+      webhookSubscribed:
+        subscribedFields.includes("comments") &&
+        subscribedFields.includes("messages"),
+      ...(kind === "COMMENTS"
+        ? { lastCommentWebhookAt: now }
+        : { lastMessageWebhookAt: now }),
+    },
+  });
 }

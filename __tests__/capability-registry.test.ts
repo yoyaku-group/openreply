@@ -45,6 +45,22 @@ describe("evaluateInstagramFeature", () => {
     ).toEqual({ ready: true, blockers: [] });
   });
 
+  it("requires outbound messaging capability for a comment-to-DM campaign", () => {
+    const result = evaluateInstagramFeature(
+      "COMMENTS",
+      registry({
+        MESSAGES: capability("MESSAGES", "BLOCKED", "CONVERSATIONS_API_DENIED"),
+      }),
+      ["comments", "messages"],
+      new Date(),
+    );
+
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContain(
+      "messages=BLOCKED:CONVERSATIONS_API_DENIED",
+    );
+  });
+
   it("fails closed on Meta's comments-hidden evidence", () => {
     const result = evaluateInstagramFeature(
       "COMMENTS",

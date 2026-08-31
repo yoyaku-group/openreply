@@ -928,45 +928,83 @@ export async function probeInstagramCapabilities(
     data?: Array<{ id: string; comments_count?: number }>;
   };
   const mediaRows = mediaBody.data ?? [];
-  const commented = mediaRows.find((row) => (row.comments_count ?? 0) > 0);
+  const commentedMedia = mediaRows
+    .filter((row) => (row.comments_count ?? 0) > 0)
+    .slice(0, 10);
 
-  if (!commented) {
+  if (commentedMedia.length === 0) {
     result.COMMENTS = capabilityResult("UNKNOWN", "NO_COMMENTED_MEDIA", {
       sampledMedia: mediaRows.length,
     });
   } else {
-    const comments = await fetch(
-      `${instagramGraphBase()}/${commented.id}/comments?limit=1&${auth}`,
-    );
-    if (!comments.ok) {
-      result.COMMENTS = capabilityResult(
-        blockedOrError(comments.status),
-        "COMMENTS_API_DENIED",
-        {
-          httpStatus: comments.status,
-          mediaId: commented.id,
-          commentsCount: commented.comments_count ?? 0,
-        },
+    const observations: Array<{
+      mediaId: string;
+      commentsCount: number;
+      httpStatus: number;
+      visibleComments?: number;
+    }> = [];
+    let transientFailure = false;
+    let permissionFailure = false;
+
+    for (const commented of commentedMedia) {
+      const comments = await fetch(
+        `${instagramGraphBase()}/${commented.id}/comments?limit=1&${auth}`,
       );
-    } else {
+      const observation = {
+        httpStatus: comments.status,
+        mediaId: commented.id,
+        commentsCount: commented.comments_count ?? 0,
+      };
+
+      if (!comments.ok) {
+        observations.push(observation);
+        if (comments.status === 429 || comments.status >= 500) {
+          transientFailure = true;
+        } else {
+          permissionFailure = true;
+        }
+        continue;
+      }
+
       const commentsBody = (await comments.json()) as { data?: unknown[] };
       const visibleComments = Array.isArray(commentsBody.data)
         ? commentsBody.data.length
         : 0;
-      result.COMMENTS =
-        visibleComments > 0
-          ? capabilityResult("READY", "COMMENTS_VISIBLE", {
-              httpStatus: comments.status,
-              mediaId: commented.id,
-              commentsCount: commented.comments_count ?? 0,
-              visibleComments,
-            })
-          : capabilityResult("BLOCKED", "COMMENTS_HIDDEN_BY_META", {
-              httpStatus: comments.status,
-              mediaId: commented.id,
-              commentsCount: commented.comments_count ?? 0,
-              visibleComments,
-            });
+      observations.push({ ...observation, visibleComments });
+      if (visibleComments > 0) {
+        result.COMMENTS = capabilityResult("READY", "COMMENTS_VISIBLE", {
+          ...observation,
+          visibleComments,
+          sampledCommentedMediaCount: observations.length,
+        });
+        break;
+      }
+    }
+
+    if (result.COMMENTS.status !== "READY") {
+      const last = observations.at(-1) ?? {
+        mediaId: commentedMedia[0].id,
+        commentsCount: commentedMedia[0].comments_count ?? 0,
+        httpStatus: 0,
+      };
+      if (transientFailure) {
+        result.COMMENTS = capabilityResult(
+          "ERROR",
+          "COMMENTS_API_TRANSIENT_ERROR",
+          { ...last, sampledCommentedMediaCount: observations.length },
+        );
+      } else if (permissionFailure) {
+        result.COMMENTS = capabilityResult("BLOCKED", "COMMENTS_API_DENIED", {
+          ...last,
+          sampledCommentedMediaCount: observations.length,
+        });
+      } else {
+        result.COMMENTS = capabilityResult(
+          "BLOCKED",
+          "COMMENTS_HIDDEN_BY_META",
+          { ...last, sampledCommentedMediaCount: observations.length },
+        );
+      }
     }
   }
 

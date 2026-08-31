@@ -97,6 +97,85 @@ describe("probeInstagramCapabilities", () => {
     });
   });
 
+  it("checks more than the first commented media before declaring comments blocked", async () => {
+    const requestedCommentMedia: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes("/me?fields=id,username")) {
+          return jsonResponse({ id: "app-scoped", username: "objects.press" });
+        }
+        if (url.includes("/me/conversations")) {
+          return jsonResponse({ data: [] });
+        }
+        if (url.includes("/me/media")) {
+          return jsonResponse({
+            data: [
+              { id: "media-hidden", comments_count: 4 },
+              { id: "media-visible", comments_count: 2 },
+            ],
+          });
+        }
+        if (url.includes("/media-hidden/comments")) {
+          requestedCommentMedia.push("media-hidden");
+          return jsonResponse({ data: [] });
+        }
+        if (url.includes("/media-visible/comments")) {
+          requestedCommentMedia.push("media-visible");
+          return jsonResponse({ data: [{ id: "comment-visible" }] });
+        }
+        if (url.includes("/media-hidden/insights")) {
+          return jsonResponse({ data: [] });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+
+    const result = await probeInstagramCapabilities("token");
+
+    expect(requestedCommentMedia).toEqual(["media-hidden", "media-visible"]);
+    expect(result.COMMENTS).toMatchObject({
+      status: "READY",
+      reason: "COMMENTS_VISIBLE",
+      evidence: { mediaId: "media-visible", visibleComments: 1 },
+    });
+  });
+
+  it("keeps transient comment probe failures distinct from permission blocks", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes("/me?fields=id,username")) {
+          return jsonResponse({ id: "app-scoped", username: "objects.press" });
+        }
+        if (url.includes("/me/conversations")) {
+          return jsonResponse({ data: [] });
+        }
+        if (url.includes("/me/media")) {
+          return jsonResponse({
+            data: [{ id: "media-rate-limited", comments_count: 4 }],
+          });
+        }
+        if (url.includes("/media-rate-limited/comments")) {
+          return jsonResponse({ error: "try again" }, 503);
+        }
+        if (url.includes("/media-rate-limited/insights")) {
+          return jsonResponse({ data: [] });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+
+    const result = await probeInstagramCapabilities("token");
+
+    expect(result.COMMENTS).toMatchObject({
+      status: "ERROR",
+      reason: "COMMENTS_API_TRANSIENT_ERROR",
+    });
+  });
+
   it("keeps comments UNKNOWN when no sampled media can prove comment visibility", async () => {
     vi.stubGlobal(
       "fetch",

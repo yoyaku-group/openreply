@@ -67,7 +67,7 @@ async function checkQueue(): Promise<HealthCheck & { counts?: unknown }> {
  * MUST NOT trigger live Meta scope probes or expose per-account scope
  * detail — unauthenticated callers would otherwise burn Meta rate limits
  * by spamming the probe and learn which accounts hold which scopes. Per-
- * account detail lives at /api/admin/instagram-scopes (auth-gated).
+ * account detail lives at /api/admin/instagram-capabilities (auth-gated).
  *
  * A `stale` flag tells operators when the cached scope data is too old to
  * be useful — usually that means a scheduled cron probe hasn't run, not
@@ -128,10 +128,8 @@ export async function GET() {
     database.status === "ok" &&
     redis.status === "ok" &&
     queue.status === "ok" &&
-    worker.healthy;
-  // Capability drift is feature health, not process health. The systemd probe
-  // reads active_comment_blocked_count and fails when a dead COMMENT campaign
-  // is active, while this endpoint remains available for diagnosis.
+    worker.healthy &&
+    instagram_capabilities.status === "ok";
 
   return NextResponse.json(
     {
@@ -142,6 +140,9 @@ export async function GET() {
         queue,
         worker,
         instagram_capabilities,
+        // One-release compatibility projection for existing watchdogs and
+        // dashboards. New consumers must use instagram_capabilities.
+        instagram_scopes: instagram_capabilities,
       },
     },
     { status: healthy ? 200 : 503 },
