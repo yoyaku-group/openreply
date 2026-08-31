@@ -305,6 +305,16 @@ export function computeMissing(granted: readonly string[]): RequiredInstagramSco
  *
  * Throws CrossTenantAccessError on workspace mismatch, or
  * MissingCommentScopeError when any required scope is missing.
+ *
+ * Kill-switch: when `OPENREPLY_COMMENTS_SCOPE_ADVISORY=true` (default false),
+ * the activation flow is allowed to proceed even if `manage_comments` is
+ * missing from the cached scopes — letting operators create + activate
+ * campaigns while waiting for Meta App Review approval. Use only as a
+ * transitional state; DM delivery still REQUIRES the scope in the token
+ * (Meta never delivers webhook events without it). The bypass unblocks the
+ * UX; it does NOT unlock delivery. Remove the flag once Meta approves the
+ * scope AND each connected IG pro has been disconnected + reconnected (so
+ * the probe captures the new scope).
  */
 export async function assertCommentScope(args: {
   accountId: string;
@@ -315,6 +325,18 @@ export async function assertCommentScope(args: {
     workspaceId: args.workspaceId,
     forceRefresh: false,
   });
+  // Kill-switch — see docstring. Default off (the strict behaviour).
+  if (
+    probe.missing.length > 0 &&
+    String(process.env.OPENREPLY_COMMENTS_SCOPE_ADVISORY || "").toLowerCase() ===
+      "true"
+  ) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[assertCommentScope][advisory-activation] accountId=${args.accountId} postId=${args.postId} missing=${probe.missing.join(",")} — OPENREPLY_COMMENTS_SCOPE_ADVISORY=true, allowing activation. DM delivery will NOT work until the scope is granted + the account is reconnected.`
+    );
+    return;
+  }
   // Patch in the username from the cached snapshot — runProbe doesn't load
   // it (keeps the live-probe path lean).
   const username =
