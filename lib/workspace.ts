@@ -284,21 +284,6 @@ export async function ensureWorkspaceForUser(
   });
 }
 
-export async function createOwnedWorkspace(
-  userId: string,
-  name: string,
-): Promise<Workspace> {
-  return prisma.workspace.create({
-    data: {
-      name: name.trim(),
-      ownerId: userId,
-      members: {
-        create: { userId, role: "OWNER" },
-      },
-    },
-  });
-}
-
 export async function getPrimaryWorkspace(
   userId: string,
 ): Promise<Workspace | null> {

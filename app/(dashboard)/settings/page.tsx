@@ -75,7 +75,6 @@ export default function SettingsPage() {
   const [memberError, setMemberError] = useState<string | null>(null);
   const [capabilities, setCapabilities] =
     useState<CapabilityDiagnostics | null>(null);
-  const [workspaceName, setWorkspaceName] = useState("");
 
   useEffect(() => {
     Promise.all([
@@ -150,24 +149,6 @@ export default function SettingsPage() {
     const res = await fetch("/api/admin/instagram-capabilities?probe=1");
     const payload = await res.json();
     if (payload.success) setCapabilities(payload.data);
-    setBusy(null);
-  }
-
-  async function createWorkspace(event: React.FormEvent) {
-    event.preventDefault();
-    setMemberError(null);
-    setBusy("workspace");
-    const res = await fetch("/api/workspaces", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: workspaceName }),
-    });
-    const payload = await res.json();
-    if (payload.success) {
-      window.location.assign("/settings");
-      return;
-    }
-    setMemberError(payload.error ?? "Could not create workspace");
     setBusy(null);
   }
 
@@ -418,33 +399,6 @@ export default function SettingsPage() {
             )}
           </form>
         )}
-      </section>
-
-      <section className="panel rounded p-6">
-        <h2 className="text-base font-semibold">Isolated workspace</h2>
-        <p className="mt-2 text-sm text-muted">
-          Keep reviewer or partner Instagram assets separate from production
-          accounts, campaigns, and logs.
-        </p>
-        <form onSubmit={createWorkspace} className="mt-4 flex gap-3">
-          <input
-            type="text"
-            minLength={2}
-            maxLength={80}
-            required
-            value={workspaceName}
-            onChange={(event) => setWorkspaceName(event.target.value)}
-            placeholder="Meta App Review"
-            className="min-w-0 flex-1 rounded border border-border bg-background px-3 py-2 text-sm"
-          />
-          <button
-            type="submit"
-            disabled={busy === "workspace"}
-            className="rounded bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-          >
-            {busy === "workspace" ? "Creating..." : "Create"}
-          </button>
-        </form>
       </section>
 
       <section className="panel rounded p-6">
