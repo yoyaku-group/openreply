@@ -43,29 +43,29 @@ asset rehearsal are green.
 
 Never give Meta access to the YOYAKU or Objects production workspaces.
 
-1. Create a real mailbox such as `meta-review@interwave.live`. It must have its
-   own inbox for the whole review period. Do not use the
-   `appreview@yoyaku.fr -> ben@yoyaku.fr` forwarding group.
-2. Sign in to OpenReply as Ben and open Settings.
-3. Under **Isolated workspace**, create `Meta App Review`.
-4. While that workspace is selected, invite `meta-review@interwave.live` as
-   **Campaign editor**. Exact pending invitations are allowed through the global
-   sign-in allowlist; no whole email domain is opened.
-5. Sign in as the reviewer account in a private window and accept the invite.
-   An editor can connect an Instagram account and create campaigns, but cannot
-   disconnect accounts, manage the team, or access another workspace.
-6. Connect a dedicated Instagram Professional test asset owned by the Meta app
+1. Open `https://openreply.yoyaku.fr/meta-review/login` in a private window.
+2. Use the temporary reviewer passphrase from the secure Meta credentials
+   field. Do not paste it into the public description or video.
+3. Confirm the session opens the `Meta App Review` workspace. Its technical
+   identity is `meta-review@interwave.live`; it has no membership in YOYAKU or
+   Objects and currently contains zero Instagram accounts.
+4. Connect a dedicated Instagram Professional test asset owned by the Meta app
    business. Do not connect `@yoyaku.fr`, `@yoyakurecordstore`, or
    `@objects.press` to this workspace.
 
 Before recording, confirm the test asset has the required app role/tester role,
 has accepted the Instagram tester invitation, and can complete a real
-   comment-to-DM canary. If the canary is not green, do not fake the video and do
-   not submit.
+comment-to-DM canary. If the canary is not green, do not fake the video and do
+not submit.
 
-All `@yoyaku.fr` addresses are authorized by the production
+The temporary password gate expires on 2026-10-15 and every session is capped
+at eight hours. It is host-bound, HMAC-independent, rate-limited, and creates a
+session only for the configured isolated workspace. The former
+`appreview@yoyaku.fr` production membership and sessions were revoked.
+
+All ordinary `@yoyaku.fr` addresses remain authorized by the production
 `AUTH_ALLOWED_DOMAINS=yoyaku.fr,...` policy. That broad internal-domain access
-does not replace the isolated reviewer mailbox and exact workspace invitation.
+does not apply to the password-gated Meta reviewer flow.
 
 ## 2. Complete the app settings
 
@@ -186,7 +186,7 @@ four minutes.
 
 | Time | Action on screen                                                                                                                                               | Narration                                                                                                            |
 | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| 0:00 | Open `https://openreply.yoyaku.fr/login` and sign in with the dedicated reviewer mailbox.                                                                      | “This is an isolated reviewer workspace with no production assets.”                                                  |
+| 0:00 | Open `https://openreply.yoyaku.fr/meta-review/login` and sign in with the temporary reviewer passphrase.                                                         | “This is an isolated reviewer workspace with no production assets.”                                                  |
 | 0:20 | Settings -> Connect Instagram, then complete Instagram Business Login using the dedicated Professional test account.                                           | Name the four permissions shown by the consent screen. Do not share Instagram credentials in the submission.         |
 | 0:55 | Back in Settings, show username/profile and click **Verify capabilities**.                                                                                     | Explain that OpenReply verifies API visibility and reads back `comments`/`messages` subscriptions before activation. |
 | 1:20 | Create a COMMENT campaign on a post owned by the connected test account, keyword `OPENREPLYTEST`, private message `Here is your link: https://yoyaku.fr/test`. | Explain exact matching and one initial private reply.                                                                |
@@ -203,10 +203,11 @@ URL that requires the reviewer's access to Ben's Google account.
 Replace the bracketed values only after the private-window rehearsal succeeds.
 
 ```text
-Application URL: https://openreply.yoyaku.fr/login
-Reviewer email: [meta-review@interwave.live]
-Authentication: enter the reviewer email and open the magic link in that
-mailbox. No password is used.
+Application URL: https://openreply.yoyaku.fr/meta-review/login
+Reviewer identity: meta-review@interwave.live
+Authentication: enter the temporary reviewer passphrase supplied in Meta's
+secure credentials field. Do not use the normal magic-link page. The password
+gate expires on 2026-10-15 and each session lasts no more than eight hours.
 
 The account opens the isolated "Meta App Review" workspace. It has no access to
 YOYAKU or Objects production data. In Settings, click Connect Instagram and use
@@ -241,8 +242,8 @@ All boxes must be true:
   readiness + invalid-signature tests pass.
 - App-level webhook fields include `comments`, `messages`,
   `messaging_postbacks`, and `messaging_seen`.
-- Reviewer mailbox receives its own magic link.
-- Reviewer account has only the isolated workspace membership.
+- Reviewer password gate opens only the isolated workspace and the supplied
+  passphrase is valid for the whole review window.
 - Dedicated Instagram test asset has accepted its app/tester role.
 - OAuth consent shows the same four scopes as `lib/meta/oauth.ts`.
 - `GET /api/admin/instagram-capabilities?probe=1` is green for the test asset.
