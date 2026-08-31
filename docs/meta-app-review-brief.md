@@ -6,21 +6,38 @@ and claims that the application could not demonstrate.
 
 ## Current verified state (2026-08-31)
 
-- Production Meta app ID: `4047290928735084`.
+- Parent Meta app: `Openreply`, ID `2480002912524211`, Business Portfolio
+  `Yoyaku` (`1846751622045524`).
+- Instagram app: `Openreply-IG`, ID `4047290928735084`. This is the value used
+  by `INSTAGRAM_APP_ID`; it is not the parent Meta App ID.
+- Duplicate empty Meta app `2214363202679910`: ignore during review and archive
+  separately only after confirming it has no users, tokens, products or roles.
+- Business Verification is verified. The parent app is still in Development
+  mode (unpublished).
 - OAuth requests four implemented Instagram Login permissions:
   `instagram_business_basic`, `instagram_business_manage_comments`,
   `instagram_business_manage_messages`, and
   `instagram_business_manage_insights`.
 - All three production tokens can read the profile and conversations.
-- All three accounts have a verified `comments` + `messages` subscription.
+- All three accounts have a verified account-level `comments` + `messages`
+  installation (`/{ig-user-id}/subscribed_apps`). This is not the same as the
+  app-level fields configured under App Dashboard -> Webhooks.
+- App-level audited fields are currently `comments`, `messaging_postbacks`, and
+  `messaging_seen`; `messages` is missing and must be subscribed before the
+  rehearsal.
 - The fresh `@yoyaku.fr` token returns `data: []` for a media whose
   `comments_count` is 12, and a third-party live comment produced no webhook.
 - OpenReply therefore records COMMENTS as `BLOCKED / COMMENTS_HIDDEN_BY_META`
   and refuses to activate COMMENT campaigns. There is no bypass.
 
-The external resolution is to make the app reviewable, switch it to Live when
-Meta permits it, request Advanced Access once for the four implemented scopes,
-then reconnect and verify each production account.
+The failed live comment had cumulative blockers: the app is unpublished, the
+four permissions lack Advanced Access, and the app-level `messages` webhook
+field is missing. Reconnecting a production account cannot fix any of those.
+
+The external resolution is one App Review for the four implemented scopes,
+plus publishing the parent app when Meta's workflow permits it. Do not submit
+until callbacks, app-level webhooks, isolated reviewer access, and a real test
+asset rehearsal are green.
 
 ## 1. Prepare a reviewer-safe workspace
 
@@ -43,8 +60,12 @@ Never give Meta access to the YOYAKU or Objects production workspaces.
 
 Before recording, confirm the test asset has the required app role/tester role,
 has accepted the Instagram tester invitation, and can complete a real
-comment-to-DM canary. If the canary is not green, do not fake the video and do
-not submit.
+   comment-to-DM canary. If the canary is not green, do not fake the video and do
+   not submit.
+
+All `@yoyaku.fr` addresses are authorized by the production
+`AUTH_ALLOWED_DOMAINS=yoyaku.fr,...` policy. That broad internal-domain access
+does not replace the isolated reviewer mailbox and exact workspace invitation.
 
 ## 2. Complete the app settings
 
@@ -54,6 +75,7 @@ In Meta App Dashboard -> Settings -> Basic / Publish:
 - Category: `Business and Pages`
 - Contact email: `ben@yoyaku.fr`
 - App domain: `openreply.yoyaku.fr`
+- Website platform URL: `https://openreply.yoyaku.fr`
 - Privacy policy: `https://openreply.yoyaku.fr/privacy`
 - Terms: `https://openreply.yoyaku.fr/terms`
 - Data deletion: `https://openreply.yoyaku.fr/data-deletion`
@@ -62,11 +84,23 @@ In Meta App Dashboard -> Settings -> Basic / Publish:
 - Business Verification: verified legal entity and current documents
 - Instagram webhook callback: `https://openreply.yoyaku.fr/api/webhook`
 - OAuth redirect: `https://openreply.yoyaku.fr/api/instagram/callback`
+- Deauthorize callback:
+  `https://openreply.yoyaku.fr/api/instagram/deauthorize`
+- Data deletion request callback:
+  `https://openreply.yoyaku.fr/api/instagram/data-deletion`
 
-Test every public URL in a private window. Make the app Live before the real
-review canary if the dashboard allows it. If Meta gates Live mode behind review,
-keep the dedicated asset in an accepted tester/app role and follow the dashboard
-review flow; the submission must still show a working end-to-end test.
+The public `/data-deletion` instructions page and the signed-request callback
+are two different Meta fields. Both must remain configured.
+
+Under App Dashboard -> Instagram -> Webhooks, subscribe the app itself to at
+least `comments`, `messages`, `messaging_postbacks`, and `messaging_seen`.
+OpenReply separately verifies each connected account's `/subscribed_apps`
+installation. Both layers must be green.
+
+Test every public URL in a private window. Use the dedicated accepted tester
+asset for the review rehearsal while the app is in Development mode. Switch the
+app to Live at the step shown by Meta's current publication/review workflow;
+never claim a successful public-user flow before it is actually Live.
 
 ## 3. Submit one review for the four implemented permissions
 
@@ -75,6 +109,14 @@ branded-content permissions, ads permissions, or content publishing. OpenReply
 does not publish Instagram media today, so
 `instagram_business_content_publish` must wait for an implemented, tested user
 surface.
+
+The single submission must contain all four of these permissions:
+`instagram_business_basic`, `instagram_business_manage_comments`,
+`instagram_business_manage_messages`, and
+`instagram_business_manage_insights`. `instagram_business_basic` is a required
+dependency of the other three. Remove the unused test-ready
+`instagram_business_content_publish` and legacy `instagram_manage_comments`
+from the use case unless a separately implemented feature later needs them.
 
 ### instagram_business_basic
 
@@ -190,13 +232,23 @@ Data deletion: https://openreply.yoyaku.fr/data-deletion
 All boxes must be true:
 
 - Business Verification is complete.
+- Parent Meta App ID is `2480002912524211`; Instagram App ID is
+  `4047290928735084`.
+- App mode is recorded accurately and the publication step is ready.
 - App icon and all public URLs are accepted by Meta's URL debugger.
+- Website platform URL is `https://openreply.yoyaku.fr`.
+- Signed deauthorization and deletion callback URLs are saved and their GET
+  readiness + invalid-signature tests pass.
+- App-level webhook fields include `comments`, `messages`,
+  `messaging_postbacks`, and `messaging_seen`.
 - Reviewer mailbox receives its own magic link.
 - Reviewer account has only the isolated workspace membership.
 - Dedicated Instagram test asset has accepted its app/tester role.
 - OAuth consent shows the same four scopes as `lib/meta/oauth.ts`.
 - `GET /api/admin/instagram-capabilities?probe=1` is green for the test asset.
 - A third-party comment produces a webhook, a `SENT` log, and a received DM.
+- An inbound test DM produces a message webhook and appears in the intended
+  reviewer workspace.
 - Screencast contains that real successful flow.
 - Descriptions match the shipped code and no unimplemented permission is
   requested.

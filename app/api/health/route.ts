@@ -6,6 +6,7 @@ import {
   listCachedInstagramCapabilities,
   summarizeInstagramCapabilities,
 } from "@/lib/meta/capabilities";
+import { getMetaAppConfiguration } from "@/lib/meta/app-config";
 
 export const runtime = "nodejs";
 // Health must reflect live state (worker heartbeat, queue depth), never a
@@ -79,11 +80,16 @@ async function checkInstagramCapabilities(): Promise<
     comment_ready_count?: number;
     message_ready_count?: number;
     active_comment_blocked_count?: number;
+    meta_app_id?: string | null;
+    meta_app_mode?: "development" | "live" | "unknown";
+    app_webhook_fields?: string[];
+    app_webhook_source?: "operator_attested";
   }
 > {
   try {
     const rows = await listCachedInstagramCapabilities();
     const summary = summarizeInstagramCapabilities(rows);
+    const appConfig = getMetaAppConfiguration();
     const status: CheckStatus =
       summary.activeCommentBlockedCount === 0 ? "ok" : "degraded";
     const detail =
@@ -97,6 +103,10 @@ async function checkInstagramCapabilities(): Promise<
       comment_ready_count: summary.commentReadyCount,
       message_ready_count: summary.messageReadyCount,
       active_comment_blocked_count: summary.activeCommentBlockedCount,
+      meta_app_id: appConfig.appId,
+      meta_app_mode: appConfig.mode,
+      app_webhook_fields: appConfig.webhookFields,
+      app_webhook_source: appConfig.source,
     };
   } catch (error) {
     return {

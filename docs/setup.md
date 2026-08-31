@@ -95,6 +95,9 @@ Copy `.env.example` to `.env` for local work, or set these in Vercel and Railway
 | `RESEND_API_KEY`           | Resend key. Login is email magic links only, so without this nobody can sign in.                                                                                       |
 | `EMAIL_FROM`               | A sender on a domain you verified in Resend. The placeholder will not deliver.                                                                                         |
 | `META_GRAPH_API_VERSION`   | Graph API version, for example `v25.0`.                                                                                                                                |
+| `META_APP_ID`              | Parent Meta App ID from App settings -> Basic. This is not the Instagram App ID.                                                                                       |
+| `META_APP_MODE`            | Audited parent-app mode: `development` or `live`. This is diagnostic state, not a mode switch.                                                                         |
+| `INSTAGRAM_APP_WEBHOOK_FIELDS` | App-level fields selected in App Dashboard -> Instagram -> Webhooks, comma-separated. This is distinct from each account's `/subscribed_apps` result.              |
 | `INSTAGRAM_APP_ID`         | From the Meta app, see Step 6.                                                                                                                                         |
 | `INSTAGRAM_APP_SECRET`     | From the Meta app.                                                                                                                                                     |
 | `FACEBOOK_APP_SECRET`      | From the Meta app.                                                                                                                                                     |
@@ -134,6 +137,7 @@ There are two app secrets and two app IDs, which is confusing. Here is what maps
 
 | Environment variable   | Where it lives                                                     |
 | ---------------------- | ------------------------------------------------------------------ |
+| `META_APP_ID`          | Parent app, App settings, Basic, App ID                            |
 | `INSTAGRAM_APP_ID`     | Instagram, API setup with Instagram login. A number like `2036...` |
 | `INSTAGRAM_APP_SECRET` | Same page, click Show                                              |
 | `FACEBOOK_APP_SECRET`  | App settings, Basic, App secret, click Show                        |
@@ -141,6 +145,11 @@ There are two app secrets and two app IDs, which is confusing. Here is what maps
 The Instagram app ID is not the same number as the Facebook App ID shown on the Basic settings page. Use the one under the Instagram product.
 
 OpenReply verifies webhook signatures against both `FACEBOOK_APP_SECRET` and `INSTAGRAM_APP_SECRET`, so you do not have to guess which one Meta signs with. Set both.
+
+Record `META_APP_MODE` and `INSTAGRAM_APP_WEBHOOK_FIELDS` after inspecting the
+dashboard. These values make diagnostic output explicit; changing them does not
+publish the app or subscribe a field on Meta. The operator must still perform
+those dashboard actions.
 
 ### Step 6: Add your Instagram account as a tester, and accept the invite
 
@@ -178,7 +187,9 @@ Still in the Instagram product, find the Configure webhooks step.
 - Callback URL: `https://your-app.vercel.app/api/webhook`
 - Verify token: the value of `WEBHOOK_VERIFY_TOKEN` from your environment
 - Click Verify and save. It should succeed immediately, because the app answers Meta's verification challenge. If the button is greyed out, click into the verify-token field and paste the token again; editing the callback URL often clears it.
-- Subscribe to the `comments` field.
+- Subscribe at app level to `comments`, `messages`, `messaging_postbacks`, and
+  `messaging_seen`. The account-level subscription OpenReply performs during
+  OAuth is a separate layer and does not replace these dashboard selections.
 
 To test delivery without a real comment, click Test next to `comments`, then click Send to My Server. This is a two-step control. Clicking Test only previews the sample payload; the second button is what actually POSTs it to your endpoint. After sending, a row should appear in your `WebhookEvent` table.
 
@@ -195,6 +206,17 @@ https://your-app.vercel.app/privacy
 https://your-app.vercel.app/data-deletion
 https://your-app.vercel.app/terms
 ```
+
+Instagram Business Login also requires signed-request callbacks, distinct from
+the public deletion instructions page:
+
+```
+Deauthorize callback: https://your-app.vercel.app/api/instagram/deauthorize
+Data deletion request callback: https://your-app.vercel.app/api/instagram/data-deletion
+```
+
+Both callbacks verify Meta's HMAC-SHA256 `signed_request`. Never point either
+field at the public `/data-deletion` page.
 
 Then publish. Depending on your access level, Meta may let you go live for your own tester accounts immediately, or it may require App Review first (see the last section).
 

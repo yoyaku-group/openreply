@@ -129,6 +129,10 @@ model InstagramAccount {
   id                    String    @id @default(cuid())
   workspaceId           String
   instagramId           String    @unique
+  /// App-scoped Instagram Login identifier returned as `id` by /me. Meta's
+  /// deauthorization and data-deletion signed requests use this identifier,
+  /// while webhooks and messaging use the professional `instagramId`.
+  instagramScopedId     String?   @unique
   username              String
   name                  String?
   accessToken           String
@@ -167,6 +171,25 @@ model InstagramAccount {
 
   @@index([workspaceId])
   @@index([archivedAt])
+}
+
+/// Durable, non-PII receipt for Meta's data-deletion callback. The raw
+/// platform identifier and signed request are never stored; hashes make
+/// retries idempotent while the confirmation code powers Meta's status URL.
+model MetaDataDeletionRequest {
+  id                     String    @id @default(cuid())
+  confirmationCode       String    @unique
+  requestFingerprint     String    @unique
+  platformUserIdHash     String
+  matchedUsername        String?
+  status                 String    @default("PROCESSING")
+  requestedAt            DateTime  @default(now())
+  completedAt            DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@index([status])
+  @@index([requestedAt])
 }
 
 model InstagramCapability {

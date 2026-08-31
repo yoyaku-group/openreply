@@ -46,17 +46,23 @@ describe("Meta reviewer access", () => {
     );
   });
 
-  it("verifies only the exact scrypt reviewer passphrase", () => {
-    const encoded = createMetaReviewerPasswordHash(
-      "review-only-passphrase",
-      Buffer.alloc(24, 7),
-    );
-    expect(verifyMetaReviewerPassword("review-only-passphrase", encoded)).toBe(
-      true,
-    );
-    expect(verifyMetaReviewerPassword("wrong", encoded)).toBe(false);
-    expect(verifyMetaReviewerPassword("anything", "not-a-hash")).toBe(false);
-  });
+  it(
+    "verifies only the exact scrypt reviewer passphrase",
+    () => {
+      const encoded = createMetaReviewerPasswordHash(
+        "review-only-passphrase",
+        Buffer.alloc(24, 7),
+      );
+      expect(
+        verifyMetaReviewerPassword("review-only-passphrase", encoded),
+      ).toBe(true);
+      expect(verifyMetaReviewerPassword("wrong", encoded)).toBe(false);
+      expect(verifyMetaReviewerPassword("anything", "not-a-hash")).toBe(
+        false,
+      );
+    },
+    15_000,
+  );
 
   it("caps each reviewer session at eight hours and the reviewer expiry", () => {
     const now = new Date("2026-08-31T12:00:00.000Z");

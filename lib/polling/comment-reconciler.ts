@@ -39,6 +39,7 @@ import {
   buildCapabilityRegistry,
   evaluateInstagramFeature,
 } from "@/lib/meta/capabilities";
+import { getMetaAppConfiguration } from "@/lib/meta/app-config";
 
 // Only consider comments from the last few days — older ones are outside
 // Instagram's private-reply window anyway, so a DM to them would just fail.
@@ -87,6 +88,7 @@ export async function reconcileComments(): Promise<void> {
           accessToken: true,
           subscribedFields: true,
           subscriptionCheckedAt: true,
+          lastCommentWebhookAt: true,
           capabilities: {
             select: {
               kind: true,
@@ -137,6 +139,7 @@ async function sweepCampaign(
       accessToken: string;
       subscribedFields: string[];
       subscriptionCheckedAt: Date | null;
+      lastCommentWebhookAt: Date | null;
       capabilities: Array<{
         kind:
           "BASIC" | "COMMENTS" | "MESSAGES" | "INSIGHTS" | "CONTENT_PUBLISH";
@@ -168,6 +171,8 @@ async function sweepCampaign(
     buildCapabilityRegistry(account.capabilities),
     account.subscribedFields,
     account.subscriptionCheckedAt,
+    getMetaAppConfiguration().webhookFields,
+    account.lastCommentWebhookAt,
   );
   if (!readiness.ready) {
     stat.errors.push(

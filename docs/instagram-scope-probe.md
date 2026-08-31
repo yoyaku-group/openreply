@@ -15,12 +15,18 @@ subscription POST as proof that a feature works.
 `GET /{ig-user-id}/subscribed_apps`. The legacy `webhookSubscribed` and
 `scopes[]` fields remain transitional projections only.
 
+`INSTAGRAM_APP_WEBHOOK_FIELDS` stores the separately audited fields selected in
+App Dashboard -> Instagram -> Webhooks. Meta's Instagram Login token rail does
+not expose a dependable readback for this app-level setting, so the source is
+reported as `operator_attested`. A fresh real webhook arrival is stronger
+positive evidence than the configured list.
+
 ## Feature gates
 
-- COMMENT automation: BASIC READY + COMMENTS READY + fresh verified `comments`
-  subscription
-- inbound DM automation: BASIC READY + MESSAGES READY + fresh verified
-  `messages` subscription
+- COMMENT automation: BASIC READY + COMMENTS READY + MESSAGES READY + fresh
+  account-level `comments` installation + app-level `comments` field
+- inbound DM automation: BASIC READY + MESSAGES READY + fresh account-level
+  `messages` installation + app-level `messages` field
 - insights: BASIC READY + INSIGHTS READY; no webhook dependency
 
 UNKNOWN, BLOCKED, ERROR, and STALE all fail closed for activation. There is no
@@ -71,7 +77,10 @@ comment from distinct account `@benjaminbelaga` produced no WebhookEvent,
 ProcessedComment, or DmLog while Postgres, Redis, queue, web, and worker were
 healthy.
 
-This proves that reconnecting or repeating the subscription POST is not a fix.
-The token/app access state is blocked upstream. Follow
+The Meta dashboard audit then established three cumulative external blockers:
+the parent app was unpublished, none of the four permissions had Advanced
+Access, and app-level `messages` was not subscribed even though the account
+installation listed it. This proves that reconnecting or repeating the account
+subscription POST is not a fix. Follow
 `docs/meta-app-review-brief.md` and canary only one production account after
 approval.

@@ -118,6 +118,7 @@ export async function GET(request: NextRequest) {
       create: {
         workspaceId: state.workspaceId,
         instagramId,
+        instagramScopedId: userInfo.id,
         username: userInfo.username,
         name: userInfo.name,
         accessToken: encryptedToken,
@@ -133,6 +134,7 @@ export async function GET(request: NextRequest) {
       },
       update: {
         workspaceId: state.workspaceId,
+        instagramScopedId: userInfo.id,
         username: userInfo.username,
         name: userInfo.name,
         accessToken: encryptedToken,

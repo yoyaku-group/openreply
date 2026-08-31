@@ -41,6 +41,7 @@ describe("evaluateInstagramFeature", () => {
         registry(),
         ["comments", "messages"],
         new Date(),
+        ["comments", "messages"],
       ),
     ).toEqual({ ready: true, blockers: [] });
   });
@@ -53,6 +54,7 @@ describe("evaluateInstagramFeature", () => {
       }),
       ["comments", "messages"],
       new Date(),
+      ["comments", "messages"],
     );
 
     expect(result.ready).toBe(false);
@@ -69,6 +71,7 @@ describe("evaluateInstagramFeature", () => {
       }),
       ["comments", "messages"],
       new Date(),
+      ["comments", "messages"],
     );
     expect(result.ready).toBe(false);
     expect(result.blockers).toContain(
@@ -86,6 +89,7 @@ describe("evaluateInstagramFeature", () => {
       registry({ COMMENTS: stale }),
       ["comments"],
       new Date(),
+      ["comments", "messages"],
     );
     expect(result.ready).toBe(false);
     expect(result.blockers).toContain("comments=STALE");
@@ -93,9 +97,23 @@ describe("evaluateInstagramFeature", () => {
   });
 
   it("keeps insights independent from webhook subscriptions", () => {
-    expect(evaluateInstagramFeature("INSIGHTS", registry(), [], null)).toEqual({
-      ready: true,
-      blockers: [],
-    });
+    expect(
+      evaluateInstagramFeature("INSIGHTS", registry(), [], null, []),
+    ).toEqual({ ready: true, blockers: [] });
+  });
+
+  it("distinguishes account installation from app-level webhook fields", () => {
+    const result = evaluateInstagramFeature(
+      "MESSAGES",
+      registry(),
+      ["comments", "messages"],
+      new Date(),
+      ["comments", "messaging_postbacks", "messaging_seen"],
+    );
+
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContain(
+      "app_webhook_subscription=MISSING_messages",
+    );
   });
 });

@@ -11,6 +11,7 @@ import {
   type InstagramCapabilityProbe,
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
+import { getMetaAppConfiguration } from "@/lib/meta/app-config";
 
 const PROBE_CACHE_MS = 60 * 60 * 1000;
 export const CAPABILITY_STALE_MS = 24 * 60 * 60 * 1000;
@@ -44,6 +45,9 @@ export interface InstagramCapabilitySnapshot {
   subscriptionCheckedAt: Date | null;
   lastCommentWebhookAt: Date | null;
   lastMessageWebhookAt: Date | null;
+  appWebhookFields: string[];
+  appWebhookSource: "operator_attested";
+  metaAppMode: "development" | "live" | "unknown";
   capabilities: Record<InstagramCapabilityKind, CachedCapability>;
   features: {
     comments: FeatureReadiness;
@@ -103,6 +107,8 @@ export function evaluateInstagramFeature(
   capabilities: Record<InstagramCapabilityKind, CachedCapability>,
   subscribedFields: readonly string[],
   subscriptionCheckedAt: Date | null,
+  appWebhookFields: readonly string[],
+  lastWebhookAt: Date | null = null,
 ): FeatureReadiness {
   const blockers: string[] = [];
   const basic = capabilities.BASIC;
@@ -147,6 +153,15 @@ export function evaluateInstagramFeature(
     } else if (!subscribedFields.includes(subscribedField)) {
       blockers.push(`webhook_subscription=MISSING_${subscribedField}`);
     }
+    // Account installation and app-dashboard subscriptions are separate Meta
+    // layers. A fresh real webhook is stronger evidence than an operator-
+    // attested dashboard list and allows recovery if that list is stale.
+    if (
+      !appWebhookFields.includes(subscribedField) &&
+      !isFresh(lastWebhookAt)
+    ) {
+      blockers.push(`app_webhook_subscription=MISSING_${subscribedField}`);
+    }
   }
 
   return { ready: blockers.length === 0, blockers };
@@ -168,6 +183,7 @@ function toSnapshot(
   account: AccountWithCapabilities,
 ): InstagramCapabilitySnapshot {
   const capabilities = buildCapabilityRegistry(account.capabilities);
+  const appConfig = getMetaAppConfiguration();
   return {
     accountId: account.id,
     username: account.username,
@@ -176,6 +192,9 @@ function toSnapshot(
     subscriptionCheckedAt: account.subscriptionCheckedAt,
     lastCommentWebhookAt: account.lastCommentWebhookAt,
     lastMessageWebhookAt: account.lastMessageWebhookAt,
+    appWebhookFields: appConfig.webhookFields,
+    appWebhookSource: appConfig.source,
+    metaAppMode: appConfig.mode,
     capabilities,
     features: {
       comments: evaluateInstagramFeature(
@@ -183,18 +202,23 @@ function toSnapshot(
         capabilities,
         account.subscribedFields,
         account.subscriptionCheckedAt,
+        appConfig.webhookFields,
+        account.lastCommentWebhookAt,
       ),
       messages: evaluateInstagramFeature(
         "MESSAGES",
         capabilities,
         account.subscribedFields,
         account.subscriptionCheckedAt,
+        appConfig.webhookFields,
+        account.lastMessageWebhookAt,
       ),
       insights: evaluateInstagramFeature(
         "INSIGHTS",
         capabilities,
         account.subscribedFields,
         account.subscriptionCheckedAt,
+        appConfig.webhookFields,
       ),
     },
     activeCommentAutomations: account._count.automations,
