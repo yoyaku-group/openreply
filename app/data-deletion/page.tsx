@@ -12,7 +12,7 @@ export default function DataDeletionPage() {
     <LegalShell
       title="Data Deletion"
       description="Use this page for Meta App Review and customer requests about removing OpenReply account, workspace, Instagram, and campaign data."
-      updatedAt="May 24, 2026"
+      updatedAt="August 31, 2026"
     >
       <section>
         <h2 className="text-xl font-bold text-white">Disconnect Instagram</h2>
@@ -26,10 +26,18 @@ export default function DataDeletionPage() {
       <section>
         <h2 className="text-xl font-bold text-white">Delete Workspace Data</h2>
         <p className="mt-3">
-          To delete workspace, campaign, log, webhook, billing reference, and
-          operational diagnostic data, contact support from the email address
-          used to sign in. Include the workspace name and the Instagram username
-          connected to the workspace.
+          Email{" "}
+          <a
+            className="text-accent hover:underline"
+            href="mailto:ben@yoyaku.fr"
+          >
+            ben@yoyaku.fr
+          </a>{" "}
+          from the address used to sign in. Use the subject “OpenReply data
+          deletion” and include the workspace name and connected Instagram
+          username. State whether you want one Instagram connection removed or
+          the complete workspace, campaign, delivery log, webhook, and
+          operational record set deleted.
         </p>
       </section>
 
@@ -38,8 +46,21 @@ export default function DataDeletionPage() {
         <p className="mt-3">
           We may ask you to verify control of the email address or connected
           business account before deleting data. Deletion requests are processed
-          as quickly as practical unless retention is required for legal,
-          billing, fraud prevention, or security reasons.
+          without undue delay. We confirm receipt and the completion status by
+          email. Limited records may be retained where required for legal,
+          billing, fraud prevention, or security reasons, and the response will
+          identify that exception.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="text-xl font-bold text-white">Meta Platform Data</h2>
+        <p className="mt-3">
+          The same request process covers data received from Meta, including
+          Instagram account identifiers, encrypted access tokens, redacted
+          webhook events, comments processed for campaigns, and delivery logs.
+          Disconnecting an Instagram account immediately prevents further use of
+          its token.
         </p>
       </section>
     </LegalShell>

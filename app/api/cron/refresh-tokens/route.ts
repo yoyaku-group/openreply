@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { decryptToken, encryptToken } from "@/lib/meta/oauth";
 import { refreshLongLivedToken } from "@/lib/meta/client";
+import { probeInstagramAccountCapabilities } from "@/lib/meta/capabilities";
 
 const DAYS_BEFORE_EXPIRY = 10;
 
@@ -66,6 +67,11 @@ export async function GET(request: NextRequest) {
           accessToken: encryptedToken,
           tokenExpiresAt: newExpiry,
         },
+      });
+
+      await probeInstagramAccountCapabilities(account.id, {
+        workspaceId: account.workspaceId,
+        forceRefresh: true,
       });
 
       results.push({

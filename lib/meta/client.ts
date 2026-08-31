@@ -9,7 +9,7 @@ export class MetaApiError extends Error {
     public code: number,
     public subcode: number | undefined,
     public fbTraceId: string | undefined,
-    message: string
+    message: string,
   ) {
     super(message);
     this.name = "MetaApiError";
@@ -98,6 +98,30 @@ export interface InstagramMediaInsights {
   total_interactions?: number;
 }
 
+export const INSTAGRAM_CAPABILITY_KINDS = [
+  "BASIC",
+  "COMMENTS",
+  "MESSAGES",
+  "INSIGHTS",
+  "CONTENT_PUBLISH",
+] as const;
+
+export type InstagramCapabilityKind =
+  (typeof INSTAGRAM_CAPABILITY_KINDS)[number];
+export type InstagramCapabilityStatus =
+  "UNKNOWN" | "READY" | "BLOCKED" | "ERROR" | "STALE";
+
+export interface InstagramCapabilityProbeResult {
+  status: InstagramCapabilityStatus;
+  reason: string;
+  evidence: Record<string, string | number | boolean | null>;
+}
+
+export type InstagramCapabilityProbe = Record<
+  InstagramCapabilityKind,
+  InstagramCapabilityProbeResult
+>;
+
 interface TokenResponse {
   access_token: string;
   token_type?: string;
@@ -137,7 +161,7 @@ export async function sendPrivateReply(
   accessToken: string,
   instagramAccountId: string,
   commentId: string,
-  message: string
+  message: string,
 ): Promise<{ recipient_id: string; message_id: string }> {
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
@@ -151,7 +175,7 @@ export async function sendPrivateReply(
         recipient: { comment_id: commentId },
         message: { text: message },
       }),
-    }
+    },
   );
 
   return handleResponse(response);
@@ -169,7 +193,7 @@ export async function sendPrivateReplyWithButton(
   commentId: string,
   text: string,
   buttonTitle: string,
-  payload: string
+  payload: string,
 ): Promise<{ recipient_id: string; message_id: string }> {
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
@@ -195,7 +219,7 @@ export async function sendPrivateReplyWithButton(
           },
         },
       }),
-    }
+    },
   );
 
   return handleResponse(response);
@@ -212,7 +236,7 @@ export async function sendDirectMessageWithButton(
   userId: string,
   text: string,
   buttonTitle: string,
-  payload: string
+  payload: string,
 ): Promise<{ recipient_id: string; message_id: string }> {
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
@@ -237,7 +261,7 @@ export async function sendDirectMessageWithButton(
           },
         },
       }),
-    }
+    },
   );
 
   return handleResponse(response);
@@ -252,7 +276,7 @@ export async function sendDirectMessageWithButton(
  */
 export async function getUserFollowStatus(
   accessToken: string,
-  recipientId: string
+  recipientId: string,
 ): Promise<boolean | null> {
   const url = new URL(`${instagramGraphBase()}/${recipientId}`);
   url.searchParams.set("fields", "is_user_follow_business");
@@ -297,7 +321,7 @@ export async function sendPrivateReplyWithLinkButton(
   instagramAccountId: string,
   commentId: string,
   text: string,
-  buttons: LinkButton[]
+  buttons: LinkButton[],
 ): Promise<{ recipient_id: string; message_id: string }> {
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
@@ -320,7 +344,7 @@ export async function sendPrivateReplyWithLinkButton(
           },
         },
       }),
-    }
+    },
   );
 
   return handleResponse(response);
@@ -334,7 +358,7 @@ export async function sendDirectMessage(
   accessToken: string,
   instagramAccountId: string,
   userId: string,
-  message: string
+  message: string,
 ): Promise<{ recipient_id: string; message_id: string }> {
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
@@ -348,7 +372,7 @@ export async function sendDirectMessage(
         recipient: { id: userId },
         message: { text: message },
       }),
-    }
+    },
   );
 
   return handleResponse(response);
@@ -363,7 +387,7 @@ export async function sendDirectMessageWithLinkButton(
   instagramAccountId: string,
   userId: string,
   text: string,
-  buttons: LinkButton[]
+  buttons: LinkButton[],
 ): Promise<{ recipient_id: string; message_id: string }> {
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
@@ -386,7 +410,7 @@ export async function sendDirectMessageWithLinkButton(
           },
         },
       }),
-    }
+    },
   );
 
   return handleResponse(response);
@@ -395,26 +419,23 @@ export async function sendDirectMessageWithLinkButton(
 export async function sendCommentReply(
   accessToken: string,
   commentId: string,
-  message: string
+  message: string,
 ): Promise<{ id: string }> {
-  const response = await fetch(
-    `${instagramGraphBase()}/${commentId}/replies`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({ message }),
-    }
-  );
+  const response = await fetch(`${instagramGraphBase()}/${commentId}/replies`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ message }),
+  });
 
   return handleResponse(response);
 }
 
 export async function getMediaComments(
   accessToken: string,
-  mediaId: string
+  mediaId: string,
 ): Promise<InstagramComment[]> {
   const url = new URL(`${instagramGraphBase()}/${mediaId}/comments`);
   url.searchParams.set("fields", "id,text,from,timestamp");
@@ -440,7 +461,7 @@ export async function getRecentMediaComments(
   accessToken: string,
   mediaId: string,
   sinceMs: number,
-  max = 800
+  max = 800,
 ): Promise<InstagramComment[]> {
   const results: InstagramComment[] = [];
 
@@ -502,19 +523,21 @@ export interface InstagramConversation {
  */
 export async function getConversations(
   accessToken: string,
-  igUserId: string
+  igUserId: string,
 ): Promise<InstagramConversation[]> {
   const url = new URL(`${instagramGraphBase()}/${igUserId}/conversations`);
   url.searchParams.set("platform", "instagram");
   url.searchParams.set(
     "fields",
-    "participants,updated_time,messages.limit(1){message,from,created_time}"
+    "participants,updated_time,messages.limit(1){message,from,created_time}",
   );
   url.searchParams.set("limit", "50");
   url.searchParams.set("access_token", accessToken);
 
   const response = await fetch(url.toString());
-  const data = await handleResponse<{ data: InstagramConversation[] }>(response);
+  const data = await handleResponse<{ data: InstagramConversation[] }>(
+    response,
+  );
   return data.data ?? [];
 }
 
@@ -524,16 +547,16 @@ export async function getConversations(
  */
 export async function getConversationMessages(
   accessToken: string,
-  conversationId: string
+  conversationId: string,
 ): Promise<InstagramMessage[]> {
   const url = new URL(`${instagramGraphBase()}/${conversationId}`);
   url.searchParams.set("fields", "messages{id,created_time,from,to,message}");
   url.searchParams.set("access_token", accessToken);
 
   const response = await fetch(url.toString());
-  const data = await handleResponse<{ messages?: { data: InstagramMessage[] } }>(
-    response
-  );
+  const data = await handleResponse<{
+    messages?: { data: InstagramMessage[] };
+  }>(response);
   return data.messages?.data ?? [];
 }
 
@@ -541,7 +564,7 @@ export async function getUserInfo(accessToken: string): Promise<InstagramUser> {
   const url = new URL(`${instagramGraphBase()}/me`);
   url.searchParams.set(
     "fields",
-    "id,user_id,username,name,profile_picture_url,followers_count"
+    "id,user_id,username,name,profile_picture_url,followers_count",
   );
   url.searchParams.set("access_token", accessToken);
 
@@ -555,7 +578,7 @@ const MEDIA_FIELDS =
 /** Read one media object using the selected professional account token. */
 export async function getMediaById(
   accessToken: string,
-  mediaId: string
+  mediaId: string,
 ): Promise<InstagramMedia> {
   const url = new URL(`${instagramGraphBase()}/${mediaId}`);
   url.searchParams.set("fields", MEDIA_FIELDS);
@@ -576,11 +599,14 @@ export interface InstagramMediaPage {
 export async function getUserMediaPage(
   accessToken: string,
   after: string | null,
-  limit = MEDIA_PAGE_SIZE
+  limit = MEDIA_PAGE_SIZE,
 ): Promise<InstagramMediaPage> {
   const url = new URL(`${instagramGraphBase()}/me/media`);
   url.searchParams.set("fields", MEDIA_FIELDS);
-  url.searchParams.set("limit", String(Math.min(MEDIA_PAGE_SIZE, Math.max(1, limit))));
+  url.searchParams.set(
+    "limit",
+    String(Math.min(MEDIA_PAGE_SIZE, Math.max(1, limit))),
+  );
   if (after) url.searchParams.set("after", after);
   url.searchParams.set("access_token", accessToken);
 
@@ -602,7 +628,7 @@ export async function getUserMediaPage(
 
 export async function getUserMedia(
   accessToken: string,
-  limit = 25
+  limit = 25,
 ): Promise<InstagramMedia[]> {
   const url = new URL(`${instagramGraphBase()}/me/media`);
   url.searchParams.set("fields", MEDIA_FIELDS);
@@ -622,7 +648,7 @@ export async function getUserMedia(
  */
 export async function getAllUserMedia(
   accessToken: string,
-  max = 500
+  max = 500,
 ): Promise<InstagramMedia[]> {
   const results: InstagramMedia[] = [];
 
@@ -657,7 +683,7 @@ export async function getAllUserMedia(
 export async function getMediaInsights(
   accessToken: string,
   mediaId: string,
-  metrics: string[]
+  metrics: string[],
 ): Promise<InstagramMediaInsights> {
   const url = new URL(`${instagramGraphBase()}/${mediaId}/insights`);
   url.searchParams.set("metric", metrics.join(","));
@@ -703,7 +729,7 @@ const FOLLOWER_INSIGHT_MAX_DAYS = 30;
 export async function getFollowerCountSeries(
   accessToken: string,
   instagramAccountId: string,
-  days: number = FOLLOWER_INSIGHT_MAX_DAYS
+  days: number = FOLLOWER_INSIGHT_MAX_DAYS,
 ): Promise<FollowerCountPoint[] | null> {
   const span = Math.min(Math.max(days, 1), FOLLOWER_INSIGHT_MAX_DAYS);
   const until = Math.floor(Date.now() / 1000);
@@ -739,14 +765,14 @@ export async function getFollowerCountSeries(
     if (err instanceof PermissionError) throw err;
     console.warn(
       "[Instagram] follower_count insights unavailable:",
-      err instanceof Error ? err.message : err
+      err instanceof Error ? err.message : err,
     );
     return null;
   }
 }
 
 export async function getLongLivedToken(
-  shortLivedToken: string
+  shortLivedToken: string,
 ): Promise<{ accessToken: string; expiresIn: number }> {
   const url = new URL(`${instagramGraphBase()}/access_token`);
   url.searchParams.set("grant_type", "ig_exchange_token");
@@ -763,7 +789,7 @@ export async function getLongLivedToken(
 }
 
 export async function refreshLongLivedToken(
-  longLivedToken: string
+  longLivedToken: string,
 ): Promise<{ accessToken: string; expiresIn: number }> {
   const url = new URL(`${instagramGraphBase()}/refresh_access_token`);
   url.searchParams.set("grant_type", "ig_refresh_token");
@@ -780,7 +806,7 @@ export async function refreshLongLivedToken(
 
 export async function subscribeInstagramAccountToWebhooks(
   instagramAccountId: string,
-  accessToken: string
+  accessToken: string,
 ): Promise<{ success: boolean }> {
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/subscribed_apps`,
@@ -793,10 +819,177 @@ export async function subscribeInstagramAccountToWebhooks(
       body: JSON.stringify({
         subscribed_fields: ["comments", "messages"],
       }),
-    }
+    },
   );
 
   return handleResponse(response);
+}
+
+/**
+ * Read back the fields Meta actually subscribed for this professional account.
+ * A successful POST to /subscribed_apps is only an acknowledgement; this GET
+ * is the durable verification used by activation gates and diagnostics.
+ */
+export async function getInstagramWebhookSubscriptions(
+  instagramAccountId: string,
+  accessToken: string,
+): Promise<string[]> {
+  const response = await fetch(
+    `${instagramGraphBase()}/${instagramAccountId}/subscribed_apps`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+  );
+  const body = await handleResponse<{
+    data?: Array<{ subscribed_fields?: string[] }>;
+  }>(response);
+  return [
+    ...new Set(
+      (body.data ?? []).flatMap((entry) => entry.subscribed_fields ?? []),
+    ),
+  ].sort();
+}
+
+function capabilityResult(
+  status: InstagramCapabilityStatus,
+  reason: string,
+  evidence: InstagramCapabilityProbeResult["evidence"] = {},
+): InstagramCapabilityProbeResult {
+  return { status, reason, evidence };
+}
+
+function blockedOrError(status: number): InstagramCapabilityStatus {
+  return status === 400 || status === 401 || status === 403
+    ? "BLOCKED"
+    : "ERROR";
+}
+
+/**
+ * Functional capability probe for Instagram Login tokens.
+ *
+ * This deliberately distinguishes an unavailable capability from an
+ * inconclusive probe. In particular, `comments_count > 0` paired with a 200
+ * response containing `data: []` is a definite Meta visibility block, while
+ * an account with no sampled commented media remains UNKNOWN.
+ */
+export async function probeInstagramCapabilities(
+  accessToken: string,
+): Promise<InstagramCapabilityProbe> {
+  const auth = `access_token=${encodeURIComponent(accessToken)}`;
+  const result: InstagramCapabilityProbe = {
+    BASIC: capabilityResult("ERROR", "NOT_PROBED"),
+    COMMENTS: capabilityResult("UNKNOWN", "NOT_PROBED"),
+    MESSAGES: capabilityResult("UNKNOWN", "NOT_PROBED"),
+    INSIGHTS: capabilityResult("UNKNOWN", "NOT_PROBED"),
+    CONTENT_PUBLISH: capabilityResult("UNKNOWN", "NOT_REQUESTED"),
+  };
+
+  const me = await fetch(
+    `${instagramGraphBase()}/me?fields=id,username&${auth}`,
+  );
+  if (!me.ok) {
+    throw new Error(`capability probe: /me failed with HTTP ${me.status}`);
+  }
+  result.BASIC = capabilityResult("READY", "PROFILE_VISIBLE", {
+    httpStatus: me.status,
+  });
+
+  const conversations = await fetch(
+    `${instagramGraphBase()}/me/conversations?limit=1&${auth}`,
+  );
+  result.MESSAGES = conversations.ok
+    ? capabilityResult("READY", "CONVERSATIONS_VISIBLE", {
+        httpStatus: conversations.status,
+      })
+    : capabilityResult(
+        blockedOrError(conversations.status),
+        "CONVERSATIONS_API_DENIED",
+        { httpStatus: conversations.status },
+      );
+
+  const media = await fetch(
+    `${instagramGraphBase()}/me/media?fields=id,comments_count&limit=50&${auth}`,
+  );
+  if (!media.ok) {
+    result.COMMENTS = capabilityResult(
+      blockedOrError(media.status),
+      "MEDIA_API_DENIED",
+      { httpStatus: media.status },
+    );
+    result.INSIGHTS = capabilityResult(
+      blockedOrError(media.status),
+      "MEDIA_API_DENIED",
+      { httpStatus: media.status },
+    );
+    return result;
+  }
+
+  const mediaBody = (await media.json()) as {
+    data?: Array<{ id: string; comments_count?: number }>;
+  };
+  const mediaRows = mediaBody.data ?? [];
+  const commented = mediaRows.find((row) => (row.comments_count ?? 0) > 0);
+
+  if (!commented) {
+    result.COMMENTS = capabilityResult("UNKNOWN", "NO_COMMENTED_MEDIA", {
+      sampledMedia: mediaRows.length,
+    });
+  } else {
+    const comments = await fetch(
+      `${instagramGraphBase()}/${commented.id}/comments?limit=1&${auth}`,
+    );
+    if (!comments.ok) {
+      result.COMMENTS = capabilityResult(
+        blockedOrError(comments.status),
+        "COMMENTS_API_DENIED",
+        {
+          httpStatus: comments.status,
+          mediaId: commented.id,
+          commentsCount: commented.comments_count ?? 0,
+        },
+      );
+    } else {
+      const commentsBody = (await comments.json()) as { data?: unknown[] };
+      const visibleComments = Array.isArray(commentsBody.data)
+        ? commentsBody.data.length
+        : 0;
+      result.COMMENTS =
+        visibleComments > 0
+          ? capabilityResult("READY", "COMMENTS_VISIBLE", {
+              httpStatus: comments.status,
+              mediaId: commented.id,
+              commentsCount: commented.comments_count ?? 0,
+              visibleComments,
+            })
+          : capabilityResult("BLOCKED", "COMMENTS_HIDDEN_BY_META", {
+              httpStatus: comments.status,
+              mediaId: commented.id,
+              commentsCount: commented.comments_count ?? 0,
+              visibleComments,
+            });
+    }
+  }
+
+  const insightMedia = mediaRows[0];
+  if (!insightMedia) {
+    result.INSIGHTS = capabilityResult("UNKNOWN", "NO_MEDIA_FOR_INSIGHTS");
+  } else {
+    const insights = await fetch(
+      `${instagramGraphBase()}/${insightMedia.id}/insights?metric=reach&${auth}`,
+    );
+    result.INSIGHTS = insights.ok
+      ? capabilityResult("READY", "MEDIA_INSIGHTS_VISIBLE", {
+          httpStatus: insights.status,
+          mediaId: insightMedia.id,
+        })
+      : capabilityResult(
+          blockedOrError(insights.status),
+          "MEDIA_INSIGHTS_API_DENIED",
+          { httpStatus: insights.status, mediaId: insightMedia.id },
+        );
+  }
+
+  return result;
 }
 
 /**
@@ -820,48 +1013,21 @@ export async function subscribeInstagramAccountToWebhooks(
  * treat that as probe failure, not as "all scopes missing".
  */
 export async function probeInstagramLoginScopes(
-  accessToken: string
+  accessToken: string,
 ): Promise<string[]> {
+  const probe = await probeInstagramCapabilities(accessToken);
   const granted: string[] = [];
-  const auth = `access_token=${encodeURIComponent(accessToken)}`;
-
-  const me = await fetch(
-    `${instagramGraphBase()}/me?fields=id,username&${auth}`
-  );
-  if (!me.ok) {
-    throw new Error(`scope probe: /me failed with HTTP ${me.status}`);
+  if (probe.BASIC.status === "READY") {
+    granted.push("instagram_business_basic");
   }
-  granted.push("instagram_business_basic");
-
-  const conversations = await fetch(
-    `${instagramGraphBase()}/me/conversations?limit=1&${auth}`
-  );
-  if (conversations.ok) {
+  if (probe.MESSAGES.status === "READY") {
     granted.push("instagram_business_manage_messages");
   }
-
-  const media = await fetch(
-    `${instagramGraphBase()}/me/media?fields=id,comments_count&limit=25&${auth}`
-  );
-  if (media.ok) {
-    const body = (await media.json()) as {
-      data?: Array<{ id: string; comments_count?: number }>;
-    };
-    const commented = (body.data ?? []).find(
-      (m) => (m.comments_count ?? 0) > 0
-    );
-    if (commented) {
-      const comments = await fetch(
-        `${instagramGraphBase()}/${commented.id}/comments?limit=1&${auth}`
-      );
-      if (comments.ok) {
-        const commentsBody = (await comments.json()) as { data?: unknown[] };
-        if (Array.isArray(commentsBody.data) && commentsBody.data.length > 0) {
-          granted.push("instagram_business_manage_comments");
-        }
-      }
-    }
+  if (probe.COMMENTS.status === "READY") {
+    granted.push("instagram_business_manage_comments");
   }
-
+  if (probe.INSIGHTS.status === "READY") {
+    granted.push("instagram_business_manage_insights");
+  }
   return granted;
 }

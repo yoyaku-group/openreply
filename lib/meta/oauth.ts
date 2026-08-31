@@ -14,6 +14,7 @@ export const INSTAGRAM_OAUTH_SCOPE_VALUES = [
   "instagram_business_basic",
   "instagram_business_manage_messages",
   "instagram_business_manage_comments",
+  "instagram_business_manage_insights",
 ] as const;
 const INSTAGRAM_OAUTH_SCOPE = INSTAGRAM_OAUTH_SCOPE_VALUES.join(",");
 const INSTAGRAM_OAUTH_URL = "https://api.instagram.com/oauth/authorize";
@@ -44,12 +45,14 @@ function signState(payload: string): string {
 
 export function createOAuthState(workspaceId: string): string {
   const payload = base64UrlEncode(
-    JSON.stringify({ workspaceId, ts: Date.now() } satisfies OAuthStatePayload)
+    JSON.stringify({ workspaceId, ts: Date.now() } satisfies OAuthStatePayload),
   );
   return `${payload}.${signState(payload)}`;
 }
 
-export function verifyOAuthState(state: string | null): OAuthStatePayload | null {
+export function verifyOAuthState(
+  state: string | null,
+): OAuthStatePayload | null {
   if (!state) return null;
 
   const [payload, signature] = state.split(".");
@@ -78,16 +81,16 @@ export function verifyOAuthState(state: string | null): OAuthStatePayload | null
   }
 }
 
-export function getAuthorizationUrl(redirectUri: string, state: string): string {
+export function getAuthorizationUrl(
+  redirectUri: string,
+  state: string,
+): string {
   const params = new URLSearchParams({
     client_id: requireEnv("INSTAGRAM_APP_ID"),
     redirect_uri: redirectUri,
-    // instagram_business_manage_insights is deliberately absent: Meta refuses to
-    // add it to an app configured with Instagram Login (it is offered on the
-    // Facebook Login variant instead), and requesting an unconfigured scope
-    // fails the whole authorization. The overview route already degrades to
-    // insightsAvailable=false, so views/reach/saved/shares simply stay hidden.
-    // Re-add it here if Meta ever exposes it on the Instagram Login setup.
+    // Keep this list aligned with the permissions enabled for the Instagram API
+    // use case in Meta App Dashboard. Requesting an unconfigured scope fails the
+    // entire authorization instead of partially granting the rest.
     scope: INSTAGRAM_OAUTH_SCOPE,
     response_type: "code",
     state,
@@ -98,7 +101,7 @@ export function getAuthorizationUrl(redirectUri: string, state: string): string 
 
 export async function exchangeCodeForToken(
   code: string,
-  redirectUri: string
+  redirectUri: string,
 ): Promise<{ accessToken: string; userId: string }> {
   const body = new URLSearchParams({
     client_id: requireEnv("INSTAGRAM_APP_ID"),
@@ -117,7 +120,7 @@ export async function exchangeCodeForToken(
   if (!response.ok) {
     const error = await response.json();
     throw new Error(
-      `Token exchange failed: ${error.error_message || JSON.stringify(error)}`
+      `Token exchange failed: ${error.error_message || JSON.stringify(error)}`,
     );
   }
 
@@ -158,7 +161,8 @@ export function decryptToken(encryptedBase64: string): string {
   const decipher = createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(authTag);
 
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString(
-    "utf8"
-  );
+  return Buffer.concat([
+    decipher.update(ciphertext),
+    decipher.final(),
+  ]).toString("utf8");
 }

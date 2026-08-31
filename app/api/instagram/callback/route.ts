@@ -5,16 +5,22 @@ import { getRequestBaseUrl } from "@/lib/env";
 import { canConnectInstagramAccount } from "@/lib/instagram-accounts";
 import {
   getLongLivedToken,
+  getInstagramWebhookSubscriptions,
   getUserInfo,
-  probeInstagramLoginScopes,
+  probeInstagramCapabilities,
   subscribeInstagramAccountToWebhooks,
 } from "@/lib/meta/client";
+import {
+  legacyScopesFromCapabilityProbe,
+  persistInstagramCapabilityProbe,
+} from "@/lib/meta/capabilities";
+import type { InstagramCapabilityProbe } from "@/lib/meta/client";
 import {
   encryptToken,
   exchangeCodeForToken,
   verifyOAuthState,
 } from "@/lib/meta/oauth";
-import { canManageWorkspace } from "@/lib/workspace-access";
+import { canManageCampaigns } from "@/lib/workspace-access";
 
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get("code");
@@ -42,7 +48,7 @@ export async function GET(request: NextRequest) {
     },
   });
 
-  if (!membership || !canManageWorkspace(membership.role)) {
+  if (!membership || !canManageCampaigns(membership.role)) {
     return NextResponse.redirect(`${baseUrl}/settings?instagram=forbidden`);
   }
 
@@ -50,7 +56,7 @@ export async function GET(request: NextRequest) {
     const redirectUri = `${baseUrl}/api/instagram/callback`;
     const { accessToken: shortLivedToken } = await exchangeCodeForToken(
       code,
-      redirectUri
+      redirectUri,
     );
     const { accessToken: longLivedToken, expiresIn } =
       await getLongLivedToken(shortLivedToken);
@@ -67,24 +73,24 @@ export async function GET(request: NextRequest) {
 
     if (!connection.allowed) {
       return NextResponse.redirect(
-        `${baseUrl}/settings?instagram=already_connected`
+        `${baseUrl}/settings?instagram=already_connected`,
       );
     }
 
     const encryptedToken = encryptToken(longLivedToken);
     const tokenExpiresAt = new Date(Date.now() + expiresIn * 1000);
 
-    let webhookSubscribed = false;
+    let subscribedFields: string[] | null = null;
     try {
-      const subscription = await subscribeInstagramAccountToWebhooks(
+      await subscribeInstagramAccountToWebhooks(instagramId, longLivedToken);
+      subscribedFields = await getInstagramWebhookSubscriptions(
         instagramId,
-        longLivedToken
+        longLivedToken,
       );
-      webhookSubscribed = Boolean(subscription.success);
     } catch (subscriptionError) {
       console.warn(
         "[Instagram Callback] Webhook subscription failed:",
-        subscriptionError
+        subscriptionError,
       );
     }
 
@@ -93,19 +99,21 @@ export async function GET(request: NextRequest) {
     // parse Instagram Login tokens, so scopes are inferred via the functional
     // probe (read-only capability smoke calls). If the probe fails, we leave
     // lastScopeProbeAt null so /api/health retries on its next sweep.
+    let capabilityProbe: InstagramCapabilityProbe | null = null;
     let probeScopes: string[] = [];
     let probeAt: Date | null = null;
     try {
-      probeScopes = await probeInstagramLoginScopes(longLivedToken);
+      capabilityProbe = await probeInstagramCapabilities(longLivedToken);
+      probeScopes = legacyScopesFromCapabilityProbe(capabilityProbe);
       probeAt = new Date();
     } catch (probeError) {
       console.warn(
         "[Instagram Callback] scope probe failed:",
-        probeError instanceof Error ? probeError.message : probeError
+        probeError instanceof Error ? probeError.message : probeError,
       );
     }
 
-    await prisma.instagramAccount.upsert({
+    const account = await prisma.instagramAccount.upsert({
       where: { instagramId },
       create: {
         workspaceId: state.workspaceId,
@@ -114,7 +122,12 @@ export async function GET(request: NextRequest) {
         name: userInfo.name,
         accessToken: encryptedToken,
         tokenExpiresAt,
-        webhookSubscribed,
+        webhookSubscribed: Boolean(
+          subscribedFields?.includes("comments") &&
+          subscribedFields.includes("messages"),
+        ),
+        subscribedFields: subscribedFields ?? [],
+        subscriptionCheckedAt: subscribedFields ? new Date() : null,
         scopes: probeScopes,
         lastScopeProbeAt: probeAt,
       },
@@ -124,7 +137,16 @@ export async function GET(request: NextRequest) {
         name: userInfo.name,
         accessToken: encryptedToken,
         tokenExpiresAt,
-        webhookSubscribed,
+        webhookSubscribed: Boolean(
+          subscribedFields?.includes("comments") &&
+          subscribedFields.includes("messages"),
+        ),
+        ...(subscribedFields
+          ? {
+              subscribedFields,
+              subscriptionCheckedAt: new Date(),
+            }
+          : {}),
         scopes: probeScopes,
         lastScopeProbeAt: probeAt,
         // Re-connecting a previously archived account clears the soft-delete
@@ -133,6 +155,15 @@ export async function GET(request: NextRequest) {
         archivedAt: null,
       },
     });
+
+    if (capabilityProbe) {
+      await persistInstagramCapabilityProbe({
+        accountId: account.id,
+        probe: capabilityProbe,
+        subscribedFields: subscribedFields ?? undefined,
+        checkedAt: probeAt ?? undefined,
+      });
+    }
 
     return NextResponse.redirect(`${baseUrl}/dashboard?connected=true`);
   } catch (err) {
@@ -155,8 +186,8 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.redirect(
       `${baseUrl}/settings?instagram=failed&reason=${encodeURIComponent(
-        message.slice(0, 200)
-      )}`
+        message.slice(0, 200),
+      )}`,
     );
   }
 }

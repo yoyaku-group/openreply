@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { getDMQueue, getRedisConnection } from "@/lib/queue/client";
 import { getWorkerHealth } from "@/lib/ops/worker-health";
-import { listCachedAccountScopes } from "@/lib/meta/scope-check";
+import {
+  listCachedInstagramCapabilities,
+  summarizeInstagramCapabilities,
+} from "@/lib/meta/capabilities";
 
 export const runtime = "nodejs";
 // Health must reflect live state (worker heartbeat, queue depth), never a
@@ -46,7 +49,7 @@ async function checkQueue(): Promise<HealthCheck & { counts?: unknown }> {
       "waiting",
       "active",
       "delayed",
-      "failed"
+      "failed",
     );
     return { status: "ok", counts };
   } catch (error) {
@@ -57,10 +60,8 @@ async function checkQueue(): Promise<HealthCheck & { counts?: unknown }> {
   }
 }
 
-const SCOPE_STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24h
-
 /**
- * Token-scope check, read-only from the local DB. NO Meta calls.
+ * Instagram capability check, read-only from the local DB. NO Meta calls.
  *
  * SECURITY: this endpoint is unauthenticated (load-balancer probes), so it
  * MUST NOT trigger live Meta scope probes or expose per-account scope
@@ -72,41 +73,30 @@ const SCOPE_STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24h
  * be useful — usually that means a scheduled cron probe hasn't run, not
  * that scopes just drifted.
  */
-async function checkInstagramScopes(): Promise<
+async function checkInstagramCapabilities(): Promise<
   HealthCheck & {
-    ok_count?: number;
-    degraded_count?: number;
-    stale?: boolean;
+    account_count?: number;
+    comment_ready_count?: number;
+    message_ready_count?: number;
+    active_comment_blocked_count?: number;
   }
 > {
   try {
-    // /api/health is unauthenticated — workspaceId is omitted to fetch
-    // the cross-workspace roll-up used by the load-balancer probe.
-    // Per-account scope detail is gated behind /api/admin/instagram-scopes.
-    const rows = await listCachedAccountScopes();
-    const okCount = rows.filter((r) => r.missing.length === 0).length;
-    const degradedCount = rows.length - okCount;
-    const now = Date.now();
-    const oldest = rows
-      .map((r) => r.lastProbeAt?.getTime() ?? 0)
-      .reduce((a, b) => Math.max(a, b), 0);
-    const stale =
-      rows.length > 0 &&
-      (oldest === 0 || now - oldest > SCOPE_STALE_THRESHOLD_MS);
+    const rows = await listCachedInstagramCapabilities();
+    const summary = summarizeInstagramCapabilities(rows);
     const status: CheckStatus =
-      degradedCount === 0 && !stale ? "ok" : "degraded";
+      summary.activeCommentBlockedCount === 0 ? "ok" : "degraded";
     const detail =
-      degradedCount === 0 && !stale
-        ? `${okCount}/${rows.length} accounts hold all required scopes`
-        : degradedCount > 0
-          ? `${degradedCount}/${rows.length} accounts missing one or more scopes — re-auth via Settings → Instagram`
-          : `Scope data stale (oldest probe >${SCOPE_STALE_THRESHOLD_MS / 3600000}h ago) — run admin probe`;
+      summary.activeCommentBlockedCount === 0
+        ? `${summary.commentReadyCount}/${rows.length} accounts comment-ready; no active blocked comment campaign`
+        : `${summary.activeCommentBlockedCount} account(s) have active COMMENT campaigns without verified comment capability`;
     return {
       status,
       detail,
-      ok_count: okCount,
-      degraded_count: degradedCount,
-      stale,
+      account_count: rows.length,
+      comment_ready_count: summary.commentReadyCount,
+      message_ready_count: summary.messageReadyCount,
+      active_comment_blocked_count: summary.activeCommentBlockedCount,
     };
   } catch (error) {
     return {
@@ -114,33 +104,34 @@ async function checkInstagramScopes(): Promise<
       detail:
         error instanceof Error
           ? error.message
-          : "Instagram scope snapshot failed",
+          : "Instagram capability snapshot failed",
     };
   }
 }
 
 export async function GET() {
-  const [database, redis, queue, worker, instagram_scopes] = await Promise.all([
-    checkDatabase(),
-    checkRedis(),
-    checkQueue(),
-    getWorkerHealth().catch((error) => ({
-      healthy: false,
-      heartbeat: null,
-      ageMs: null,
-      error: error instanceof Error ? error.message : "Worker check failed",
-    })),
-    checkInstagramScopes(),
-  ]);
+  const [database, redis, queue, worker, instagram_capabilities] =
+    await Promise.all([
+      checkDatabase(),
+      checkRedis(),
+      checkQueue(),
+      getWorkerHealth().catch((error) => ({
+        healthy: false,
+        heartbeat: null,
+        ageMs: null,
+        error: error instanceof Error ? error.message : "Worker check failed",
+      })),
+      checkInstagramCapabilities(),
+    ]);
 
   const healthy =
     database.status === "ok" &&
     redis.status === "ok" &&
     queue.status === "ok" &&
     worker.healthy;
-  // instagram_scopes is intentionally excluded from `healthy`: a scope drift
-  // affects comment/DM flows specifically, not the runtime. Operators read
-  // checks.instagram_scopes directly and Discord alerting fires on degraded.
+  // Capability drift is feature health, not process health. The systemd probe
+  // reads active_comment_blocked_count and fails when a dead COMMENT campaign
+  // is active, while this endpoint remains available for diagnosis.
 
   return NextResponse.json(
     {
@@ -150,9 +141,9 @@ export async function GET() {
         redis,
         queue,
         worker,
-        instagram_scopes,
+        instagram_capabilities,
       },
     },
-    { status: healthy ? 200 : 503 }
+    { status: healthy ? 200 : 503 },
   );
 }

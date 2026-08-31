@@ -19,7 +19,7 @@ body_file="$(mktemp)"
 trap 'rm -f "$body_file"' EXIT
 
 status=0
-for route in refresh-tokens snapshot-followers attach-next-reel sync-releases sync-calendar-intents; do
+for route in refresh-tokens verify-instagram-capabilities snapshot-followers attach-next-reel sync-releases sync-calendar-intents; do
   # The auth header goes through curl's config-from-stdin so the secret never
   # appears in the process argv (visible to every local user via ps).
   code=$(curl -sS -o "$body_file" -w '%{http_code}' \

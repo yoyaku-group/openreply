@@ -25,8 +25,8 @@ export class MissingCommentScopeError extends Error {
   }) {
     super(
       `Account @${args.accountUsername} is missing scopes ${args.missing.join(
-        ", "
-      )} required to read comments on post ${args.postId}.`
+        ", ",
+      )} required to read comments on post ${args.postId}.`,
     );
     this.name = "MissingCommentScopeError";
     this.accountId = args.accountId;
@@ -46,9 +46,11 @@ export class CrossTenantAccessError extends Error {
   readonly code = "CROSS_TENANT_ACCESS" as const;
   constructor(
     public readonly accountId: string,
-    public readonly workspaceId: string
+    public readonly workspaceId: string,
   ) {
-    super(`Account ${accountId} is not accessible from workspace ${workspaceId}.`);
+    super(
+      `Account ${accountId} is not accessible from workspace ${workspaceId}.`,
+    );
     this.name = "CrossTenantAccessError";
   }
 }
@@ -103,7 +105,7 @@ export interface CachedAccountScopes {
 }
 
 export async function listCachedAccountScopes(
-  workspaceId?: string
+  workspaceId?: string,
 ): Promise<CachedAccountScopes[]> {
   const where = workspaceId
     ? { workspaceId, archivedAt: null }
@@ -158,7 +160,7 @@ const PROBE_INFLIGHT = new Map<string, Promise<AccountScopeProbe>>();
 
 export async function probeAccountScopes(
   accountId: string,
-  opts: { workspaceId: string; forceRefresh?: boolean; cacheMs?: number }
+  opts: { workspaceId: string; forceRefresh?: boolean; cacheMs?: number },
 ): Promise<AccountScopeProbe> {
   const cacheMs = opts.cacheMs ?? 60 * 60 * 1000; // 1h default
   const account = await prisma.instagramAccount.findUnique({
@@ -238,7 +240,12 @@ export async function probeAccountScopes(
   const existing = PROBE_INFLIGHT.get(accountId);
   if (existing) return existing;
 
-  const probe = runProbe(accountId, account.accessToken, account.scopes, account.lastScopeProbeAt);
+  const probe = runProbe(
+    accountId,
+    account.accessToken,
+    account.scopes,
+    account.lastScopeProbeAt,
+  );
   PROBE_INFLIGHT.set(accountId, probe);
   try {
     return await probe;
@@ -251,7 +258,7 @@ async function runProbe(
   accountId: string,
   encryptedToken: string,
   fallbackGranted: string[],
-  fallbackLastProbeAt: Date | null
+  fallbackLastProbeAt: Date | null,
 ): Promise<AccountScopeProbe> {
   try {
     const accessToken = decryptToken(encryptedToken);
@@ -287,7 +294,9 @@ async function runProbe(
   }
 }
 
-export function computeMissing(granted: readonly string[]): RequiredInstagramScope[] {
+export function computeMissing(
+  granted: readonly string[],
+): RequiredInstagramScope[] {
   return REQUIRED_INSTAGRAM_SCOPES.filter((s) => !granted.includes(s));
 }
 
@@ -306,18 +315,9 @@ export function computeMissing(granted: readonly string[]): RequiredInstagramSco
  * Throws CrossTenantAccessError on workspace mismatch, or
  * MissingCommentScopeError when any required scope is missing.
  *
- * Kill-switch: `OPENREPLY_COMMENTS_SCOPE_ADVISORY=false` (default TRUE during
- * the App Review pending window) makes the activation flow throw on missing
- * scopes — the strict behaviour. With the env var absent, true, or any
- * value other than the literal string "false", the bypass is active and the
- * activation flow proceeds even if `manage_comments` is missing from the
- * cached scopes. Default-on lets operators create + activate campaigns
- * while waiting for Meta App Review approval. Use only as a transitional
- * state; DM delivery still REQUIRES the scope in the token (Meta never
- * delivers webhook events without it). The bypass unblocks the UX; it does
- * NOT unlock delivery. Set the env var to the literal string "false" once
- * Meta approves the scope AND each connected IG pro has been disconnected
- * + reconnected (so the probe captures the new scope).
+ * This compatibility guard is always fail-closed. New call sites should use
+ * the feature-level registry in `lib/meta/capabilities.ts`, which also verifies
+ * the corresponding webhook subscription.
  */
 export async function assertCommentScope(args: {
   accountId: string;
@@ -328,27 +328,16 @@ export async function assertCommentScope(args: {
     workspaceId: args.workspaceId,
     forceRefresh: false,
   });
-  // Kill-switch — see docstring. Default ON (advisory). Only explicit "false"
-  // enables the strict throw. This means the bypass survives missing/unset/
-  // accidentally-cleared env vars during the App Review pending window.
-  const advisoryEnabled =
-    String(process.env.OPENREPLY_COMMENTS_SCOPE_ADVISORY ?? "true")
-      .toLowerCase() !== "false";
-  if (probe.missing.length > 0 && advisoryEnabled) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[assertCommentScope][advisory-activation] accountId=${args.accountId} postId=${args.postId} missing=${probe.missing.join(",")} — OPENREPLY_COMMENTS_SCOPE_ADVISORY=${advisoryEnabled ? "true (default)" : process.env.OPENREPLY_COMMENTS_SCOPE_ADVISORY}, allowing activation. DM delivery will NOT work until the scope is granted + the account is reconnected.`
-    );
-    return;
-  }
   // Patch in the username from the cached snapshot — runProbe doesn't load
   // it (keeps the live-probe path lean).
   const username =
     probe.username === "<unknown>"
-      ? (await prisma.instagramAccount.findUnique({
-          where: { id: args.accountId },
-          select: { username: true },
-        }))?.username ?? "<unknown>"
+      ? ((
+          await prisma.instagramAccount.findUnique({
+            where: { id: args.accountId },
+            select: { username: true },
+          })
+        )?.username ?? "<unknown>")
       : probe.username;
   if (probe.missing.length > 0) {
     throw new MissingCommentScopeError({
@@ -368,9 +357,7 @@ export async function assertCommentScope(args: {
  *
  * SECURITY: `workspaceId` is REQUIRED.
  */
-export async function probeAllAccountScopes(
-  workspaceId: string
-): Promise<{
+export async function probeAllAccountScopes(workspaceId: string): Promise<{
   accounts: AccountScopeProbe[];
   okCount: number;
   degradedCount: number;
@@ -380,7 +367,7 @@ export async function probeAllAccountScopes(
     select: { id: true },
   });
   const probes = await Promise.all(
-    live.map((a) => probeAccountScopes(a.id, { workspaceId }))
+    live.map((a) => probeAccountScopes(a.id, { workspaceId })),
   );
   const okCount = probes.filter((p) => p.ok && p.missing.length === 0).length;
   const degradedCount = probes.length - okCount;

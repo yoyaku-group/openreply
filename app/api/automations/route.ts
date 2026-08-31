@@ -11,9 +11,10 @@ import { normalizeInboundDmKeywords } from "@/lib/automations/inbound-dm";
 import { getMediaById } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import {
-  MissingCommentScopeError,
-  assertCommentScope,
-} from "@/lib/meta/scope-check";
+  InstagramCapabilityBlockedError,
+  assertInstagramCommentCapability,
+  assertInstagramMessageCapability,
+} from "@/lib/meta/capabilities";
 import {
   canManageCampaigns,
   getCurrentWorkspaceContext,
@@ -26,47 +27,47 @@ export const dynamic = "force-dynamic";
 const triggerTypeSchema = z.enum(["COMMENT", "INBOUND_DM"]);
 
 const createAutomationSchema = z.object({
-    name: z.string().min(1).max(100),
-    goal: z.string().min(1).max(120).optional().nullable(),
-    instagramAccountId: z.string().min(1).optional().nullable(),
-    triggerType: triggerTypeSchema.optional().default("COMMENT"),
-    postId: z.string().min(1).optional().nullable(),
-    postUrl: z.string().url().optional().nullable(),
-    pendingNextReel: z.boolean().optional().default(false),
-    matchAnyPost: z.boolean().optional().default(false),
-    keywords: z.array(z.string().min(1).max(50)).max(10).optional().default([]),
-    matchAnyWord: z.boolean().optional().default(false),
-    dmMessage: z.string().min(1).max(1000),
-    openingDmEnabled: z.boolean().optional().default(false),
-    openingDmMessage: z.string().max(1000).optional().nullable(),
-    openingDmButtonLabel: z.string().max(20).optional().nullable(),
-    linkButtonLabel: z.string().max(20).optional().nullable(),
-    requireFollow: z.boolean().optional().default(false),
-    followPromptMessage: z.string().max(1000).optional().nullable(),
-    followPromptButtonLabel: z.string().max(20).optional().nullable(),
-    followUpEnabled: z.boolean().optional().default(false),
-    followUpMessage: z.string().max(1000).optional().nullable(),
-    publicReplyEnabled: z.boolean().optional().default(false),
-    publicReplyMessage: z.string().max(1000).optional().nullable(),
-    publicReplyMessages: z
-      .array(z.string().max(1000))
-      .max(10)
-      .optional()
-      .default([]),
-    // Empty string means "no tracked link"; a URL sets one.
-    trackedDestinationUrl: z
-      .union([z.string().url(), z.literal("")])
-      .optional()
-      .nullable(),
-    // Optional second tracked link, rendered as a second DM button.
-    secondaryDestinationUrl: z
-      .union([z.string().url(), z.literal("")])
-      .optional()
-      .nullable(),
-    secondaryButtonLabel: z.string().max(20).optional().nullable(),
-    isActive: z.boolean().optional().default(true),
-    wholeWordMatch: z.boolean().optional().default(true),
-  });
+  name: z.string().min(1).max(100),
+  goal: z.string().min(1).max(120).optional().nullable(),
+  instagramAccountId: z.string().min(1).optional().nullable(),
+  triggerType: triggerTypeSchema.optional().default("COMMENT"),
+  postId: z.string().min(1).optional().nullable(),
+  postUrl: z.string().url().optional().nullable(),
+  pendingNextReel: z.boolean().optional().default(false),
+  matchAnyPost: z.boolean().optional().default(false),
+  keywords: z.array(z.string().min(1).max(50)).max(10).optional().default([]),
+  matchAnyWord: z.boolean().optional().default(false),
+  dmMessage: z.string().min(1).max(1000),
+  openingDmEnabled: z.boolean().optional().default(false),
+  openingDmMessage: z.string().max(1000).optional().nullable(),
+  openingDmButtonLabel: z.string().max(20).optional().nullable(),
+  linkButtonLabel: z.string().max(20).optional().nullable(),
+  requireFollow: z.boolean().optional().default(false),
+  followPromptMessage: z.string().max(1000).optional().nullable(),
+  followPromptButtonLabel: z.string().max(20).optional().nullable(),
+  followUpEnabled: z.boolean().optional().default(false),
+  followUpMessage: z.string().max(1000).optional().nullable(),
+  publicReplyEnabled: z.boolean().optional().default(false),
+  publicReplyMessage: z.string().max(1000).optional().nullable(),
+  publicReplyMessages: z
+    .array(z.string().max(1000))
+    .max(10)
+    .optional()
+    .default([]),
+  // Empty string means "no tracked link"; a URL sets one.
+  trackedDestinationUrl: z
+    .union([z.string().url(), z.literal("")])
+    .optional()
+    .nullable(),
+  // Optional second tracked link, rendered as a second DM button.
+  secondaryDestinationUrl: z
+    .union([z.string().url(), z.literal("")])
+    .optional()
+    .nullable(),
+  secondaryButtonLabel: z.string().max(20).optional().nullable(),
+  isActive: z.boolean().optional().default(true),
+  wholeWordMatch: z.boolean().optional().default(true),
+});
 
 const updateAutomationSchema = z.object({
   name: z.string().min(1).max(100).optional(),
@@ -128,7 +129,7 @@ interface ConfigurationIssue {
 }
 
 function validateAutomationConfiguration(
-  configuration: AutomationConfiguration
+  configuration: AutomationConfiguration,
 ): ConfigurationIssue[] {
   const issues: ConfigurationIssue[] = [];
 
@@ -193,7 +194,10 @@ function validateAutomationConfiguration(
 function configurationError(issues: ConfigurationIssue[]) {
   const fieldErrors: Record<string, string[]> = {};
   for (const issue of issues) {
-    fieldErrors[issue.path] = [...(fieldErrors[issue.path] ?? []), issue.message];
+    fieldErrors[issue.path] = [
+      ...(fieldErrors[issue.path] ?? []),
+      issue.message,
+    ];
   }
   return NextResponse.json(
     {
@@ -201,7 +205,7 @@ function configurationError(issues: ConfigurationIssue[]) {
       error: "Invalid input",
       details: { formErrors: [], fieldErrors },
     },
-    { status: 400 }
+    { status: 400 },
   );
 }
 
@@ -226,12 +230,17 @@ function inboundDmOnlyFields() {
   };
 }
 
-async function findInboundKeywordConflicts(input: {
-  instagramAccountId: string;
-  keywords: string[];
-  excludeAutomationId?: string;
-}, client: Pick<Prisma.TransactionClient, "automation"> = prisma) {
-  const requested = new Set(normalizeInboundDmKeywords(input.keywords).normalized);
+async function findInboundKeywordConflicts(
+  input: {
+    instagramAccountId: string;
+    keywords: string[];
+    excludeAutomationId?: string;
+  },
+  client: Pick<Prisma.TransactionClient, "automation"> = prisma,
+) {
+  const requested = new Set(
+    normalizeInboundDmKeywords(input.keywords).normalized,
+  );
   if (requested.size === 0) return [];
 
   const activeCampaigns = await client.automation.findMany({
@@ -247,9 +256,9 @@ async function findInboundKeywordConflicts(input: {
   });
 
   return activeCampaigns.flatMap((campaign) => {
-    const overlap = normalizeInboundDmKeywords(campaign.keywords).normalized.filter(
-      (keyword) => requested.has(keyword)
-    );
+    const overlap = normalizeInboundDmKeywords(
+      campaign.keywords,
+    ).normalized.filter((keyword) => requested.has(keyword));
     return overlap.length > 0 ? [{ ...campaign, overlap }] : [];
   });
 }
@@ -268,13 +277,13 @@ function inboundKeywordConflictResponse(conflicts: InboundKeywordConflicts) {
         .join(", ")}`,
       conflicts,
     },
-    { status: 409 }
+    { status: 409 },
   );
 }
 
 async function lockInboundKeywordAccount(
   tx: Prisma.TransactionClient,
-  instagramAccountId: string
+  instagramAccountId: string,
 ) {
   // Serialize active inbound-keyword writes per Instagram account. The
   // conflict check and the write happen under this transaction-scoped lock,
@@ -293,7 +302,7 @@ async function postAccessibilityError(
     accessToken: string;
   },
   postId: string,
-  triggerType: "COMMENT" | "INBOUND_DM" = "COMMENT"
+  triggerType: "COMMENT" | "INBOUND_DM" = "COMMENT",
 ) {
   try {
     const accessToken = decryptToken(account.accessToken);
@@ -302,27 +311,27 @@ async function postAccessibilityError(
       // COMMENT-trigger automations also need read access to the post's
       // comment stream — silently dead without instagram_business_manage_comments
       // (see logs-yoyaku-io/interventions/2026-08-27-openreply-slapfunk-reel-automation.md).
-      await assertCommentScope({
+      await assertInstagramCommentCapability({
         accountId: account.id,
         workspaceId: account.workspaceId,
-        postId,
       });
     }
     return null;
   } catch (error) {
-    if (error instanceof MissingCommentScopeError) {
+    if (error instanceof InstagramCapabilityBlockedError) {
       return NextResponse.json(
         {
           success: false,
           code: error.code,
           error: error.message,
-          missing: error.missing,
+          feature: error.feature,
+          blockers: error.blockers,
           fixUrl: error.fixUrl,
           accountId: error.accountId,
           accountUsername: error.accountUsername,
-          postId: error.postId,
+          postId,
         },
-        { status: 409 }
+        { status: 409 },
       );
     }
     return NextResponse.json(
@@ -331,7 +340,7 @@ async function postAccessibilityError(
         code: "POST_NOT_ACCESSIBLE",
         error: `This post is not accessible from @${account.username}. Choose media published by this connected account or keep the campaign paused.`,
       },
-      { status: 409 }
+      { status: 409 },
     );
   }
 }
@@ -341,7 +350,7 @@ export async function GET(request: NextRequest) {
   if (!workspaceId) {
     return NextResponse.json(
       { success: false, error: "Unauthorized" },
-      { status: 401 }
+      { status: 401 },
     );
   }
   const instagramAccountId =
@@ -388,7 +397,7 @@ export async function GET(request: NextRequest) {
         ...automation,
         reportShareSlug: updated.reportShareSlug,
       };
-    })
+    }),
   );
 
   const [statusCounts, clickCounts, keywordCounts] = await Promise.all([
@@ -454,71 +463,56 @@ export async function GET(request: NextRequest) {
           matchedKeyword: row.matchedKeyword,
           _count: row._count._all,
         })),
-      3
+      3,
     );
   }
 
   return NextResponse.json(
     {
-    success: true,
-    data: automationsWithReports.map((automation) => {
-      const item = analytics.get(automation.id) ?? {
-        sent: 0,
-        skipped: 0,
-        failed: 0,
-        clicks: 0,
-        topKeywords: [],
-      };
+      success: true,
+      data: automationsWithReports.map((automation) => {
+        const item = analytics.get(automation.id) ?? {
+          sent: 0,
+          skipped: 0,
+          failed: 0,
+          clicks: 0,
+          topKeywords: [],
+        };
 
-      return {
-        ...automation,
-        trackedLinks: automation.trackedLinks.map((link) => ({
-          ...link,
-          trackedUrl: buildTrackedUrl(link.slug),
-        })),
-        reportUrl: automation.reportShareSlug
-          ? buildReportUrl(automation.reportShareSlug)
-          : null,
-        analytics: {
-          ...item,
-          ctr: calculateCtr(item.clicks, item.sent),
-        },
-      };
-    }),
+        return {
+          ...automation,
+          trackedLinks: automation.trackedLinks.map((link) => ({
+            ...link,
+            trackedUrl: buildTrackedUrl(link.slug),
+          })),
+          reportUrl: automation.reportShareSlug
+            ? buildReportUrl(automation.reportShareSlug)
+            : null,
+          analytics: {
+            ...item,
+            ctr: calculateCtr(item.clicks, item.sent),
+          },
+        };
+      }),
     },
-    { headers: { "Cache-Control": "no-store" } }
+    { headers: { "Cache-Control": "no-store" } },
   );
 }
 
-// A COMMENT automation whose account token lacks the comments scope can never
-// fire: the webhook never delivers the comment and the reconciler reads the
-// same empty list. Block creation/activation up front when the scope probe has
-// a definite answer (empty scopes = not yet probed; archived accounts are
-// audit-only zombies and stay out of the check).
-//
-// 2026-08-30: TEMPORARILY downgraded to advisory — the cached scopes array
-// is the result of a functional smoke probe, which produces false negatives
-// when (a) the account has no recently-commented media or (b) Meta has not
-// yet granted Advanced Access for `instagram_business_manage_comments` even
-// though it is in the OAuth URL. The previous hard 400 was preventing Ben
-// from building/testing campaigns. We log a server-side warning so the gap
-// is observable, and a follow-up campaign-validation step (see
-// `postAccessibilityError`) still surfaces the issue at activation time if
-// the runtime probe fails.
-const COMMENTS_SCOPE = "instagram_business_manage_comments";
-
-function commentsScopeError(account: {
-  username: string;
-  scopes: string[];
-  archivedAt: Date | null;
-}): NextResponse | null {
-  if (account.archivedAt) return null;
-  if (account.scopes.length === 0) return null;
-  if (account.scopes.includes(COMMENTS_SCOPE)) return null;
-  console.warn(
-    `[commentsScopeError][advisory] @${account.username} is missing "${COMMENTS_SCOPE}" in cached scopes — letting campaign through pending App Review / probe fix.`,
+function capabilityBlockedResponse(error: InstagramCapabilityBlockedError) {
+  return NextResponse.json(
+    {
+      success: false,
+      code: error.code,
+      error: error.message,
+      feature: error.feature,
+      blockers: error.blockers,
+      fixUrl: error.fixUrl,
+      accountId: error.accountId,
+      accountUsername: error.accountUsername,
+    },
+    { status: 409 },
   );
-  return null;
 }
 
 export async function POST(request: NextRequest) {
@@ -526,14 +520,17 @@ export async function POST(request: NextRequest) {
   if (!context) {
     return NextResponse.json(
       { success: false, error: "Unauthorized" },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
   if (!canManageCampaigns(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only editors, admins, and owners can create campaigns" },
-      { status: 403 }
+      {
+        success: false,
+        error: "Only editors, admins, and owners can create campaigns",
+      },
+      { status: 403 },
     );
   }
 
@@ -549,7 +546,7 @@ export async function POST(request: NextRequest) {
         error: "Invalid input",
         details: parsed.error.flatten(),
       },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -581,24 +578,50 @@ export async function POST(request: NextRequest) {
   if (!workspace) {
     return NextResponse.json(
       { success: false, error: "Workspace not found" },
-      { status: 404 }
+      { status: 404 },
     );
   }
 
   if (!instagramAccount) {
     return NextResponse.json(
       { success: false, error: "Connect Instagram before creating campaigns" },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
   if (
-    parsed.data.triggerType !== "INBOUND_DM" &&
+    parsed.data.triggerType === "COMMENT" &&
     parsed.data.isActive &&
     instagramAccount.archivedAt === null
   ) {
-    const scopeError = commentsScopeError(instagramAccount);
-    if (scopeError) return scopeError;
+    try {
+      await assertInstagramCommentCapability({
+        accountId: instagramAccount.id,
+        workspaceId,
+      });
+    } catch (error) {
+      if (error instanceof InstagramCapabilityBlockedError) {
+        return capabilityBlockedResponse(error);
+      }
+      throw error;
+    }
+  }
+  if (
+    parsed.data.triggerType === "INBOUND_DM" &&
+    parsed.data.isActive &&
+    instagramAccount.archivedAt === null
+  ) {
+    try {
+      await assertInstagramMessageCapability({
+        accountId: instagramAccount.id,
+        workspaceId,
+      });
+    } catch (error) {
+      if (error instanceof InstagramCapabilityBlockedError) {
+        return capabilityBlockedResponse(error);
+      }
+      throw error;
+    }
   }
 
   const isInboundDm = parsed.data.triggerType === "INBOUND_DM";
@@ -609,13 +632,16 @@ export async function POST(request: NextRequest) {
     const inaccessible = await postAccessibilityError(
       instagramAccount,
       parsed.data.postId,
-      parsed.data.triggerType
+      parsed.data.triggerType,
     );
     if (inaccessible) return inaccessible;
   }
 
-  const { trackedDestinationUrl, secondaryDestinationUrl, secondaryButtonLabel } =
-    parsed.data;
+  const {
+    trackedDestinationUrl,
+    secondaryDestinationUrl,
+    secondaryButtonLabel,
+  } = parsed.data;
 
   // The primary link's button title comes from `linkButtonLabel`; the second
   // link stores its own button title in the tracked link's `label` field.
@@ -645,9 +671,7 @@ export async function POST(request: NextRequest) {
   const pendingNextReel = isInboundDm ? false : parsed.data.pendingNextReel;
   const matchAnyPost = isInboundDm ? false : parsed.data.matchAnyPost;
   const matchAnyWord = isInboundDm ? false : parsed.data.matchAnyWord;
-  const openingDmEnabled = isInboundDm
-    ? false
-    : parsed.data.openingDmEnabled;
+  const openingDmEnabled = isInboundDm ? false : parsed.data.openingDmEnabled;
   const publicReplyList = (
     parsed.data.publicReplyMessages.length > 0
       ? parsed.data.publicReplyMessages
@@ -680,23 +704,26 @@ export async function POST(request: NextRequest) {
         : null,
       linkButtonLabel: parsed.data.linkButtonLabel || null,
       requireFollow: isInboundDm ? false : parsed.data.requireFollow,
-      followPromptMessage: !isInboundDm && parsed.data.requireFollow
-        ? parsed.data.followPromptMessage || null
-        : null,
-      followPromptButtonLabel: !isInboundDm && parsed.data.requireFollow
-        ? parsed.data.followPromptButtonLabel || null
-        : null,
+      followPromptMessage:
+        !isInboundDm && parsed.data.requireFollow
+          ? parsed.data.followPromptMessage || null
+          : null,
+      followPromptButtonLabel:
+        !isInboundDm && parsed.data.requireFollow
+          ? parsed.data.followPromptButtonLabel || null
+          : null,
       followUpEnabled: isInboundDm ? false : parsed.data.followUpEnabled,
-      followUpMessage: !isInboundDm && parsed.data.followUpEnabled
-        ? parsed.data.followUpMessage || null
-        : null,
+      followUpMessage:
+        !isInboundDm && parsed.data.followUpEnabled
+          ? parsed.data.followUpMessage || null
+          : null,
       publicReplyEnabled: isInboundDm ? false : parsed.data.publicReplyEnabled,
-      publicReplyMessages: !isInboundDm && parsed.data.publicReplyEnabled
-        ? publicReplyList
-        : [],
-      publicReplyMessage: !isInboundDm && parsed.data.publicReplyEnabled
-        ? publicReplyList[0] ?? parsed.data.publicReplyMessage ?? null
-        : null,
+      publicReplyMessages:
+        !isInboundDm && parsed.data.publicReplyEnabled ? publicReplyList : [],
+      publicReplyMessage:
+        !isInboundDm && parsed.data.publicReplyEnabled
+          ? (publicReplyList[0] ?? parsed.data.publicReplyMessage ?? null)
+          : null,
       isActive: parsed.data.isActive,
       wholeWordMatch: parsed.data.wholeWordMatch,
       workspaceId,
@@ -720,7 +747,7 @@ export async function POST(request: NextRequest) {
           instagramAccountId: instagramAccount.id,
           keywords: parsed.data.keywords,
         },
-        tx
+        tx,
       );
       if (conflicts.length > 0) return { automation: null, conflicts };
       return {
@@ -738,7 +765,7 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json(
     { success: true, data: automation },
-    { status: 201 }
+    { status: 201 },
   );
 }
 
@@ -747,14 +774,17 @@ export async function PATCH(request: NextRequest) {
   if (!context) {
     return NextResponse.json(
       { success: false, error: "Unauthorized" },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
   if (!canManageCampaigns(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only editors, admins, and owners can update campaigns" },
-      { status: 403 }
+      {
+        success: false,
+        error: "Only editors, admins, and owners can update campaigns",
+      },
+      { status: 403 },
     );
   }
 
@@ -764,7 +794,7 @@ export async function PATCH(request: NextRequest) {
   if (!automationId) {
     return NextResponse.json(
       { success: false, error: "Missing campaign ID" },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -778,7 +808,7 @@ export async function PATCH(request: NextRequest) {
         error: "Invalid input",
         details: parsed.error.flatten(),
       },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -801,7 +831,7 @@ export async function PATCH(request: NextRequest) {
   if (!existing) {
     return NextResponse.json(
       { success: false, error: "Campaign not found" },
-      { status: 404 }
+      { status: 404 },
     );
   }
 
@@ -815,30 +845,54 @@ export async function PATCH(request: NextRequest) {
         success: false,
         error: "Calendar campaign is waiting for exact Meta publication proof",
       },
-      { status: 409 }
+      { status: 409 },
     );
   }
 
   if (
-    (parsed.data.triggerType ?? existing.triggerType) !== "INBOUND_DM" &&
+    (parsed.data.triggerType ?? existing.triggerType) === "COMMENT" &&
     (parsed.data.isActive ?? existing.isActive) &&
     existing.instagramAccount.archivedAt === null
   ) {
-    const scopeError = commentsScopeError(existing.instagramAccount);
-    if (scopeError) return scopeError;
+    try {
+      await assertInstagramCommentCapability({
+        accountId: existing.instagramAccount.id,
+        workspaceId,
+      });
+    } catch (error) {
+      if (error instanceof InstagramCapabilityBlockedError) {
+        return capabilityBlockedResponse(error);
+      }
+      throw error;
+    }
+  }
+  if (
+    (parsed.data.triggerType ?? existing.triggerType) === "INBOUND_DM" &&
+    (parsed.data.isActive ?? existing.isActive) &&
+    existing.instagramAccount.archivedAt === null
+  ) {
+    try {
+      await assertInstagramMessageCapability({
+        accountId: existing.instagramAccount.id,
+        workspaceId,
+      });
+    } catch (error) {
+      if (error instanceof InstagramCapabilityBlockedError) {
+        return capabilityBlockedResponse(error);
+      }
+      throw error;
+    }
   }
 
   const effectiveConfiguration: AutomationConfiguration = {
     triggerType: parsed.data.triggerType ?? existing.triggerType,
     postId:
       parsed.data.postId !== undefined ? parsed.data.postId : existing.postId,
-    pendingNextReel:
-      parsed.data.pendingNextReel ?? existing.pendingNextReel,
+    pendingNextReel: parsed.data.pendingNextReel ?? existing.pendingNextReel,
     matchAnyPost: parsed.data.matchAnyPost ?? existing.matchAnyPost,
     keywords: parsed.data.keywords ?? existing.keywords,
     matchAnyWord: parsed.data.matchAnyWord ?? existing.matchAnyWord,
-    openingDmEnabled:
-      parsed.data.openingDmEnabled ?? existing.openingDmEnabled,
+    openingDmEnabled: parsed.data.openingDmEnabled ?? existing.openingDmEnabled,
     openingDmMessage:
       parsed.data.openingDmMessage !== undefined
         ? parsed.data.openingDmMessage
@@ -860,7 +914,7 @@ export async function PATCH(request: NextRequest) {
     });
   }
   const configurationIssues = validateAutomationConfiguration(
-    effectiveConfiguration
+    effectiveConfiguration,
   );
   if (configurationIssues.length > 0) {
     return configurationError(configurationIssues);
@@ -891,7 +945,7 @@ export async function PATCH(request: NextRequest) {
     const inaccessible = await postAccessibilityError(
       existing.instagramAccount,
       effectiveConfiguration.postId,
-      effectiveConfiguration.triggerType
+      effectiveConfiguration.triggerType,
     );
     if (inaccessible) return inaccessible;
   }
@@ -926,7 +980,10 @@ export async function PATCH(request: NextRequest) {
     automationData.followUpMessage = null;
   }
   // Any-post / next-reel campaigns carry no specific post.
-  if (automationData.matchAnyPost === true || automationData.pendingNextReel === true) {
+  if (
+    automationData.matchAnyPost === true ||
+    automationData.pendingNextReel === true
+  ) {
     automationData.postId = null;
     automationData.postUrl = null;
   }
@@ -956,7 +1013,7 @@ export async function PATCH(request: NextRequest) {
           keywords: effectiveConfiguration.keywords,
           excludeAutomationId: existing.id,
         },
-        tx
+        tx,
       );
       if (conflicts.length > 0) return { updated: null, conflicts };
       return {
@@ -1011,7 +1068,10 @@ export async function PATCH(request: NextRequest) {
   // Update, create, or clear the campaign's second tracked link. It is always
   // the link at index [1] (ordered by createdAt), and its `label` holds the
   // second button's title.
-  if (secondaryDestinationUrl !== undefined && secondaryDestinationUrl !== null) {
+  if (
+    secondaryDestinationUrl !== undefined &&
+    secondaryDestinationUrl !== null
+  ) {
     const links = await prisma.trackedLink.findMany({
       where: { automationId },
       orderBy: { createdAt: "asc" },
@@ -1026,7 +1086,10 @@ export async function PATCH(request: NextRequest) {
     } else if (secondaryLink) {
       await prisma.trackedLink.update({
         where: { id: secondaryLink.id },
-        data: { destinationUrl: secondaryDestinationUrl, label: secondaryLabel },
+        data: {
+          destinationUrl: secondaryDestinationUrl,
+          label: secondaryLabel,
+        },
       });
     } else {
       await prisma.trackedLink.create({
@@ -1049,14 +1112,17 @@ export async function DELETE(request: NextRequest) {
   if (!context) {
     return NextResponse.json(
       { success: false, error: "Unauthorized" },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
   if (!canManageCampaigns(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only editors, admins, and owners can delete campaigns" },
-      { status: 403 }
+      {
+        success: false,
+        error: "Only editors, admins, and owners can delete campaigns",
+      },
+      { status: 403 },
     );
   }
 
@@ -1066,7 +1132,7 @@ export async function DELETE(request: NextRequest) {
   if (!automationId) {
     return NextResponse.json(
       { success: false, error: "Missing campaign ID" },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -1077,7 +1143,7 @@ export async function DELETE(request: NextRequest) {
   if (!existing) {
     return NextResponse.json(
       { success: false, error: "Campaign not found" },
-      { status: 404 }
+      { status: 404 },
     );
   }
 

@@ -1,56 +1,77 @@
-# Instagram scope probe — known false negatives + workaround
+# Instagram capability diagnostics
 
-**Status** : verdict live confirmé le 2026-08-31. Le bypass d'activation est
-désactivé en production (`OPENREPLY_COMMENTS_SCOPE_ADVISORY=false`) et aucune
-campagne COMMENT non archivée n'est active.
+OpenReply no longer treats a comma-separated OAuth scope cache or a successful
+subscription POST as proof that a feature works.
 
-## The probe
+## Registry
 
-`lib/meta/client.ts::probeInstagramLoginScopes` infers which Instagram scopes a token actually has by issuing functional smoke calls instead of consulting `/me/permissions` (which does not exist on the `graph.instagram.com` rail) or `/debug_token` (which refuses to parse Instagram Login tokens). The probe is structural, not authoritative.
+`InstagramCapability` stores one row per connected account and feature:
 
-Smoke calls:
-- `GET /me` → assumes `instagram_business_basic` is granted if 200
-- `GET /me/conversations` → assumes `instagram_business_manage_messages` is granted if 200
-- `GET /{media-id}/comments` (on a recent media with `comments_count > 0`) → assumes `instagram_business_manage_comments` is granted if `data[]` is non-empty
+- kinds: BASIC, COMMENTS, MESSAGES, INSIGHTS, CONTENT_PUBLISH
+- states: UNKNOWN, READY, BLOCKED, ERROR, STALE
+- evidence: reason, redacted HTTP/sample facts, checked time, last success time
 
-## Three documented false-negative modes
+`InstagramAccount.subscribedFields` stores the fields read back from Meta's
+`GET /{ig-user-id}/subscribed_apps`. The legacy `webhookSubscribed` and
+`scopes[]` fields remain transitional projections only.
 
-1. **No recently-commented media** : the probe picks the most recent media via `/me/media?limit=25`, then picks one with `comments_count > 0`. If the account has zero commented media in the last 25, the probe never even attempts `/{media-id}/comments` and `manage_comments` is silently marked absent.
-2. **Rate-limit / transient error on the smoke call** : the catch block sets `scopes = []` and `lastScopeProbeAt = null`. Empty scopes suppress the campaign banner, but the next live `assertCommentScope` retry re-runs the probe and the cycle repeats.
-3. **Standard Access vs Advanced Access asymmetry** : on `graph.instagram.com`, even a token that *requests* `manage_comments` via the OAuth URL may receive a 200 + `data: []` response until Meta has granted Advanced Access via App Review. The probe cannot distinguish "scope absent" from "scope present but zero comments on the sampled media".
+## Feature gates
 
-## Operational consequences
+- COMMENT automation: BASIC READY + COMMENTS READY + fresh verified `comments`
+  subscription
+- inbound DM automation: BASIC READY + MESSAGES READY + fresh verified
+  `messages` subscription
+- insights: BASIC READY + INSIGHTS READY; no webhook dependency
 
-For our 3 IG pros (`@yoyaku.fr`, `@yoyakurecordstore`, `@objects.press`) the cached `scopes` column has consistently shown `[instagram_business_basic, instagram_business_manage_messages]` (no `manage_comments`) even after disconnect + reconnect. As a result, `commentsScopeError` was rejecting every campaign create/update on `@yoyaku.fr` with a 400 banner ("this campaign would never trigger").
+UNKNOWN, BLOCKED, ERROR, and STALE all fail closed for activation. There is no
+environment-variable bypass.
 
-A live probe on 2026-08-30 confirmed that `/{media-id}/comments` returns 200 +
-empty data. Le test humain du 2026-08-31 a levé l'ambiguïté : le commentaire
-`Yes` de `@atelier14.paris` sur le post Objects `DOTUhHSjDPY` n'a produit aucun
-webhook `comments` et aucun `DmLog`, alors que `/api/health`, Postgres, Redis,
-la queue et le worker étaient sains. Le scope est donc réellement absent.
+## Functional evidence
 
-## Bypass historique (commits `534eed5`, `649b119`)
+The Instagram Login rail does not provide a reliable permissions listing for
+these tokens, so OpenReply makes bounded read-only calls:
 
-`app/api/automations/route.ts::commentsScopeError` was downgraded from a hard 400 to an advisory `console.warn` + `return null`. A campaign can now be saved even when the cached `scopes` lacks `manage_comments`. The deeper check in `assertCommentScope` (`lib/meta/scope-check.ts:309-335`, called from `postAccessibilityError` at `app/api/automations/route.ts:305`) still surfaces the issue at activation time if the live probe at that moment returns the same incomplete scope set.
+- `GET /me` proves BASIC.
+- `GET /me/conversations` proves MESSAGES.
+- `GET /me/media?fields=id,comments_count&limit=50`, then
+  `GET /{media-id}/comments?limit=1`, proves COMMENTS.
+- `GET /{media-id}/insights?metric=reach` proves INSIGHTS.
 
-Le 2026-08-31, après le canari négatif, la campagne `TEST`
-`cmth1ave3000l07qx8mgpuwxv` a été désactivée et le flag production remis à
-`false`. Le 409 `MISSING_COMMENT_SCOPE` est de nouveau la seule réponse correcte
-tant que Meta n'a pas accordé la permission.
+Comment interpretation is deliberate:
 
-## Live test (definitive)
+- a sampled media has comments and the API returns a visible row -> READY /
+  COMMENTS_VISIBLE
+- `comments_count > 0` but the comments collection is empty -> BLOCKED /
+  COMMENTS_HIDDEN_BY_META
+- no sampled media has comments -> UNKNOWN / NO_COMMENTED_MEDIA
+- permission HTTP failure -> BLOCKED / COMMENTS_API_DENIED
+- transient/upstream failure -> ERROR or the prior cached snapshot with
+  `probeError`
 
-See `/tmp/LIVE-TEST-CHECKLIST.md` for the full procedure. TL;DR:
+Webhook arrival is positive runtime evidence and promotes the corresponding
+COMMENTS or MESSAGES capability to READY / WEBHOOK_RECEIVED.
 
-1. Patch is live (`/api/health` 200, webhooks subscribed for the 3 accounts)
-2. Create a campaign on `@yoyakurecordstore` with keyword `TESTOPENREPLY`
-3. Comment from another IG account
-4. Tail `openreply-worker` logs
-5. Check DM Logs + the test account's Instagram inbox
+## Operator endpoints
 
-- DM arrives → scope is in the token, the probe is the bug. Rewrite the probe to
-  sample more widely or use an alternate endpoint.
-- DM does not arrive → **observé le 2026-08-31**. Le scope est réellement absent.
-  App Review est nécessaire pour `instagram_business_basic` +
-  `instagram_business_manage_comments`, puis chaque compte doit être déconnecté
-  et reconnecté avant un nouveau canari.
+- public roll-up, DB-only: `GET /api/health`
+- authenticated workspace detail: `GET /api/admin/instagram-capabilities`
+- forced bounded probe: `GET /api/admin/instagram-capabilities?probe=1`
+- one account: `GET /api/admin/instagram-capabilities?account=<db-id>&probe=1`
+
+The systemd healthcheck fails if any active COMMENT campaign belongs to an
+account that is not comment-ready. The scheduled capability cron refreshes
+evidence without exposing Meta calls through the public health endpoint.
+
+## 2026-08-31 incident evidence
+
+For fresh `@yoyaku.fr` media `18095156432032069`, Meta reported
+`comments_count=12` but `GET /comments` returned HTTP 200 with `data=[]`.
+`GET /subscribed_apps` simultaneously showed `comments` and `messages`. A
+comment from distinct account `@benjaminbelaga` produced no WebhookEvent,
+ProcessedComment, or DmLog while Postgres, Redis, queue, web, and worker were
+healthy.
+
+This proves that reconnecting or repeating the subscription POST is not a fix.
+The token/app access state is blocked upstream. Follow
+`docs/meta-app-review-brief.md` and canary only one production account after
+approval.

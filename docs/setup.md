@@ -49,10 +49,10 @@ Do Railway first, because Vercel needs the database URLs from it.
 
 Getting the connection URLs. Open the Postgres service, then its Variables or Connect tab. You will see two URLs:
 
-| Variable | Host | Use it for |
-| --- | --- | --- |
-| `DATABASE_URL` | `postgres.railway.internal` | the Railway worker only |
-| `DATABASE_PUBLIC_URL` | `*.proxy.rlwy.net` | Vercel, and running migrations from your machine |
+| Variable              | Host                        | Use it for                                       |
+| --------------------- | --------------------------- | ------------------------------------------------ |
+| `DATABASE_URL`        | `postgres.railway.internal` | the Railway worker only                          |
+| `DATABASE_PUBLIC_URL` | `*.proxy.rlwy.net`          | Vercel, and running migrations from your machine |
 
 Redis is the same: `REDIS_URL` (internal) for the worker, `REDIS_PUBLIC_URL` (public proxy) for Vercel.
 
@@ -84,34 +84,34 @@ Optional custom domain: if you want `openreply.yoursite.com` instead of the Verc
 
 Copy `.env.example` to `.env` for local work, or set these in Vercel and Railway for hosting.
 
-| Variable | What it is |
-| --- | --- |
-| `NEXTAUTH_URL` | Your public URL. Your Vercel domain in production, your tunnel URL locally. |
-| `NEXTAUTH_SECRET` | Random secret. `openssl rand -base64 32` |
-| `CRON_SECRET` | Random secret protecting the token-refresh cron. |
-| `ENCRYPTION_KEY` | 32-byte hex. `openssl rand -hex 32`. Encrypts Instagram tokens. Identical across web and worker. |
-| `DATABASE_URL` | PostgreSQL connection string. Public Railway URL on Vercel; internal on the worker. |
-| `REDIS_URL` | Redis connection string. Must support blocking commands, so an HTTP-only Redis will not work with BullMQ. |
-| `RESEND_API_KEY` | Resend key. Login is email magic links only, so without this nobody can sign in. |
-| `EMAIL_FROM` | A sender on a domain you verified in Resend. The placeholder will not deliver. |
-| `META_GRAPH_API_VERSION` | Graph API version, for example `v25.0`. |
-| `INSTAGRAM_APP_ID` | From the Meta app, see Step 6. |
-| `INSTAGRAM_APP_SECRET` | From the Meta app. |
-| `FACEBOOK_APP_SECRET` | From the Meta app. |
-| `WEBHOOK_VERIFY_TOKEN` | Any random string. You paste the same value into Meta's webhook config. |
-| `SAV_BRIDGE_TOKEN` | Optional loopback SAV bridge bearer, at least 32 characters. Generate once and copy the same value to OpenReply and `yoyaku-sav-engine`; never expose it to a browser. |
-| `SAV_IG_ACCOUNT_USERNAMES` | Optional comma-separated SAV accounts. YOYAKU production uses `yoyaku.fr,yoyakurecordstore`. |
-| `SAV_SENDS_PER_HOUR` | Optional Instagram SAV send circuit breaker. Defaults to `10`; may lower but never raise the hard cap of 10 attempts/hour. |
+| Variable                   | What it is                                                                                                                                                             |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NEXTAUTH_URL`             | Your public URL. Your Vercel domain in production, your tunnel URL locally.                                                                                            |
+| `NEXTAUTH_SECRET`          | Random secret. `openssl rand -base64 32`                                                                                                                               |
+| `CRON_SECRET`              | Random secret protecting the token-refresh cron.                                                                                                                       |
+| `ENCRYPTION_KEY`           | 32-byte hex. `openssl rand -hex 32`. Encrypts Instagram tokens. Identical across web and worker.                                                                       |
+| `DATABASE_URL`             | PostgreSQL connection string. Public Railway URL on Vercel; internal on the worker.                                                                                    |
+| `REDIS_URL`                | Redis connection string. Must support blocking commands, so an HTTP-only Redis will not work with BullMQ.                                                              |
+| `RESEND_API_KEY`           | Resend key. Login is email magic links only, so without this nobody can sign in.                                                                                       |
+| `EMAIL_FROM`               | A sender on a domain you verified in Resend. The placeholder will not deliver.                                                                                         |
+| `META_GRAPH_API_VERSION`   | Graph API version, for example `v25.0`.                                                                                                                                |
+| `INSTAGRAM_APP_ID`         | From the Meta app, see Step 6.                                                                                                                                         |
+| `INSTAGRAM_APP_SECRET`     | From the Meta app.                                                                                                                                                     |
+| `FACEBOOK_APP_SECRET`      | From the Meta app.                                                                                                                                                     |
+| `WEBHOOK_VERIFY_TOKEN`     | Any random string. You paste the same value into Meta's webhook config.                                                                                                |
+| `SAV_BRIDGE_TOKEN`         | Optional loopback SAV bridge bearer, at least 32 characters. Generate once and copy the same value to OpenReply and `yoyaku-sav-engine`; never expose it to a browser. |
+| `SAV_IG_ACCOUNT_USERNAMES` | Optional comma-separated SAV accounts. YOYAKU production uses `yoyaku.fr,yoyakurecordstore`.                                                                           |
+| `SAV_SENDS_PER_HOUR`       | Optional Instagram SAV send circuit breaker. Defaults to `10`; may lower but never raise the hard cap of 10 attempts/hour.                                             |
 
 `ENCRYPTION_KEY` must be exactly 64 hex characters or the app throws on boot.
 
 Optional, for tuning the polling reconciler (defaults are fine to start):
 
-| Variable | Default | What it does |
-| --- | --- | --- |
-| `COMMENT_POLL_INTERVAL_MS` | `300000` | How often the worker sweeps for missed comments (5 min). |
-| `COMMENT_POLL_MAX_PER_SWEEP` | `30` | Max new comments each campaign acts on per sweep. Keep it conservative; higher gets closer to Instagram's rate limits. |
-| `COMMENT_POLL_LOOKBACK_HOURS` | `72` | How far back a sweep considers comments. |
+| Variable                      | Default  | What it does                                                                                                           |
+| ----------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `COMMENT_POLL_INTERVAL_MS`    | `300000` | How often the worker sweeps for missed comments (5 min).                                                               |
+| `COMMENT_POLL_MAX_PER_SWEEP`  | `30`     | Max new comments each campaign acts on per sweep. Keep it conservative; higher gets closer to Instagram's rate limits. |
+| `COMMENT_POLL_LOOKBACK_HOURS` | `72`     | How far back a sweep considers comments.                                                                               |
 
 ## The Meta app
 
@@ -132,11 +132,11 @@ If you accidentally added the Marketing API use case, remove it. It has its own 
 
 There are two app secrets and two app IDs, which is confusing. Here is what maps to what.
 
-| Environment variable | Where it lives |
-| --- | --- |
-| `INSTAGRAM_APP_ID` | Instagram, API setup with Instagram login. A number like `2036...` |
-| `INSTAGRAM_APP_SECRET` | Same page, click Show |
-| `FACEBOOK_APP_SECRET` | App settings, Basic, App secret, click Show |
+| Environment variable   | Where it lives                                                     |
+| ---------------------- | ------------------------------------------------------------------ |
+| `INSTAGRAM_APP_ID`     | Instagram, API setup with Instagram login. A number like `2036...` |
+| `INSTAGRAM_APP_SECRET` | Same page, click Show                                              |
+| `FACEBOOK_APP_SECRET`  | App settings, Basic, App secret, click Show                        |
 
 The Instagram app ID is not the same number as the Facebook App ID shown on the Basic settings page. Use the one under the Instagram product.
 
@@ -306,15 +306,27 @@ By the end, `/api/health` returns `status: ok` with `worker.healthy: true`, and 
 
 ## Letting other people use your instance
 
-Everything above is enough to run OpenReply for your own accounts, or a handful of accounts you add as testers. No App Review needed.
+Standard Access can be enough for professional accounts the app owner manages
+and explicitly adds to the App Dashboard. It is not a promise that every scope
+is usable: the app mode, accepted tester/app roles, and Meta's per-permission
+access state still apply. OpenReply's **Verify capabilities** action is the
+acceptance test. Do not activate a campaign unless it reports the corresponding
+feature READY and the required webhook field verified.
 
-For a stranger to connect their own Instagram to your hosted instance, Meta requires App Review granting Advanced Access on the messaging and comments permissions. That means:
+For a customer, partner, or reviewer to connect an Instagram account the app
+owner does not manage, Meta requires App Review and Advanced Access. Submit the
+four implemented Instagram Login permissions together: basic, comments,
+messages, and insights. Follow
+[`meta-app-review-brief.md`](meta-app-review-brief.md); it supersedes the old
+root-level draft. That means:
 
 - A screencast of the full flow working, recorded on real accounts in one take.
-- A written justification for each permission. Drafts are in [../META_APP_REVIEW.md](../META_APP_REVIEW.md).
+- A written justification for each permission, kept in the canonical runbook.
 - Business verification, which asks for a document proving a legal business entity: a business registration or license, articles of incorporation, a business tax document, or a business bank statement.
 
-Meta scrutinizes automated-DM apps and often rejects the first submission, so budget for a resubmit. If you do not have a registered business, most self-hosters skip this entirely by running their own instance for their own account, which never needs review.
+Meta scrutinizes automated-DM apps and may request clarification. Never bypass
+the capability gate while waiting: an active campaign without comment visibility
+cannot receive an event and only creates false confidence.
 
 ## Security notes
 

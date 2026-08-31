@@ -11,7 +11,7 @@ beforeEach(() => {
   vi.stubEnv("NEXTAUTH_SECRET", "test-secret-with-enough-length");
   vi.stubEnv(
     "ENCRYPTION_KEY",
-    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   );
 });
 
@@ -43,17 +43,23 @@ describe("INSTAGRAM_OAUTH_SCOPE contents (regression — drift guard)", () => {
 
   it("requests instagram_business_manage_messages", () => {
     expect(INSTAGRAM_OAUTH_SCOPE_VALUES).toContain(
-      "instagram_business_manage_messages"
+      "instagram_business_manage_messages",
     );
   });
 
   it("requests instagram_business_manage_comments (the silent killer)", () => {
     expect(INSTAGRAM_OAUTH_SCOPE_VALUES).toContain(
-      "instagram_business_manage_comments"
+      "instagram_business_manage_comments",
     );
   });
 
-  it("contains exactly three scopes — adding a fourth is intentional, removing any is a regression", () => {
-    expect(INSTAGRAM_OAUTH_SCOPE_VALUES).toHaveLength(3);
+  it("requests instagram_business_manage_insights for the implemented analytics surfaces", () => {
+    expect(INSTAGRAM_OAUTH_SCOPE_VALUES).toContain(
+      "instagram_business_manage_insights",
+    );
+  });
+
+  it("contains exactly four implemented business scopes", () => {
+    expect(INSTAGRAM_OAUTH_SCOPE_VALUES).toHaveLength(4);
   });
 });

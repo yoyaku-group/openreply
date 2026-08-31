@@ -45,25 +45,48 @@ interface WorkspaceMembersData {
   }>;
 }
 
+interface CapabilityDiagnostics {
+  commentReadyCount: number;
+  messageReadyCount: number;
+  activeCommentBlockedCount: number;
+  accounts: Array<{
+    accountId: string;
+    subscribedFields: string[];
+    subscriptionCheckedAt: string | null;
+    features: {
+      comments: { ready: boolean; blockers: string[] };
+      messages: { ready: boolean; blockers: string[] };
+      insights: { ready: boolean; blockers: string[] };
+    };
+  }>;
+}
+
 export default function SettingsPage() {
   const [data, setData] = useState<SettingsData | null>(null);
   const [membersData, setMembersData] = useState<WorkspaceMembersData | null>(
-    null
+    null,
   );
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"ADMIN" | "EDITOR" | "MEMBER">("MEMBER");
+  const [inviteRole, setInviteRole] = useState<"ADMIN" | "EDITOR" | "MEMBER">(
+    "MEMBER",
+  );
   const [memberError, setMemberError] = useState<string | null>(null);
+  const [capabilities, setCapabilities] =
+    useState<CapabilityDiagnostics | null>(null);
+  const [workspaceName, setWorkspaceName] = useState("");
 
   useEffect(() => {
     Promise.all([
       fetch("/api/dashboard/stats").then((res) => res.json()),
       fetch("/api/workspace/members").then((res) => res.json()),
+      fetch("/api/admin/instagram-capabilities").then((res) => res.json()),
     ])
-      .then(([statsPayload, membersPayload]) => {
+      .then(([statsPayload, membersPayload, capabilityPayload]) => {
         if (statsPayload.success) setData(statsPayload.data);
         if (membersPayload.success) setMembersData(membersPayload.data);
+        if (capabilityPayload.success) setCapabilities(capabilityPayload.data);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -75,7 +98,11 @@ export default function SettingsPage() {
   }
 
   async function disconnectInstagram(instagramAccountId: string) {
-    if (!confirm("Disconnect Instagram? Campaigns for this account will stop sending DMs.")) {
+    if (
+      !confirm(
+        "Disconnect Instagram? Campaigns for this account will stop sending DMs.",
+      )
+    ) {
       return;
     }
 
@@ -118,6 +145,32 @@ export default function SettingsPage() {
     setBusy(null);
   }
 
+  async function refreshCapabilities() {
+    setBusy("capabilities");
+    const res = await fetch("/api/admin/instagram-capabilities?probe=1");
+    const payload = await res.json();
+    if (payload.success) setCapabilities(payload.data);
+    setBusy(null);
+  }
+
+  async function createWorkspace(event: React.FormEvent) {
+    event.preventDefault();
+    setMemberError(null);
+    setBusy("workspace");
+    const res = await fetch("/api/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: workspaceName }),
+    });
+    const payload = await res.json();
+    if (payload.success) {
+      window.location.assign("/settings");
+      return;
+    }
+    setMemberError(payload.error ?? "Could not create workspace");
+    setBusy(null);
+  }
+
   if (loading) {
     return <div className="panel rounded p-8 h-64" />;
   }
@@ -126,7 +179,9 @@ export default function SettingsPage() {
   const canManageMembers =
     membersData?.currentUserRole === "OWNER" ||
     membersData?.currentUserRole === "ADMIN";
-  const canManageInstagram = canManageMembers;
+  const canConnectInstagram =
+    canManageMembers || membersData?.currentUserRole === "EDITOR";
+  const canDisconnectInstagram = canManageMembers;
 
   return (
     <div className="max-w-2xl mx-auto space-y-8">
@@ -178,45 +233,84 @@ export default function SettingsPage() {
                 Connect an Instagram professional account to launch campaigns.
               </p>
             )}
-            {accounts.map((account) => (
-              <div
-                key={account.id}
-                className="flex flex-col gap-3 rounded border border-border bg-surface/70 p-4 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div>
-                  <p className="text-sm font-semibold text-foreground">
-                    @{account.username}
-                  </p>
-                  <p className="mt-1 text-xs text-muted">
-                    Token expires{" "}
-                    {account.tokenExpiresAt
-                      ? new Date(account.tokenExpiresAt).toLocaleDateString()
-                      : "not available"}{" "}
-                    · {account.webhookSubscribed ? "Webhook ready" : "Webhook pending"}
-                  </p>
-                </div>
-                {canManageInstagram && <button
-                  onClick={() => disconnectInstagram(account.id)}
-                  disabled={busy === `disconnect:${account.id}`}
-                  className="inline-flex items-center justify-center rounded border border-error/20 px-4 py-2 text-sm font-medium text-error transition-all hover:border-error/40 hover:bg-error/10 disabled:opacity-50"
-                >
-                  {busy === `disconnect:${account.id}`
-                    ? "Disconnecting..."
-                    : "Disconnect"}
-                </button>}
-              </div>
-            ))}
+            {accounts.map((account) =>
+              (() => {
+                const diagnostic = capabilities?.accounts.find(
+                  (row) => row.accountId === account.id,
+                );
+                return (
+                  <div
+                    key={account.id}
+                    className="flex flex-col gap-3 rounded border border-border bg-surface/70 p-4 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">
+                        @{account.username}
+                      </p>
+                      <p className="mt-1 text-xs text-muted">
+                        Token expires{" "}
+                        {account.tokenExpiresAt
+                          ? new Date(
+                              account.tokenExpiresAt,
+                            ).toLocaleDateString()
+                          : "not available"}{" "}
+                        ·{" "}
+                        {diagnostic?.features.comments.ready
+                          ? "Comments ready"
+                          : diagnostic
+                            ? "Comments blocked"
+                            : account.webhookSubscribed
+                              ? "Webhook unverified"
+                              : "Webhook pending"}
+                      </p>
+                      {diagnostic && !diagnostic.features.comments.ready && (
+                        <p className="mt-1 text-xs text-error">
+                          {diagnostic.features.comments.blockers.join(" · ")}
+                        </p>
+                      )}
+                    </div>
+                    {canDisconnectInstagram && (
+                      <button
+                        onClick={() => disconnectInstagram(account.id)}
+                        disabled={busy === `disconnect:${account.id}`}
+                        className="inline-flex items-center justify-center rounded border border-error/20 px-4 py-2 text-sm font-medium text-error transition-all hover:border-error/40 hover:bg-error/10 disabled:opacity-50"
+                      >
+                        {busy === `disconnect:${account.id}`
+                          ? "Disconnecting..."
+                          : "Disconnect"}
+                      </button>
+                    )}
+                  </div>
+                );
+              })(),
+            )}
           </div>
         </div>
 
-        {canManageInstagram && <div className="mt-6 pt-4 border-t border-border flex gap-3">
-          <a
-            href="/api/instagram/connect"
-            className="px-4 py-2 rounded text-sm font-medium transition-colors bg-accent text-white hover:bg-accent-hover"
-          >
-            {accounts.length > 0 ? "Connect another account" : "Connect Instagram"}
-          </a>
-        </div>}
+        {canConnectInstagram && (
+          <div className="mt-6 pt-4 border-t border-border flex gap-3">
+            <a
+              href="/api/instagram/connect"
+              className="px-4 py-2 rounded text-sm font-medium transition-colors bg-accent text-white hover:bg-accent-hover"
+            >
+              {accounts.length > 0
+                ? "Connect another account"
+                : "Connect Instagram"}
+            </a>
+            {canManageMembers && (
+              <button
+                type="button"
+                onClick={refreshCapabilities}
+                disabled={busy === "capabilities"}
+                className="rounded border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-surface disabled:opacity-50"
+              >
+                {busy === "capabilities"
+                  ? "Checking Meta..."
+                  : "Verify capabilities"}
+              </button>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="panel rounded p-6">
@@ -263,7 +357,9 @@ export default function SettingsPage() {
                     <button
                       type="button"
                       onClick={() =>
-                        void navigator.clipboard?.writeText(invitation.inviteUrl)
+                        void navigator.clipboard?.writeText(
+                          invitation.inviteUrl,
+                        )
                       }
                       className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-border-hover hover:text-foreground"
                     >
@@ -300,7 +396,9 @@ export default function SettingsPage() {
             <select
               value={inviteRole}
               onChange={(event) =>
-                setInviteRole(event.target.value as "ADMIN" | "EDITOR" | "MEMBER")
+                setInviteRole(
+                  event.target.value as "ADMIN" | "EDITOR" | "MEMBER",
+                )
               }
               className="rounded border border-border bg-surface px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-accent/40"
             >
@@ -320,6 +418,33 @@ export default function SettingsPage() {
             )}
           </form>
         )}
+      </section>
+
+      <section className="panel rounded p-6">
+        <h2 className="text-base font-semibold">Isolated workspace</h2>
+        <p className="mt-2 text-sm text-muted">
+          Keep reviewer or partner Instagram assets separate from production
+          accounts, campaigns, and logs.
+        </p>
+        <form onSubmit={createWorkspace} className="mt-4 flex gap-3">
+          <input
+            type="text"
+            minLength={2}
+            maxLength={80}
+            required
+            value={workspaceName}
+            onChange={(event) => setWorkspaceName(event.target.value)}
+            placeholder="Meta App Review"
+            className="min-w-0 flex-1 rounded border border-border bg-background px-3 py-2 text-sm"
+          />
+          <button
+            type="submit"
+            disabled={busy === "workspace"}
+            className="rounded bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {busy === "workspace" ? "Creating..." : "Create"}
+          </button>
+        </form>
       </section>
 
       <section className="panel rounded p-6">

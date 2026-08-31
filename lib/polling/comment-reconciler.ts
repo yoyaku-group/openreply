@@ -35,6 +35,10 @@ import {
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
+import {
+  buildCapabilityRegistry,
+  evaluateInstagramFeature,
+} from "@/lib/meta/capabilities";
 
 // Only consider comments from the last few days — older ones are outside
 // Instagram's private-reply window anyway, so a DM to them would just fail.
@@ -55,7 +59,8 @@ interface SweepStat {
 }
 
 function errMessage(error: unknown): string {
-  if (error instanceof MetaApiError) return `Meta ${error.code}: ${error.message}`;
+  if (error instanceof MetaApiError)
+    return `Meta ${error.code}: ${error.message}`;
   if (error instanceof Error) return error.message;
   return "Unknown error";
 }
@@ -63,7 +68,7 @@ function errMessage(error: unknown): string {
 /** One reconciliation pass across every active campaign. */
 export async function reconcileComments(): Promise<void> {
   const automations = await prisma.automation.findMany({
-    where: { isActive: true },
+    where: { isActive: true, triggerType: "COMMENT" },
     select: {
       id: true,
       name: true,
@@ -80,6 +85,18 @@ export async function reconcileComments(): Promise<void> {
           instagramId: true,
           username: true,
           accessToken: true,
+          subscribedFields: true,
+          subscriptionCheckedAt: true,
+          capabilities: {
+            select: {
+              kind: true,
+              status: true,
+              reason: true,
+              evidence: true,
+              checkedAt: true,
+              lastSuccessAt: true,
+            },
+          },
         },
       },
     },
@@ -97,7 +114,7 @@ export async function reconcileComments(): Promise<void> {
         alreadyReplied: 0,
         enqueued: 0,
         errors: [errMessage(error)],
-      })
+      }),
     );
     await recordSweep(automation.workspaceId, stat);
   }
@@ -118,10 +135,21 @@ async function sweepCampaign(
       instagramId: string;
       username: string;
       accessToken: string;
+      subscribedFields: string[];
+      subscriptionCheckedAt: Date | null;
+      capabilities: Array<{
+        kind:
+          "BASIC" | "COMMENTS" | "MESSAGES" | "INSIGHTS" | "CONTENT_PUBLISH";
+        status: "UNKNOWN" | "READY" | "BLOCKED" | "ERROR" | "STALE";
+        reason: string | null;
+        evidence: unknown;
+        checkedAt: Date | null;
+        lastSuccessAt: Date | null;
+      }>;
     };
   },
   sinceMs: number,
-  tokenCache: Map<string, string | null>
+  tokenCache: Map<string, string | null>,
 ): Promise<SweepStat> {
   const account = automation.instagramAccount;
   const stat: SweepStat = {
@@ -134,6 +162,19 @@ async function sweepCampaign(
     enqueued: 0,
     errors: [],
   };
+
+  const readiness = evaluateInstagramFeature(
+    "COMMENTS",
+    buildCapabilityRegistry(account.capabilities),
+    account.subscribedFields,
+    account.subscriptionCheckedAt,
+  );
+  if (!readiness.ready) {
+    stat.errors.push(
+      `Comment capability blocked: ${readiness.blockers.join("; ")}`,
+    );
+    return stat;
+  }
 
   // Decrypt the account token once per sweep.
   let accessToken = tokenCache.get(account.id);
@@ -184,13 +225,16 @@ async function sweepCampaign(
 
       const matched = automation.matchAnyWord
         ? true
-        : matchKeywords(c.text ?? "", automation.keywords, automation.wholeWordMatch)
-            .matched;
+        : matchKeywords(
+            c.text ?? "",
+            automation.keywords,
+            automation.wholeWordMatch,
+          ).matched;
       if (!matched) return false;
       stat.matched += 1;
 
       const ownerReplied = (c.replies?.data ?? []).some(
-        (r) => r.from?.id === account.instagramId
+        (r) => r.from?.id === account.instagramId,
       );
       if (ownerReplied) {
         stat.alreadyReplied += 1;
@@ -248,7 +292,7 @@ async function sweepCampaign(
 
 async function recordSweep(
   workspaceId: string,
-  stat: SweepStat
+  stat: SweepStat,
 ): Promise<void> {
   // Only log when something happened or something went wrong.
   if (stat.enqueued === 0 && stat.errors.length === 0) return;

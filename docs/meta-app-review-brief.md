@@ -1,207 +1,227 @@
-# Meta App Review — Step-by-step brief
+# Meta App Review runbook
 
-**Statut** : matériel technique prêt, mais **soumission bloquée** tant qu'un accès
-reviewer réutilisable n'est pas fourni et que la Business Verification n'est pas
-confirmée. Le magic link `appreview@yoyaku.fr` arrive actuellement dans la boîte
-privée de Ben ; demander au reviewer d'ouvrir cette boîte n'est pas une procédure
-de test valide.
+This is the canonical submission packet for OpenReply. Do not reuse the old
+files under `/tmp`: they mixed production accounts, a forwarded Google Group,
+and claims that the application could not demonstrate.
 
-**App Meta de production** : `4047290928735084` (valeur vérifiée dans le conteneur
-OpenReply le 2026-08-31).
+## Current verified state (2026-08-31)
 
-**Verdict de diagnostic** : scope `instagram_business_manage_comments` **absent
-des 3 tokens**. Le canari réel Objects du 2026-08-31 (`Yes` sur le post
-`DOTUhHSjDPY`) n'a produit ni webhook `comments`, ni `DmLog`, tandis que le web,
-Redis, la queue et le worker étaient sains. Le mode advisory a ensuite été remis
-à `false` et la campagne de test désactivée.
+- Production Meta app ID: `4047290928735084`.
+- OAuth requests four implemented Instagram Login permissions:
+  `instagram_business_basic`, `instagram_business_manage_comments`,
+  `instagram_business_manage_messages`, and
+  `instagram_business_manage_insights`.
+- All three production tokens can read the profile and conversations.
+- All three accounts have a verified `comments` + `messages` subscription.
+- The fresh `@yoyaku.fr` token returns `data: []` for a media whose
+  `comments_count` is 12, and a third-party live comment produced no webhook.
+- OpenReply therefore records COMMENTS as `BLOCKED / COMMENTS_HIDDEN_BY_META`
+  and refuses to activate COMMENT campaigns. There is no bypass.
 
-## TL;DR — résumé en 30 secondes
+The external resolution is to make the app reviewable, switch it to Live when
+Meta permits it, request Advanced Access once for the four implemented scopes,
+then reconnect and verify each production account.
 
-Après résolution des deux prérequis ci-dessus, tu vas soumettre 2 permissions
-(PAS 3 — c'était l'erreur n°1 du brouillon original) :
+## 1. Prepare a reviewer-safe workspace
 
-1. **`instagram_business_basic`** — déjà Standard Access, mais à soumettre en Advanced pour permettre à OpenReply d'être utilisée par d'autres comptes
-2. **`instagram_business_manage_comments`** — la fameuse. Standard Access suffit SI OpenReply sert uniquement tes propres comptes. Comme tu as 3 comptes distincts (et que c'est une plateforme multi-tenant en devenir), **Advanced Access requis**.
+Never give Meta access to the YOYAKU or Objects production workspaces.
 
-Ce document est le paquet canonique : descriptions des permissions, script vidéo,
-instructions reviewer, vérifications et séquence post-approbation. Les fichiers
-historiques sous `/tmp/` ne sont pas une source durable et ne doivent pas être
-copiés tels quels dans la soumission.
+1. Create a real mailbox such as `meta-review@interwave.live`. It must have its
+   own inbox for the whole review period. Do not use the
+   `appreview@yoyaku.fr -> ben@yoyaku.fr` forwarding group.
+2. Sign in to OpenReply as Ben and open Settings.
+3. Under **Isolated workspace**, create `Meta App Review`.
+4. While that workspace is selected, invite `meta-review@interwave.live` as
+   **Campaign editor**. Exact pending invitations are allowed through the global
+   sign-in allowlist; no whole email domain is opened.
+5. Sign in as the reviewer account in a private window and accept the invite.
+   An editor can connect an Instagram account and create campaigns, but cannot
+   disconnect accounts, manage the team, or access another workspace.
+6. Connect a dedicated Instagram Professional test asset owned by the Meta app
+   business. Do not connect `@yoyaku.fr`, `@yoyakurecordstore`, or
+   `@objects.press` to this workspace.
 
-## Étape 0 — pré-requis (~5 min)
+Before recording, confirm the test asset has the required app role/tester role,
+has accepted the Instagram tester invitation, and can complete a real
+comment-to-DM canary. If the canary is not green, do not fake the video and do
+not submit.
 
-1. Ouvre un navigateur privé → https://developers.facebook.com → login en tant que **Benjamin Belaga**
-2. Sélectionne l'app **OpenReply** (ID production vérifié : `4047290928735084`)
-3. En haut à gauche, vérifie que tu es sur le **bon app** (pas un autre perso). Le nom affiché doit être "OpenReply" ou similaire.
-4. Confirme la Business Verification et qu'au moins un compte Instagram de
-   démonstration est bien rattaché à l'app comme rôle/testeur avec Standard Access.
-   Le screencast doit montrer un flow réellement testable avant la demande
-   d'Advanced Access.
+## 2. Complete the app settings
 
-## Étape 1 — aller sur App Review → Permissions and Features
+In Meta App Dashboard -> Settings -> Basic / Publish:
 
-URL directe : `https://developers.facebook.com/apps/<APP_ID>/app-review/permissions/`
+- App name: `OpenReply`
+- Category: `Business and Pages`
+- Contact email: `ben@yoyaku.fr`
+- App domain: `openreply.yoyaku.fr`
+- Privacy policy: `https://openreply.yoyaku.fr/privacy`
+- Terms: `https://openreply.yoyaku.fr/terms`
+- Data deletion: `https://openreply.yoyaku.fr/data-deletion`
+- App icon: upload
+  `docs/meta-app-review/openreply-app-icon-1024.png` (1024 x 1024 PNG)
+- Business Verification: verified legal entity and current documents
+- Instagram webhook callback: `https://openreply.yoyaku.fr/api/webhook`
+- OAuth redirect: `https://openreply.yoyaku.fr/api/instagram/callback`
 
-Tu verras la liste des permissions. Pour chacune :
-- **Status** : Standard Access / Advanced Access / Pending / Approved
-- Pour `instagram_business_basic` et `instagram_business_manage_comments` → clique **Request advanced access** sur chacune
+Test every public URL in a private window. Make the app Live before the real
+review canary if the dashboard allows it. If Meta gates Live mode behind review,
+keep the dedicated asset in an accepted tester/app role and follow the dashboard
+review flow; the submission must still show a working end-to-end test.
 
-**Important** : tu fais 2 demandes séparées, une par scope. Elles peuvent être soumises simultanément (Meta les regroupe souvent dans la review).
+## 3. Submit one review for the four implemented permissions
 
-## Étape 2 — remplir `instagram_business_manage_comments` (la critique)
+Do not request the legacy `instagram_manage_*` permissions, `public_profile`,
+branded-content permissions, ads permissions, or content publishing. OpenReply
+does not publish Instagram media today, so
+`instagram_business_content_publish` must wait for an implemented, tested user
+surface.
 
-### Champ "What type of business are you doing?"
-→ `E-commerce / Retail` (ou `Marketing` si tu préfères, les deux passent)
+### instagram_business_basic
 
-### Champ "Detailed description of how your app uses this permission"
-
-**Copie-colle exactement ce paragraphe** (120 mots, dense mais précis) :
-
-```
-OpenReply receives a webhook event when someone comments on a post published
-by a connected Instagram Professional account. When the comment matches the
-trigger configured by the account owner, OpenReply sends ONE initial private
-reply via POST /{ig-user-id}/messages with recipient.comment_id — limited to
-one initial private reply per campaign and comment, valid up to 7 days after
-the comment is created. OpenReply does not surface comment text to anyone
-other than the account owner who configured the campaign. Comments that do
-not match the configured trigger do not cause an outbound action. OpenReply
-uses this permission solely for comment-to-DM automations configured by the
-account owner.
-```
-
-### Champ "Will your app use this permission to support businesses or users in the same business vertical as yours, but in a different country?"
-→ `No`
-
-### Champ "Will your app use this permission for any other purpose?"
-→ `No`
-
-### Case "I have read and agree to the Meta Platform Terms and Developer Policies"
-→ coché
-
-### Bouton "Submit for review"
-
-## Étape 3 — remplir `instagram_business_basic` (la dépendance)
-
-### Champ "Detailed description of how your app uses this permission"
-
-```
-OpenReply uses instagram_business_basic to identify the connected Instagram
-Professional account (id, username, account_type, biography) and to enumerate
-its recent media (id, comments_count, permalink). This is the foundation
-needed to deliver the comment-to-DM automation built on top of
-instagram_business_manage_comments — without basic, Meta does not deliver
-the other two in the token. This scope is also documented as a dependency
-of instagram_business_manage_comments and instagram_business_manage_messages.
-OpenReply uses this permission exclusively to display the connected account
-back to its owner in the dashboard.
+```text
+OpenReply uses instagram_business_basic after an Instagram Professional account
+owner completes Instagram Business Login. The app reads the professional
+account id, username, display name, profile picture, follower count, and the
+account's own media metadata. OpenReply displays the connected profile in
+Settings and lets the owner select one of their own posts or Reels for an
+automation. This permission is also the required dependency for
+instagram_business_manage_comments, instagram_business_manage_messages, and
+instagram_business_manage_insights. OpenReply never asks for an Instagram
+password and does not scrape Instagram.
 ```
 
-### Reste identique à Étape 2 (Submit)
+Reviewer path: sign in -> Settings -> Connect Instagram -> complete consent ->
+return to Settings and show the new account username and profile.
 
-## Étape 4 — la vidéo (screencast 90s)
+### instagram_business_manage_comments
 
-N'enregistre qu'après avoir validé un compte de démonstration sous Standard
-Access. Une vidéo montrant une campagne active mais incapable de recevoir les
-commentaires contredirait la demande.
-
-### Logiciel de capture
-- macOS : QuickTime Player → Fichier → Nouvel enregistrement d'écran
-- Sélectionne la zone de l'écran app OpenReply + Instagram web
-
-### Replay du script
-1. **Écran 1** (15s) : connexion avec le compte opérateur de démonstration → dashboard
-2. **Écran 2** (25s) : Settings → Instagram → reconnecte le compte de démonstration. Lis les permissions réellement affichées par Meta. Le flow OAuth OpenReply demande `instagram_business_basic`, `instagram_business_manage_messages` et `instagram_business_manage_comments`; la présente App Review ne resoumet que `basic` et `manage_comments`, car `manage_messages` est déjà accordé.
-3. **Écran 3** (30s) : Crée une automation sur un post récent de @yoyaku.fr ou @yoyakurecordstore. Keyword = `TEST`. DM template = "Here is your link: https://yoyaku.fr/test". Active.
-4. **Écran 4** (20s) : depuis un compte IG tiers, commente `TEST`, puis montre la ligne `SENT` dans DM Logs et le message reçu. Une UI vide n'est pas une preuve fonctionnelle.
-
-### Upload
-- YouTube → upload **non-listé** (PAS privé, PAS public — non-listé)
-- Titre : `OpenReply — Comment-to-DM automation walkthrough`
-- Description : app ID + lien vers openreply.yoyaku.fr
-
-### Récupère l'URL
-Format : `https://www.youtube.com/watch?v=XXXXXXXXX`
-
-## Étape 5 — Accès reviewer et Instructions for Developers
-
-**Gate bloquant avant soumission** : fournir un accès de test réutilisable que le
-reviewer peut ouvrir sans accès à la boîte privée de Ben. La procédure historique
-« entrer `appreview@yoyaku.fr`, puis ouvrir `ben@yoyaku.fr` » est invalide et ne
-doit pas être envoyée à Meta.
-
-Une fois ce mécanisme disponible, les instructions doivent être en anglais et
-indiquer :
-
-- l'URL exacte de connexion et des credentials réutilisables pendant toute la review ;
-- les 3 IG pros préconnectés : `@yoyaku.fr`, `@yoyakurecordstore`, `@objects.press` ;
-- le chemin Campaigns → exact post → exact keyword → private reply ;
-- la route webhook réelle : `POST /api/webhook` ;
-- que le reviewer utilise son propre compte IG test pour le commentaire, sans
-  partager ses credentials Instagram avec YOYAKU.
-
-## Étape 6 — soumettre (geste Ben)
-
-Pour chaque scope, vérifie que tous les champs sont remplis, que la vidéo est
-référencée et que l'accès reviewer a été testé depuis une navigation privée hors
-session YOYAKU. Le clic **Submit** est le geste externe explicite de Ben.
-
-Meta t'envoie un email de confirmation "Your app review request has been received". Garde-le.
-
-## Étape 7 — pendant les 5-10 jours d'attente
-
-- **NE PAS déconnecter** les 3 IG pros (sinon webhook subscription saute)
-- Le bypass `OPENREPLY_COMMENTS_SCOPE_ADVISORY` reste à `false` : aucune campagne
-  COMMENT ne doit pouvoir être activée tant que le scope manque.
-- Tu peux utiliser OpenReply normalement pour les automations qui n'ont pas besoin du scope comments (DM-only)
-
-## Étape 8 — après approbation Meta
-
-1. Reçois email "Your app has been approved for these permissions"
-2. Va sur OpenReply → Settings → Instagram → **Disconnect + reconnect chaque compte** (`@yoyaku.fr`, `@yoyakurecordstore`, `@objects.press`)
-3. Le probe (forcé via `probeAccountScopes(accountId, { workspaceId, forceRefresh: true })`) va re-tester et capturer `instagram_business_manage_comments` dans la colonne `scopes`
-4. La bannière rouge disparaît dans Campaign Editor
-5. **MB059 peut lancer**
-6. Confirme que `OPENREPLY_COMMENTS_SCOPE_ADVISORY=false` reste appliqué. Le bypass
-   n'est jamais un état de production valide : il autorise une campagne qui ne peut
-   pas recevoir les commentaires.
-
-## Vérification post-soumission
-
-```bash
-# 1. Le probe DB montre le scope maintenant
-ssh yoyaku-automation 'docker exec openreply-postgres psql -U openreply -d openreply -c "SELECT username, scopes, \"lastScopeProbeAt\" FROM \"InstagramAccount\" WHERE \"archivedAt\" IS NULL;"'
-
-# 3. Tu peux maintenant tester end-to-end en commentant depuis ton compte IG perso
-# et en vérifiant que le DM arrive (cf. /tmp/LIVE-TEST-CHECKLIST.md, qui devient valide ici)
+```text
+OpenReply receives comment webhook events for media owned by a connected
+Instagram Professional account. The account owner selects a post or Reel and
+configures an exact keyword or an any-comment trigger. OpenReply receives the
+comment text to evaluate that configured trigger. A non-matching comment causes
+no outbound action. A matching comment is deduplicated by campaign and comment,
+queued, and may receive one initial private reply through POST
+/{ig-user-id}/messages with recipient.comment_id. If enabled by the owner,
+OpenReply may also post a public nested reply through POST
+/{comment-id}/replies. OpenReply ignores comments authored by the connected
+account itself.
 ```
 
-## Corrections appliquées (5 erreurs du brouillon original)
+The initial private reply is allowed once and within seven days of the comment.
+If the recipient replies, subsequent messaging follows Meta's standard 24-hour
+window.
 
-| # | Erreur originale | Correction appliquée |
-|---|---|---|
-| 1 | "Soumettre uniquement `manage_comments`" | 2 scopes minimum : `basic` + `manage_comments` (basic est dépendance obligatoire) |
-| 2 | "Fenêtre Private Reply 24h" | 7 jours pour le 1er DM, puis 24h si le follower répond |
-| 3 | "POST `/{media-id}/comments`" pour envoyer le DM | Private reply : `POST /{ig-user-id}/messages` avec `recipient.comment_id`; public nested reply optionnelle : `POST /{comment-id}/replies` |
-| 4 | "No reading of comments that don't match" | Formulation honnête : "OpenReply reçoit le webhook, ne déclenche QUE si keyword match" |
-| 5 | Implicite "Standard Access suffit" | Advanced Access requis (multi-tenant SaaS) |
+### instagram_business_manage_messages
 
-## Sources durables
+```text
+OpenReply uses instagram_business_manage_messages for two user-initiated flows.
+First, a person can send an exact keyword by Instagram Direct to a connected
+professional account; OpenReply matches only an active keyword campaign and
+sends the configured reply inside Meta's messaging window. Second, after a
+comment-triggered initial private reply, OpenReply receives replies and button
+postbacks so it can deliver the account owner's configured follow-up and show
+the conversation in the workspace inbox. Unmatched normal messages are not
+turned into campaign sends. Sends are queued, rate-limited, and deduplicated.
+```
 
-- `docs/instagram-scope-probe.md` — diagnostic, faux négatifs connus et verdict live
-- `lib/meta/oauth.ts` — liste exacte des scopes demandés par OAuth
-- `app/api/webhook/route.ts` — endpoint webhook et validation HMAC
-- `lib/queue/dm-worker.ts` — déduplication, matching et private reply
+### instagram_business_manage_insights
 
-## Mission close — pas de soumission Meta effectuée
+```text
+OpenReply reads reach and other available aggregate media insights for posts and
+Reels owned by the connected Instagram Professional account. It displays these
+metrics in that account's private dashboard and uses follower-count insights to
+build the account's own historical trend. Insights are not sold, used to build
+cross-customer audiences, or exposed to another workspace. The feature degrades
+to unavailable when Meta does not expose a metric for a media type or account.
+```
 
-Cette mission autopilot a fait UNIQUEMENT :
-- ✅ Diagnostic via probe multi-signal (15 échantillons, 3 comptes, verdict : scope absent)
-- ✅ Canary humain `@objects.press` du 2026-08-31 : aucun webhook commentaire,
-  aucun `DmLog`, infrastructure saine — verdict confirmé
-- ✅ Campagne `cmth1ave3000l07qx8mgpuwxv` désactivée et garde-fou strict restauré
-- ✅ Rédaction du brief step-by-step (ce document)
-- ❌ Accès reviewer réutilisable encore à concevoir/valider
-- ❌ PAS soumis App Review (geste Ben, target-named)
+## 4. Record one honest end-to-end screencast
 
-Pour avancer : suis ce brief à partir de l'Étape 0 quand tu es de retour.
+Record at 1080p with a readable browser. Hide notifications, unrelated tabs,
+tokens, email links, and production customer data. The video should be two to
+four minutes.
+
+| Time | Action on screen                                                                                                                                               | Narration                                                                                                            |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| 0:00 | Open `https://openreply.yoyaku.fr/login` and sign in with the dedicated reviewer mailbox.                                                                      | “This is an isolated reviewer workspace with no production assets.”                                                  |
+| 0:20 | Settings -> Connect Instagram, then complete Instagram Business Login using the dedicated Professional test account.                                           | Name the four permissions shown by the consent screen. Do not share Instagram credentials in the submission.         |
+| 0:55 | Back in Settings, show username/profile and click **Verify capabilities**.                                                                                     | Explain that OpenReply verifies API visibility and reads back `comments`/`messages` subscriptions before activation. |
+| 1:20 | Create a COMMENT campaign on a post owned by the connected test account, keyword `OPENREPLYTEST`, private message `Here is your link: https://yoyaku.fr/test`. | Explain exact matching and one initial private reply.                                                                |
+| 1:55 | From a different Instagram account, comment `OPENREPLYTEST`.                                                                                                   | State that self-comments are intentionally ignored.                                                                  |
+| 2:15 | Show the DM received and the `SENT` row in OpenReply DM Logs.                                                                                                  | Explain queueing and deduplication.                                                                                  |
+| 2:40 | Open the Instagram Overview/analytics surface and show the connected account's aggregate metrics.                                                              | Explain that insights remain inside the workspace.                                                                   |
+| 3:00 | End on Settings and the public Privacy/Data Deletion links.                                                                                                    | Explain disconnect and deletion controls.                                                                            |
+
+Upload the video directly to Meta or as an unlisted video. Never use a private
+URL that requires the reviewer's access to Ben's Google account.
+
+## 5. Instructions for Developers
+
+Replace the bracketed values only after the private-window rehearsal succeeds.
+
+```text
+Application URL: https://openreply.yoyaku.fr/login
+Reviewer email: [meta-review@interwave.live]
+Authentication: enter the reviewer email and open the magic link in that
+mailbox. No password is used.
+
+The account opens the isolated "Meta App Review" workspace. It has no access to
+YOYAKU or Objects production data. In Settings, click Connect Instagram and use
+your own Instagram Professional test account, or use the dedicated test asset
+described in the secure credentials field supplied to Meta. Do not send us any
+Instagram password.
+
+After connection, Settings displays the Instagram username and profile. Create
+a Comment campaign, choose a post owned by that connected account, enter the
+exact keyword OPENREPLYTEST, set a private reply, and activate. From a different
+Instagram account, comment OPENREPLYTEST on the selected post. The private reply
+appears in Instagram and the delivery appears under DM Logs.
+
+For insights, open Overview after selecting the connected account. The page
+shows available aggregate media/account metrics.
+
+Privacy: https://openreply.yoyaku.fr/privacy
+Data deletion: https://openreply.yoyaku.fr/data-deletion
+```
+
+## 6. Pre-submit gate
+
+All boxes must be true:
+
+- Business Verification is complete.
+- App icon and all public URLs are accepted by Meta's URL debugger.
+- Reviewer mailbox receives its own magic link.
+- Reviewer account has only the isolated workspace membership.
+- Dedicated Instagram test asset has accepted its app/tester role.
+- OAuth consent shows the same four scopes as `lib/meta/oauth.ts`.
+- `GET /api/admin/instagram-capabilities?probe=1` is green for the test asset.
+- A third-party comment produces a webhook, a `SENT` log, and a received DM.
+- Screencast contains that real successful flow.
+- Descriptions match the shipped code and no unimplemented permission is
+  requested.
+
+The final **Submit** click and any Meta 2FA are browser-bound operator actions.
+
+## 7. Approval and production canary
+
+1. Do not reconnect all production accounts at once.
+2. Reconnect only `@yoyaku.fr`.
+3. In Settings, run **Verify capabilities**. COMMENTS must be `READY`, the
+   reason must be `COMMENTS_VISIBLE` (or a real `WEBHOOK_RECEIVED`), and the
+   verified fields must include `comments` and `messages`.
+4. Activate one bounded canary campaign and comment from a distinct account.
+5. Require a new WebhookEvent, a `SENT` DmLog, and a received DM.
+6. Only then reconnect and verify `@yoyakurecordstore`, followed by
+   `@objects.press`.
+
+If the first canary fails, stop. Do not reconnect the remaining accounts.
+
+## References
+
+- Meta Instagram API collection: <https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api>
+- Meta Graph API access levels: <https://developers.facebook.com/docs/graph-api/overview/access-levels/>
+- OAuth source: `lib/meta/oauth.ts`
+- Capability evidence: `lib/meta/capabilities.ts`
+- Webhook receiver: `app/api/webhook/route.ts`
+- Delivery worker: `lib/queue/dm-worker.ts`

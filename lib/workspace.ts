@@ -15,9 +15,25 @@ function normalizeInviteEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+/** Exact pending invitations can pass the global sign-in allowlist. */
+export async function hasPendingWorkspaceInvitation(
+  email?: string | null,
+): Promise<boolean> {
+  if (!email) return false;
+  const invitation = await prisma.workspaceInvitation.findFirst({
+    where: {
+      email: normalizeInviteEmail(email),
+      status: "PENDING",
+      expiresAt: { gt: new Date() },
+    },
+    select: { id: true },
+  });
+  return Boolean(invitation);
+}
+
 export async function acceptPendingInvitationsForUser(
   userId: string,
-  email?: string | null
+  email?: string | null,
 ): Promise<void> {
   if (!email) return;
 
@@ -83,9 +99,7 @@ export async function getWorkspaceMembership(userId: string): Promise<{
  * returns the mapped workspace target for an email domain, or null. Targets
  * may be legacy names or stable `id:<workspaceId>` values.
  */
-export function getDomainWorkspaceTarget(
-  email?: string | null
-): string | null {
+export function getDomainWorkspaceTarget(email?: string | null): string | null {
   const raw = process.env.AUTH_DOMAIN_WORKSPACES;
   if (!raw || !email) return null;
   const domain = email.split("@")[1]?.trim().toLowerCase();
@@ -105,7 +119,9 @@ export function getDomainWorkspaceTarget(
  * Parses AUTH_DOMAIN_ADMIN_WORKSPACES:
  * "yoyaku.fr=id:ws_y|id:ws_o,objects.press=id:ws_o".
  */
-export function getDomainAdminWorkspaceTargets(email?: string | null): string[] {
+export function getDomainAdminWorkspaceTargets(
+  email?: string | null,
+): string[] {
   const raw = process.env.AUTH_DOMAIN_ADMIN_WORKSPACES;
   if (!raw || !email) return [];
   const domain = email.split("@")[1]?.trim().toLowerCase();
@@ -125,7 +141,10 @@ export function getDomainAdminWorkspaceTargets(email?: string | null): string[] 
 
 export function getHostWorkspaceTarget(host?: string | null): string | null {
   const raw = process.env.OPENREPLY_HOST_WORKSPACES;
-  const hostname = String(host || "").split(":")[0].trim().toLowerCase();
+  const hostname = String(host || "")
+    .split(":")[0]
+    .trim()
+    .toLowerCase();
   if (!raw || !hostname) return null;
   for (const pair of raw.split(",")) {
     const separator = pair.indexOf("=");
@@ -137,26 +156,33 @@ export function getHostWorkspaceTarget(host?: string | null): string | null {
   return null;
 }
 
-async function resolveWorkspaceTarget(target: string): Promise<Workspace | null> {
+async function resolveWorkspaceTarget(
+  target: string,
+): Promise<Workspace | null> {
   return prisma.workspace.findFirst({
-    where: target.startsWith("id:") ? { id: target.slice(3) } : { name: target },
+    where: target.startsWith("id:")
+      ? { id: target.slice(3) }
+      : { name: target },
   });
 }
 
 /** Applies the domain policy at sign-in and never downgrades an OWNER. */
 export async function reconcileDomainAdminMemberships(
   userId: string,
-  email?: string | null
+  email?: string | null,
 ): Promise<string[]> {
   const missingTargets: string[] = [];
   for (const target of getDomainAdminWorkspaceTargets(email)) {
     const workspace = await resolveWorkspaceTarget(target);
     if (!workspace) {
       missingTargets.push(target);
-      console.error("[workspace-policy] configured ADMIN workspace was not found", {
-        target,
-        domain: email?.split("@")[1]?.toLowerCase() ?? "configured domain",
-      });
+      console.error(
+        "[workspace-policy] configured ADMIN workspace was not found",
+        {
+          target,
+          domain: email?.split("@")[1]?.toLowerCase() ?? "configured domain",
+        },
+      );
       continue;
     }
     const existing = await prisma.workspaceMember.findUnique({
@@ -188,13 +214,14 @@ export async function reconcileDomainAdminMemberships(
  */
 async function joinExistingWorkspaceIfConfigured(
   userId: string,
-  email?: string | null
+  email?: string | null,
 ): Promise<Workspace | null> {
   if (process.env.AUTH_JOIN_EXISTING_WORKSPACE !== "true") return null;
 
   const routedTarget = getDomainWorkspaceTarget(email);
   if (routedTarget) {
-    const domain = email?.split("@")[1]?.trim().toLowerCase() ?? "configured domain";
+    const domain =
+      email?.split("@")[1]?.trim().toLowerCase() ?? "configured domain";
     const routed = await prisma.workspace.findFirst({
       where: routedTarget.startsWith("id:")
         ? { id: routedTarget.slice(3) }
@@ -226,7 +253,7 @@ async function joinExistingWorkspaceIfConfigured(
 
 export async function ensureWorkspaceForUser(
   userId: string,
-  email?: string | null
+  email?: string | null,
 ): Promise<Workspace> {
   await acceptPendingInvitationsForUser(userId, email);
   await reconcileDomainAdminMemberships(userId, email);
@@ -239,7 +266,9 @@ export async function ensureWorkspaceForUser(
   const joined = await joinExistingWorkspaceIfConfigured(userId, email);
   if (joined) return joined;
 
-  const workspaceName = email ? `${email.split("@")[0]}'s workspace` : "My workspace";
+  const workspaceName = email
+    ? `${email.split("@")[0]}'s workspace`
+    : "My workspace";
 
   return prisma.workspace.create({
     data: {
@@ -255,7 +284,24 @@ export async function ensureWorkspaceForUser(
   });
 }
 
-export async function getPrimaryWorkspace(userId: string): Promise<Workspace | null> {
+export async function createOwnedWorkspace(
+  userId: string,
+  name: string,
+): Promise<Workspace> {
+  return prisma.workspace.create({
+    data: {
+      name: name.trim(),
+      ownerId: userId,
+      members: {
+        create: { userId, role: "OWNER" },
+      },
+    },
+  });
+}
+
+export async function getPrimaryWorkspace(
+  userId: string,
+): Promise<Workspace | null> {
   const membership = await getWorkspaceMembership(userId);
   return membership?.workspace ?? null;
 }
@@ -268,7 +314,7 @@ export async function getPrimaryWorkspace(userId: string): Promise<Workspace | n
 export async function resolveActiveWorkspace(
   userId: string,
   preferredWorkspaceId?: string | null,
-  requiredWorkspace = false
+  requiredWorkspace = false,
 ): Promise<{ workspace: Workspace; role: WorkspaceRole } | null> {
   if (preferredWorkspaceId) {
     const preferred = await prisma.workspaceMember.findFirst({
@@ -288,20 +334,26 @@ export async function resolveActiveWorkspace(
  */
 export async function listWorkspaceMemberships(
   userId: string,
-  pinnedWorkspaceId?: string | null
+  pinnedWorkspaceId?: string | null,
 ): Promise<{ id: string; name: string }[]> {
   const memberships = await prisma.workspaceMember.findMany({
-    where: { userId, ...(pinnedWorkspaceId ? { workspaceId: pinnedWorkspaceId } : {}) },
+    where: {
+      userId,
+      ...(pinnedWorkspaceId ? { workspaceId: pinnedWorkspaceId } : {}),
+    },
     include: { workspace: { select: { id: true, name: true } } },
     orderBy: { createdAt: "asc" },
   });
   return memberships.map((membership) => membership.workspace);
 }
 
-export async function resolveHostWorkspaceId(host?: string | null): Promise<string | null> {
+export async function resolveHostWorkspaceId(
+  host?: string | null,
+): Promise<string | null> {
   const target = getHostWorkspaceTarget(host);
   if (!target) return null;
   const workspace = await resolveWorkspaceTarget(target);
-  if (!workspace) throw new DomainWorkspaceNotFoundError(String(host || "host"));
+  if (!workspace)
+    throw new DomainWorkspaceNotFoundError(String(host || "host"));
   return workspace.id;
 }

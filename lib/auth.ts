@@ -4,7 +4,10 @@ import Google from "next-auth/providers/google";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@/lib/db/client";
 import { getActiveWorkspace } from "@/lib/active-workspace";
-import { ensureWorkspaceForUser } from "@/lib/workspace";
+import {
+  ensureWorkspaceForUser,
+  hasPendingWorkspaceInvitation,
+} from "@/lib/workspace";
 import { isAuthSignInAllowed } from "@/lib/auth-allowlist";
 
 type AdapterPrismaClient = Parameters<typeof PrismaAdapter>[0];
@@ -18,7 +21,8 @@ export const authConfig = {
     }),
     Google({
       clientId: process.env.GOOGLE_CLIENT_ID ?? "missing-google-client-id",
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "missing-google-client-secret",
+      clientSecret:
+        process.env.GOOGLE_CLIENT_SECRET ?? "missing-google-client-secret",
       // Safe here: the domain/email allowlist below gates who can arrive, and
       // magic-link users have no Account row, so without this flag their first
       // Google sign-in would dead-end on OAuthAccountNotLinked.
@@ -33,11 +37,16 @@ export const authConfig = {
         return false;
       }
 
-      return isAuthSignInAllowed(
+      const allowlisted = isAuthSignInAllowed(
         user.email,
         process.env.AUTH_ALLOWED_EMAILS,
-        process.env.AUTH_ALLOWED_DOMAINS
+        process.env.AUTH_ALLOWED_DOMAINS,
       );
+      if (allowlisted) return true;
+
+      // Reviewer and partner access is granted by an exact, expiring
+      // workspace invitation. This avoids broadening the global domain list.
+      return hasPendingWorkspaceInvitation(user.email);
     },
     async session({ session, user }) {
       if (session.user) {

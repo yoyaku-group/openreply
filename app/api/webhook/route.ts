@@ -15,10 +15,8 @@ import {
 import { Prisma } from "@/app/generated/prisma/client";
 import { ingestSavInboundEvent } from "@/lib/sav/service";
 import { matchInboundDmAutomations } from "@/lib/automations/inbound-dm";
-import {
-  publicFingerprint,
-  redactWebhookPayload,
-} from "@/lib/sav/security";
+import { publicFingerprint, redactWebhookPayload } from "@/lib/sav/security";
+import { recordInstagramWebhookCapability } from "@/lib/meta/capabilities";
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
 
@@ -34,7 +32,7 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json(
     { success: false, error: "Verification failed" },
-    { status: 403 }
+    { status: 403 },
   );
 }
 
@@ -62,7 +60,7 @@ export async function POST(request: NextRequest) {
       .catch(() => {});
     return NextResponse.json(
       { success: false, error: "Invalid signature" },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
@@ -72,7 +70,7 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json(
       { success: false, error: "Invalid JSON" },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -89,7 +87,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const commentEvents = parseCommentEvents(
-      payload as Parameters<typeof parseCommentEvents>[0]
+      payload as Parameters<typeof parseCommentEvents>[0],
     );
     const queue = getDMQueue();
 
@@ -97,7 +95,7 @@ export async function POST(request: NextRequest) {
     // match goes to the DM worker; normal messages and ambiguous matches stay
     // on the existing encrypted SAV path.
     const messageEvents = parseMessageEvents(
-      payload as Parameters<typeof parseMessageEvents>[0]
+      payload as Parameters<typeof parseMessageEvents>[0],
     );
     for (const event of messageEvents) {
       const account = await prisma.instagramAccount.findUnique({
@@ -118,7 +116,7 @@ export async function POST(request: NextRequest) {
       const matches = matchInboundDmAutomations(
         inboundCampaigns,
         event.text,
-        event.hasAttachments
+        event.hasAttachments,
       );
 
       if (matches.length === 1) {
@@ -138,7 +136,7 @@ export async function POST(request: NextRequest) {
           },
           {
             jobId: `inbound_${event.instagramAccountId}_${event.senderInstagramId}_${match.automation.id}_${event.metaMessageId.replace(/:/g, "_")}`,
-          }
+          },
         );
       } else {
         if (matches.length > 1) {
@@ -162,6 +160,13 @@ export async function POST(request: NextRequest) {
       }
 
       if (account) {
+        await recordInstagramWebhookCapability(account.id, "MESSAGES").catch(
+          (error) =>
+            console.warn(
+              "[Instagram Webhook] failed to record message capability:",
+              error,
+            ),
+        );
         await prisma.webhookEvent.update({
           where: { id: webhookEvent.id },
           data: { workspaceId: account.workspaceId },
@@ -172,7 +177,7 @@ export async function POST(request: NextRequest) {
     for (const event of commentEvents) {
       const account = await prisma.instagramAccount.findUnique({
         where: { instagramId: event.instagramAccountId },
-        select: { workspaceId: true },
+        select: { id: true, workspaceId: true },
       });
 
       await queue.add(
@@ -188,10 +193,17 @@ export async function POST(request: NextRequest) {
         },
         {
           jobId: `comment_${event.instagramAccountId}_${event.commentId}`,
-        }
+        },
       );
 
       if (account) {
+        await recordInstagramWebhookCapability(account.id, "COMMENTS").catch(
+          (error) =>
+            console.warn(
+              "[Instagram Webhook] failed to record comment capability:",
+              error,
+            ),
+        );
         await prisma.webhookEvent.update({
           where: { id: webhookEvent.id },
           data: { workspaceId: account.workspaceId },
@@ -201,7 +213,7 @@ export async function POST(request: NextRequest) {
 
     // Button taps from opening DMs → deliver the reveal message.
     const postbackEvents = parsePostbackEvents(
-      payload as Parameters<typeof parsePostbackEvents>[0]
+      payload as Parameters<typeof parsePostbackEvents>[0],
     );
 
     for (const event of postbackEvents) {
@@ -219,7 +231,7 @@ export async function POST(request: NextRequest) {
           jobId: `postback_${event.instagramAccountId}_${event.userId}_${(
             event.mid ?? event.payload
           ).replace(/:/g, "_")}`,
-        }
+        },
       );
     }
 
@@ -227,7 +239,7 @@ export async function POST(request: NextRequest) {
     // same next-step DM after five minutes. The worker no-ops this delayed job
     // if a real button tap has already delivered the reveal.
     const readEvents = parseReadEvents(
-      payload as Parameters<typeof parseReadEvents>[0]
+      payload as Parameters<typeof parseReadEvents>[0],
     );
 
     for (const event of readEvents) {
@@ -269,7 +281,7 @@ export async function POST(request: NextRequest) {
           {
             delay: OPENING_DM_READ_FALLBACK_DELAY_MS,
             jobId: `read_fallback_${event.instagramAccountId}_${event.userId}_${automation.id}`,
-          }
+          },
         );
       }
     }
@@ -295,7 +307,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(
       { success: false, error: "Webhook processing failed" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
