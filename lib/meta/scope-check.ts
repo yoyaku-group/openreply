@@ -306,15 +306,18 @@ export function computeMissing(granted: readonly string[]): RequiredInstagramSco
  * Throws CrossTenantAccessError on workspace mismatch, or
  * MissingCommentScopeError when any required scope is missing.
  *
- * Kill-switch: when `OPENREPLY_COMMENTS_SCOPE_ADVISORY=true` (default false),
- * the activation flow is allowed to proceed even if `manage_comments` is
- * missing from the cached scopes — letting operators create + activate
- * campaigns while waiting for Meta App Review approval. Use only as a
- * transitional state; DM delivery still REQUIRES the scope in the token
- * (Meta never delivers webhook events without it). The bypass unblocks the
- * UX; it does NOT unlock delivery. Remove the flag once Meta approves the
- * scope AND each connected IG pro has been disconnected + reconnected (so
- * the probe captures the new scope).
+ * Kill-switch: `OPENREPLY_COMMENTS_SCOPE_ADVISORY=false` (default TRUE during
+ * the App Review pending window) makes the activation flow throw on missing
+ * scopes — the strict behaviour. With the env var absent, true, or any
+ * value other than the literal string "false", the bypass is active and the
+ * activation flow proceeds even if `manage_comments` is missing from the
+ * cached scopes. Default-on lets operators create + activate campaigns
+ * while waiting for Meta App Review approval. Use only as a transitional
+ * state; DM delivery still REQUIRES the scope in the token (Meta never
+ * delivers webhook events without it). The bypass unblocks the UX; it does
+ * NOT unlock delivery. Set the env var to the literal string "false" once
+ * Meta approves the scope AND each connected IG pro has been disconnected
+ * + reconnected (so the probe captures the new scope).
  */
 export async function assertCommentScope(args: {
   accountId: string;
@@ -325,15 +328,16 @@ export async function assertCommentScope(args: {
     workspaceId: args.workspaceId,
     forceRefresh: false,
   });
-  // Kill-switch — see docstring. Default off (the strict behaviour).
-  if (
-    probe.missing.length > 0 &&
-    String(process.env.OPENREPLY_COMMENTS_SCOPE_ADVISORY || "").toLowerCase() ===
-      "true"
-  ) {
+  // Kill-switch — see docstring. Default ON (advisory). Only explicit "false"
+  // enables the strict throw. This means the bypass survives missing/unset/
+  // accidentally-cleared env vars during the App Review pending window.
+  const advisoryEnabled =
+    String(process.env.OPENREPLY_COMMENTS_SCOPE_ADVISORY ?? "true")
+      .toLowerCase() !== "false";
+  if (probe.missing.length > 0 && advisoryEnabled) {
     // eslint-disable-next-line no-console
     console.warn(
-      `[assertCommentScope][advisory-activation] accountId=${args.accountId} postId=${args.postId} missing=${probe.missing.join(",")} — OPENREPLY_COMMENTS_SCOPE_ADVISORY=true, allowing activation. DM delivery will NOT work until the scope is granted + the account is reconnected.`
+      `[assertCommentScope][advisory-activation] accountId=${args.accountId} postId=${args.postId} missing=${probe.missing.join(",")} — OPENREPLY_COMMENTS_SCOPE_ADVISORY=${advisoryEnabled ? "true (default)" : process.env.OPENREPLY_COMMENTS_SCOPE_ADVISORY}, allowing activation. DM delivery will NOT work until the scope is granted + the account is reconnected.`
     );
     return;
   }

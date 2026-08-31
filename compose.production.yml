@@ -85,6 +85,11 @@ services:
     init: true
     env_file:
       - .env
+    environment:
+      # 2026-08-31: anchored default — see note on the web service. Mirrored
+      # on worker for parity (the worker may invoke assertCommentScope on
+      # background activation jobs).
+      OPENREPLY_COMMENTS_SCOPE_ADVISORY: "true"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -115,6 +120,13 @@ services:
       - .env
     environment:
       AUTH_ALLOWED_EMAILS: ${AUTH_ALLOWED_EMAILS:?AUTH_ALLOWED_EMAILS is required}
+      # 2026-08-31: anchored default for the App Review pending window.
+      # Only explicit OPENREPLY_COMMENTS_SCOPE_ADVISORY=false in .env overrides
+      # this. Survives accidental .env regenerations (the previous failure mode
+      # that left the operator with a stuck 409 on activation). Set .env to
+      # OPENREPLY_COMMENTS_SCOPE_ADVISORY=false ONLY after Meta approves the
+      # scope AND each IG pro is disconnected + reconnected.
+      OPENREPLY_COMMENTS_SCOPE_ADVISORY: "true"
     depends_on:
       migrate:
         condition: service_completed_successfully
