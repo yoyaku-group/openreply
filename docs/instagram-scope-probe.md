@@ -1,6 +1,8 @@
 # Instagram scope probe — known false negatives + workaround
 
-**Status** : live as of 2026-08-30. Bypass active on `commentsScopeError` (commit `534eed5`).
+**Status** : verdict live confirmé le 2026-08-31. Le bypass d'activation est
+désactivé en production (`OPENREPLY_COMMENTS_SCOPE_ADVISORY=false`) et aucune
+campagne COMMENT non archivée n'est active.
 
 ## The probe
 
@@ -21,13 +23,20 @@ Smoke calls:
 
 For our 3 IG pros (`@yoyaku.fr`, `@yoyakurecordstore`, `@objects.press`) the cached `scopes` column has consistently shown `[instagram_business_basic, instagram_business_manage_messages]` (no `manage_comments`) even after disconnect + reconnect. As a result, `commentsScopeError` was rejecting every campaign create/update on `@yoyaku.fr` with a 400 banner ("this campaign would never trigger").
 
-A live probe on 2026-08-30 confirmed that `/{media-id}/comments` returns 200 + empty data — consistent with both "scope present, no comments" and "scope absent". The two cannot be distinguished without a live test (real comment from a 3rd account → DM delivery check).
+A live probe on 2026-08-30 confirmed that `/{media-id}/comments` returns 200 +
+empty data. Le test humain du 2026-08-31 a levé l'ambiguïté : le commentaire
+`Yes` de `@atelier14.paris` sur le post Objects `DOTUhHSjDPY` n'a produit aucun
+webhook `comments` et aucun `DmLog`, alors que `/api/health`, Postgres, Redis,
+la queue et le worker étaient sains. Le scope est donc réellement absent.
 
-## Bypass (commit `534eed5`)
+## Bypass historique (commits `534eed5`, `649b119`)
 
 `app/api/automations/route.ts::commentsScopeError` was downgraded from a hard 400 to an advisory `console.warn` + `return null`. A campaign can now be saved even when the cached `scopes` lacks `manage_comments`. The deeper check in `assertCommentScope` (`lib/meta/scope-check.ts:309-335`, called from `postAccessibilityError` at `app/api/automations/route.ts:305`) still surfaces the issue at activation time if the live probe at that moment returns the same incomplete scope set.
 
-`Resume:` re-enable the hard 400 once either (a) `instagram_business_manage_comments` has been confirmed via live test, or (b) the functional probe is rewritten to use a less ambiguous signal.
+Le 2026-08-31, après le canari négatif, la campagne `TEST`
+`cmth1ave3000l07qx8mgpuwxv` a été désactivée et le flag production remis à
+`false`. Le 409 `MISSING_COMMENT_SCOPE` est de nouveau la seule réponse correcte
+tant que Meta n'a pas accordé la permission.
 
 ## Live test (definitive)
 
@@ -39,5 +48,9 @@ See `/tmp/LIVE-TEST-CHECKLIST.md` for the full procedure. TL;DR:
 4. Tail `openreply-worker` logs
 5. Check DM Logs + the test account's Instagram inbox
 
-- DM arrives → scope is in the token, the probe is the bug. No App Review needed; rewrite the probe to sample more widely or use an alternate endpoint.
-- DM does not arrive → scope is genuinely missing. Submit App Review for `instagram_business_basic` + `instagram_business_manage_comments` with the corrected material at `/tmp/meta-app-review-steps.md`.
+- DM arrives → scope is in the token, the probe is the bug. Rewrite the probe to
+  sample more widely or use an alternate endpoint.
+- DM does not arrive → **observé le 2026-08-31**. Le scope est réellement absent.
+  App Review est nécessaire pour `instagram_business_basic` +
+  `instagram_business_manage_comments`, puis chaque compte doit être déconnecté
+  et reconnecté avant un nouveau canari.
