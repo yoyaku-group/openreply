@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { readMetaReviewerConfig, requestHost } from "@/lib/meta-review/auth";
+import { META_REVIEWER_COPY } from "@/lib/meta-review/copy";
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +30,7 @@ export default async function MetaReviewerLoginPage({
         <div className="mb-8 text-center">
           <h1 className="text-2xl font-semibold text-foreground">OpenReply</h1>
           <p className="mt-2 text-sm leading-relaxed text-muted">
-            Temporary Meta App Review access for Objects Presswerk.
+            {META_REVIEWER_COPY.description}
           </p>
         </div>
         <div className="panel rounded p-8">
@@ -66,12 +67,11 @@ export default async function MetaReviewerLoginPage({
               type="submit"
               className="w-full rounded bg-accent px-6 py-3.5 text-sm font-semibold text-white transition-colors hover:bg-accent-hover"
             >
-              Open Objects workspace
+              {META_REVIEWER_COPY.submitLabel}
             </button>
           </form>
           <p className="mt-5 text-xs leading-relaxed text-muted">
-            This temporary credential opens only the Objects Presswerk workspace
-            and expires automatically after the review window.
+            {META_REVIEWER_COPY.notice}
           </p>
         </div>
       </div>
