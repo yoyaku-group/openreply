@@ -242,8 +242,16 @@ All boxes must be true:
   readiness + invalid-signature tests pass.
 - App-level webhook fields include `comments`, `messages`,
   `messaging_postbacks`, and `messaging_seen`.
+- The same app-level field list is mirrored in
+  `INSTAGRAM_APP_WEBHOOK_FIELDS` for both runtimes, and `/api/health` reports
+  the four fields after the containers restart. A successful Dashboard toast
+  does not update this operator-attested runtime value.
 - Reviewer password gate opens only the isolated workspace and the supplied
   passphrase is valid for the whole review window.
+- The reviewer login copy names `Meta App Review`, but isolation is proved from
+  the configured workspace id, the reviewer's complete membership list, and
+  the workspace Instagram-account count. Never infer isolation from the public
+  login copy alone.
 - Dedicated Instagram test asset has accepted its app/tester role.
 - OAuth consent shows the same four scopes as `lib/meta/oauth.ts`.
 - `GET /api/admin/instagram-capabilities?probe=1` is green for the test asset.
