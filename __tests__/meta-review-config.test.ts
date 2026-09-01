@@ -12,13 +12,15 @@ describe("Meta App Review deployment contract", () => {
   });
 
   it("documents every audited app-level webhook field", () => {
-    const exampleEnv = readFileSync(
+    const examples = [
       new URL("../.env.example", import.meta.url),
-      "utf8",
-    );
+      new URL("../deploy/openreply.env.example", import.meta.url),
+    ];
 
-    expect(exampleEnv).toContain(
-      "INSTAGRAM_APP_WEBHOOK_FIELDS=comments,messages,messaging_postbacks,messaging_seen",
-    );
+    for (const example of examples) {
+      expect(readFileSync(example, "utf8")).toContain(
+        "INSTAGRAM_APP_WEBHOOK_FIELDS=comments,messages,messaging_postbacks,messaging_seen",
+      );
+    }
   });
 });
