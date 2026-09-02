@@ -34,6 +34,19 @@ and replicated to `yoyaku-hetzner:/opt/backups/openreply-automation` with
 5. Install the nginx vhost and systemd units from `deploy/`.
 6. Confirm `/api/health` returns `status: ok` and `worker.healthy: true`.
 
+## Day-2 deploys
+
+After the initial install, ship a new `main` with:
+
+```bash
+ssh yoyaku-automation 'cd /opt/openreply && bash deploy/deploy.sh'
+```
+
+The script pulls `main`, aligns `OPENREPLY_IMAGE_TAG` in `.env` to the deployed
+commit (the tag is the deploy marker — never edit it by hand), builds,
+recreates, and smokes `/api/health`. Rollback is
+`OPENREPLY_IMAGE_TAG=<previous-tag> docker compose -f compose.production.yml up -d`.
+
 The populated `.env` must never enter Git. `ENCRYPTION_KEY` is irreplaceable:
 losing it forces every Instagram account to reconnect.
 

@@ -12,8 +12,9 @@ and claims that the application could not demonstrate.
   by `INSTAGRAM_APP_ID`; it is not the parent Meta App ID.
 - Duplicate empty Meta app `2214363202679910`: ignore during review and archive
   separately only after confirming it has no users, tokens, products or roles.
-- Business Verification is verified. The parent app is still in Development
-  mode (unpublished).
+- Business Verification is verified (Meta confirmation email 2026-09-02 09:25,
+  app `2480002912524211`, business `1846751622045524`; no action required). The
+  parent app is still in Development mode (unpublished).
 - OAuth requests four implemented Instagram Login permissions:
   `instagram_business_basic`, `instagram_business_manage_comments`,
   `instagram_business_manage_messages`, and
@@ -277,6 +278,29 @@ The final **Submit** click and any Meta 2FA are browser-bound operator actions.
    `@objects.press`.
 
 If the first canary fails, stop. Do not reconnect the remaining accounts.
+
+## 8. Pipeline tracing during the live rehearsal
+
+Every step of the comment→DM chain writes an `OperationalEvent` row
+(`lib/observability/pipeline-trace.ts`): `Webhook received` (body fingerprint),
+`Webhook processed` (event counts + enqueued jobIds), each inbound DM routing
+decision (campaign vs SAV), `DM worker job completed`, and the two silent no-op
+outcomes (`Comment processed: no active campaign for this post`,
+`Comment processed: keyword matched no campaign`). Delivery truth stays in
+`DmLog` (`SENT`/`FAILED`).
+
+- Read them live from the Diagnostics page of the workspace under test, or
+  server-side:
+
+  ```bash
+  docker exec openreply-postgres psql -U openreply -d openreply \
+    -c 'SELECT "createdAt","level","message" FROM "OperationalEvent" ORDER BY "createdAt" DESC LIMIT 20;'
+  ```
+
+- The trace is on by default; set `DM_PIPELINE_TRACE=0` in
+  `/opt/openreply/.env` and recreate the containers to silence it. Failure
+  paths (signature mismatch, job errors) keep their dedicated ERROR/WARNING
+  events and are never silenced.
 
 ## References
 
