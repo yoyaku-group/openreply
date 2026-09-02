@@ -36,6 +36,7 @@ import {
   renderMessageWithTracking,
   renderMessageWithoutLink,
 } from "@/lib/tracking/message";
+import { tracePipeline } from "@/lib/observability/pipeline-trace";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
 const INBOUND_CLAIM_LEASE_MS = 2 * 60 * 1000;
@@ -206,6 +207,21 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     orderBy: { createdAt: "asc" },
   });
 
+  if (automations.length === 0) {
+    const account = await prisma.instagramAccount.findUnique({
+      where: { instagramId: instagramAccountId },
+      select: { workspaceId: true },
+    });
+    await tracePipeline({
+      source: "WORKER",
+      workspaceId: account?.workspaceId ?? null,
+      message: "Comment processed: no active campaign for this post",
+      payload: { commentId, mediaId, instagramAccountId },
+    });
+    return;
+  }
+
+  let matchedAnyCampaign = false;
   for (const automation of automations) {
     // "Any word" campaigns fire on every comment; otherwise require a keyword hit.
     const matchResult = automation.matchAnyWord
@@ -219,6 +235,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     if (!matchResult.matched) {
       continue;
     }
+    matchedAnyCampaign = true;
 
     const existingLog = await prisma.dmLog.findUnique({
       where: {
@@ -614,6 +631,19 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       });
       throw error;
     }
+  }
+
+  if (!matchedAnyCampaign) {
+    await tracePipeline({
+      source: "WORKER",
+      workspaceId: automations[0]?.workspaceId ?? null,
+      message: "Comment processed: keyword matched no campaign",
+      payload: {
+        commentId,
+        commentText: commentText.slice(0, 80),
+        candidateCampaignCount: automations.length,
+      },
+    });
   }
 }
 
@@ -1214,6 +1244,15 @@ export function createDMWorker(): Worker<DmQueueJob> {
 
   worker.on("completed", (job) => {
     console.log(`[DM Worker] Job ${job.id} completed`);
+    void tracePipeline({
+      source: "WORKER",
+      message: "DM worker job completed",
+      payload: {
+        jobId: job.id,
+        name: job.name,
+        attemptsMade: job.attemptsMade,
+      },
+    });
   });
 
   worker.on("failed", (job, err) => {
