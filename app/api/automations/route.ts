@@ -288,7 +288,8 @@ async function lockInboundKeywordAccount(
   // Serialize active inbound-keyword writes per Instagram account. The
   // conflict check and the write happen under this transaction-scoped lock,
   // so two concurrent activations cannot both pass the check.
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(
+  // $executeRaw: the lock call returns void, which $queryRaw cannot deserialize (Prisma driver adapter).
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(
     hashtext('openreply:inbound-dm-keywords'),
     hashtext(${instagramAccountId})
   )`;

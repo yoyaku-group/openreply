@@ -632,7 +632,8 @@ export async function sendSavReply(input: {
     // Serialize the global count + reservation boundary across every app
     // process. A transaction isolation level alone cannot prevent two
     // different rows from both observing the last available slot.
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(
+    // $executeRaw: the lock call returns void, which $queryRaw cannot deserialize (Prisma driver adapter).
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(
       ${SAV_SEND_CIRCUIT_LOCK_NAMESPACE},
       ${SAV_SEND_CIRCUIT_LOCK_ID}
     )`;

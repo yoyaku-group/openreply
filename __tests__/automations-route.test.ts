@@ -4,7 +4,7 @@ import { NextRequest } from "next/server";
 const { mockPrisma, mockGetMediaById, mockDecryptToken } = vi.hoisted(() => ({
   mockPrisma: {
     $transaction: vi.fn(),
-    $queryRaw: vi.fn(),
+    $executeRaw: vi.fn(),
     workspace: { findUnique: vi.fn() },
     instagramAccount: { findFirst: vi.fn() },
     automation: {
@@ -105,7 +105,7 @@ beforeEach(() => {
     ...existingCommentCampaign,
     ...data,
   }));
-  mockPrisma.$queryRaw.mockResolvedValue([{ pg_advisory_xact_lock: null }]);
+  mockPrisma.$executeRaw.mockResolvedValue(0);
   mockPrisma.$transaction.mockImplementation(
     async (callback: (tx: typeof mockPrisma) => Promise<unknown>) =>
       callback(mockPrisma)
@@ -306,7 +306,7 @@ describe("PATCH /api/automations trigger safety", () => {
 
     expect(response.status).toBe(409);
     expect(payload.code).toBe("INBOUND_KEYWORD_CONFLICT");
-    expect(mockPrisma.$queryRaw).toHaveBeenCalled();
+    expect(mockPrisma.$executeRaw).toHaveBeenCalled();
     expect(mockPrisma.automation.update).not.toHaveBeenCalled();
   });
 });

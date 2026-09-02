@@ -18,7 +18,7 @@ const { mockPrisma, mockTx, mockSendDirectMessage } = vi.hoisted(() => {
   const tx = {
     savTransportItem,
     savConversationFence,
-    $queryRaw: vi.fn(),
+    $executeRaw: vi.fn(),
   };
   return {
     mockTx: tx,
@@ -93,7 +93,7 @@ beforeEach(() => {
   mockPrisma.$transaction.mockImplementation(
     async (callback: (tx: typeof mockTx) => unknown) => callback(mockTx)
   );
-  mockTx.$queryRaw.mockResolvedValue([{ pg_advisory_xact_lock: null }]);
+  mockTx.$executeRaw.mockResolvedValue(0);
   mockPrisma.savTransportItem.deleteMany.mockResolvedValue({ count: 0 });
 });
 
@@ -447,13 +447,13 @@ describe("sendSavReply", () => {
       metaMessageId: "reply_serialized",
     });
 
-    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
-    const [queryParts, namespace, lockId] = mockTx.$queryRaw.mock.calls[0];
+    expect(mockTx.$executeRaw).toHaveBeenCalledTimes(1);
+    const [queryParts, namespace, lockId] = mockTx.$executeRaw.mock.calls[0];
     expect(Array.from(queryParts as TemplateStringsArray).join(" ")).toContain(
       "pg_advisory_xact_lock"
     );
     expect([namespace, lockId]).toEqual([0x534156, 1]);
-    const lockOrder = mockTx.$queryRaw.mock.invocationCallOrder[0];
+    const lockOrder = mockTx.$executeRaw.mock.invocationCallOrder[0];
     const countOrder = mockTx.savTransportItem.count.mock.invocationCallOrder[0];
     const reserveOrder = mockTx.savTransportItem.updateMany.mock.invocationCallOrder[0];
     expect(lockOrder).toBeLessThan(countOrder);
