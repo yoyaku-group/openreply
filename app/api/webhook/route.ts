@@ -17,6 +17,7 @@ import { ingestSavInboundEvent } from "@/lib/sav/service";
 import { matchInboundDmAutomations } from "@/lib/automations/inbound-dm";
 import { publicFingerprint, redactWebhookPayload } from "@/lib/sav/security";
 import { recordInstagramWebhookCapability } from "@/lib/meta/capabilities";
+import { tracePipeline } from "@/lib/observability/pipeline-trace";
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
 
@@ -85,6 +86,24 @@ export async function POST(request: NextRequest) {
     },
   });
 
+  await tracePipeline({
+    message: "Webhook received",
+    payload: {
+      webhookEventId: webhookEvent.id,
+      object: webhookEvent.object,
+      bodyLength: rawBody.length,
+      bodyFingerprint: publicFingerprint(rawBody),
+    },
+  });
+
+  const enqueued = {
+    inboundDm: [] as string[],
+    comments: [] as string[],
+    postbacks: [] as string[],
+    readFallbacks: [] as string[],
+  };
+  let lastSeenWorkspaceId: string | null = null;
+
   try {
     const commentEvents = parseCommentEvents(
       payload as Parameters<typeof parseCommentEvents>[0],
@@ -121,6 +140,7 @@ export async function POST(request: NextRequest) {
 
       if (matches.length === 1) {
         const match = matches[0];
+        const jobId = `inbound_${event.instagramAccountId}_${event.senderInstagramId}_${match.automation.id}_${event.metaMessageId.replace(/:/g, "_")}`;
         await queue.add(
           INBOUND_MESSAGE_JOB_NAME,
           {
@@ -134,11 +154,32 @@ export async function POST(request: NextRequest) {
             automationId: match.automation.id,
             matchedKeyword: match.matchedKeyword,
           },
-          {
-            jobId: `inbound_${event.instagramAccountId}_${event.senderInstagramId}_${match.automation.id}_${event.metaMessageId.replace(/:/g, "_")}`,
-          },
+          { jobId },
         );
+        enqueued.inboundDm.push(jobId);
+        await tracePipeline({
+          workspaceId: account?.workspaceId ?? null,
+          message: "Inbound DM routed to campaign",
+          payload: {
+            jobId,
+            automationId: match.automation.id,
+            matchedKeyword: match.matchedKeyword,
+            senderUsername: event.senderUsername,
+            metaMessageId: event.metaMessageId,
+          },
+        });
       } else {
+        if (matches.length === 0) {
+          await tracePipeline({
+            workspaceId: account?.workspaceId ?? null,
+            message: "Inbound DM routed to SAV (no campaign match)",
+            payload: {
+              senderUsername: event.senderUsername,
+              metaMessageId: event.metaMessageId,
+              activeCampaignCount: inboundCampaigns.length,
+            },
+          });
+        }
         if (matches.length > 1) {
           await prisma.operationalEvent.create({
             data: {
@@ -160,6 +201,7 @@ export async function POST(request: NextRequest) {
       }
 
       if (account) {
+        lastSeenWorkspaceId = account.workspaceId;
         await recordInstagramWebhookCapability(account.id, "MESSAGES").catch(
           (error) =>
             console.warn(
@@ -180,6 +222,7 @@ export async function POST(request: NextRequest) {
         select: { id: true, workspaceId: true },
       });
 
+      const jobId = `comment_${event.instagramAccountId}_${event.commentId}`;
       await queue.add(
         "process-comment",
         {
@@ -191,12 +234,12 @@ export async function POST(request: NextRequest) {
           mediaId: event.mediaId,
           source: "WEBHOOK",
         },
-        {
-          jobId: `comment_${event.instagramAccountId}_${event.commentId}`,
-        },
+        { jobId },
       );
+      enqueued.comments.push(jobId);
 
       if (account) {
+        lastSeenWorkspaceId = account.workspaceId;
         await recordInstagramWebhookCapability(account.id, "COMMENTS").catch(
           (error) =>
             console.warn(
@@ -217,6 +260,11 @@ export async function POST(request: NextRequest) {
     );
 
     for (const event of postbackEvents) {
+      // BullMQ forbids ":" in custom job ids, and the payload is
+      // "reveal:<id>", so build with underscores and strip any colons.
+      const jobId = `postback_${event.instagramAccountId}_${event.userId}_${(
+        event.mid ?? event.payload
+      ).replace(/:/g, "_")}`;
       await queue.add(
         POSTBACK_JOB_NAME,
         {
@@ -225,14 +273,9 @@ export async function POST(request: NextRequest) {
           payload: event.payload,
           mid: event.mid,
         },
-        {
-          // BullMQ forbids ":" in custom job ids, and the payload is
-          // "reveal:<id>", so build with underscores and strip any colons.
-          jobId: `postback_${event.instagramAccountId}_${event.userId}_${(
-            event.mid ?? event.payload
-          ).replace(/:/g, "_")}`,
-        },
+        { jobId },
       );
+      enqueued.postbacks.push(jobId);
     }
 
     // If a user reads the opening DM and never taps the button, deliver the
@@ -283,6 +326,9 @@ export async function POST(request: NextRequest) {
             jobId: `read_fallback_${event.instagramAccountId}_${event.userId}_${automation.id}`,
           },
         );
+        enqueued.readFallbacks.push(
+          `read_fallback_${event.instagramAccountId}_${event.userId}_${automation.id}`,
+        );
       }
     }
 
@@ -294,8 +340,31 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    await tracePipeline({
+      workspaceId: lastSeenWorkspaceId,
+      message: "Webhook processed",
+      payload: {
+        webhookEventId: webhookEvent.id,
+        events: {
+          messages: messageEvents.length,
+          comments: commentEvents.length,
+          postbacks: postbackEvents.length,
+          reads: readEvents.length,
+        },
+        enqueued,
+      },
+    });
+
     return NextResponse.json({ success: true }, { status: 200 });
   } catch {
+    await tracePipeline({
+      level: "ERROR",
+      message: "Webhook processing failed",
+      payload: {
+        webhookEventId: webhookEvent.id,
+        bodyFingerprint: publicFingerprint(rawBody),
+      },
+    });
     await prisma.webhookEvent.update({
       where: { id: webhookEvent.id },
       data: {
