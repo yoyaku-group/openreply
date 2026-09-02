@@ -23,10 +23,36 @@ starts with the connected professional account.
 Normal messages are not auto-replied to. They continue through the account's
 existing inbox/SAV routing.
 
-## MB059 campaign
+## MB059 campaign — deployed 2026-09-02
 
-Connect the professional account `@minibarmusic` through the existing Settings
-OAuth flow, then create this campaign as a draft:
+The campaign pair is **live on `@yoyakurecordstore`** (not `@minibarmusic`,
+which was never connected):
+
+- `MB059 — Sweely Le chat botté e.p.` — trigger COMMENT, `matchAnyPost`,
+  keyword `MB059` (whole word). Fires on any comment webhook received for a
+  `@yoyakurecordstore` post. `matchAnyPost` deliberately bypasses the post
+  accessibility check, so it does not need the collab post's media id.
+- `MB059 — Sweely Le chat botté e.p. (DM keyword)` — trigger INBOUND_DM,
+  exact keyword `MB059`. Anyone DMing `MB059` to `@yoyakurecordstore`
+  receives one tracked pre-order link.
+
+Both share the copy: message `Sweely's Le chat botté e.p. (MB059) is
+available to pre-order on YOYAKU.`, button `Pre-order MB059`, destination
+`https://yoyaku.io/release/sweely-le-chat-botte-e-p-mb059/`.
+
+**Collab-post verdict (2026-09-02).** The Sweely co-post
+(`instagram.com/p/DceFmD3iLt7/`, initiated by `@sweely_music`, co-authored by
+`@yoyakurecordstore`, published 2026-08-25) does **not** appear in the
+co-author's Graph media set (checked across all 500 media) and produced **zero
+comment webhooks** on the connected account over a full evening of monitoring,
+while organic comments on owned posts flowed continuously. Comment webhooks
+for a co-post therefore only reach the initiator: a COMMENT automation can
+never cover this post from our side. The CTA must point at the inbound DM
+rail:
+
+> Want MB059? Send "MB059" in DM to @yoyakurecordstore and we'll send you the direct pre-order link.
+
+Historical design (2026-08-26 draft, targeting `@minibarmusic`):
 
 - Name: `MB059 DM keyword`
 - Trigger: `Exact keyword sent by Instagram DM`
@@ -36,9 +62,9 @@ OAuth flow, then create this campaign as a draft:
 - Destination: `https://yoyaku.io/release/sweely-le-chat-botte-e-p-mb059/`
 - Opening DM, follow gate, public reply, and follow-up: disabled
 
-Use this public CTA only after the canary succeeds:
+Use this saved manual reply while a rail is paused:
 
-> Want MB059? Send "MB059" in DM to @minibarmusic and we'll send you the direct pre-order link.
+> Here you go. Sweely's Le chat botté e.p. (MB059) is available to pre-order on YOYAKU: https://yoyaku.io/release/sweely-le-chat-botte-e-p-mb059/
 
 Until the automation is live, use this saved manual reply:
 
