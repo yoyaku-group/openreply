@@ -128,18 +128,20 @@ export function evaluateInstagramFeature(
     blockers.push(`${feature.toLowerCase()}=STALE`);
   }
 
-  // COMMENT campaigns ultimately send a private reply. Comment visibility
-  // alone is not sufficient if the connected token cannot use messaging.
-  if (feature === "COMMENTS") {
-    const messages = capabilities.MESSAGES;
-    if (messages.status !== "READY") {
-      blockers.push(
-        `messages=${messages.status}:${messages.reason ?? "NO_REASON"}`,
-      );
-    } else if (!isFresh(messages.checkedAt)) {
-      blockers.push("messages=STALE");
-    }
-  }
+  // A comment→DM campaign sends a *private reply* to the comment
+  // (POST /{ig}/messages with recipient={comment_id}). Per Meta's Instagram
+  // API with Instagram Login, this requires instagram_business_basic +
+  // instagram_business_manage_comments — the SAME scope the COMMENTS probe
+  // already proves — NOT the Conversations API (instagram_business_manage_
+  // messages, probed as MESSAGES via GET /me/conversations).
+  // Gating a comment→DM campaign on MESSAGES was a false negative: a token
+  // fully able to send the private reply was refused whenever /me/conversations
+  // returned empty or denied (e.g. a freshly connected account with no message
+  // history). The private-reply capability is therefore covered by COMMENTS +
+  // the comments webhook checked below. MESSAGES (Conversations API) is only
+  // needed for opening/general DM sends and is enforced separately by the
+  // caller when that optional feature is enabled — not here.
+  // Ref: https://developers.facebook.com/documentation/instagram-platform/private-replies.md
 
   const subscribedField =
     feature === "COMMENTS"

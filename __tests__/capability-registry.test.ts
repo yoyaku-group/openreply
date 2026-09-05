@@ -46,7 +46,12 @@ describe("evaluateInstagramFeature", () => {
     ).toEqual({ ready: true, blockers: [] });
   });
 
-  it("requires outbound messaging capability for a comment-to-DM campaign", () => {
+  it("does not gate a comment-to-DM campaign on the Conversations API", () => {
+    // A private reply (POST /{ig}/messages with recipient={comment_id}) needs
+    // instagram_business_manage_comments — the scope COMMENTS already proves —
+    // NOT the Conversations API (MESSAGES, probed via /me/conversations).
+    // A blocked/empty conversations probe must NOT refuse the campaign.
+    // Ref: developers.facebook.com/documentation/instagram-platform/private-replies
     const result = evaluateInstagramFeature(
       "COMMENTS",
       registry({
@@ -57,10 +62,7 @@ describe("evaluateInstagramFeature", () => {
       ["comments", "messages"],
     );
 
-    expect(result.ready).toBe(false);
-    expect(result.blockers).toContain(
-      "messages=BLOCKED:CONVERSATIONS_API_DENIED",
-    );
+    expect(result).toEqual({ ready: true, blockers: [] });
   });
 
   it("fails closed on Meta's comments-hidden evidence", () => {
