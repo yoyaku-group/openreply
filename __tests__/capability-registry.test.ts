@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  campaignRequiresMessageCapability,
   evaluateInstagramFeature,
   type CachedCapability,
 } from "../lib/meta/capabilities";
@@ -117,5 +118,24 @@ describe("evaluateInstagramFeature", () => {
     expect(result.blockers).toContain(
       "app_webhook_subscription=MISSING_messages",
     );
+  });
+});
+
+describe("campaignRequiresMessageCapability", () => {
+  it("requires messaging for an inbound-DM campaign", () => {
+    expect(campaignRequiresMessageCapability("INBOUND_DM", false)).toBe(true);
+    expect(campaignRequiresMessageCapability("INBOUND_DM", true)).toBe(true);
+  });
+
+  it("requires messaging for a comment campaign with an opening DM", () => {
+    // The opening DM's button postback delivers through the classic Send API
+    // (sendDirectCampaignDelivery), which needs instagram_business_manage_messages.
+    expect(campaignRequiresMessageCapability("COMMENT", true)).toBe(true);
+  });
+
+  it("does NOT require messaging for a plain comment→private-reply campaign", () => {
+    // Preserves the PR #39 decoupling: a private-reply-only campaign uses
+    // instagram_business_manage_comments, never the Conversations API.
+    expect(campaignRequiresMessageCapability("COMMENT", false)).toBe(false);
   });
 });
