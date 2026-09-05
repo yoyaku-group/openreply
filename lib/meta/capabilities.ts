@@ -463,6 +463,27 @@ export async function assertInstagramCommentCapability(args: {
   }
 }
 
+/**
+ * Whether a campaign needs the Conversations API capability (MESSAGES,
+ * `instagram_business_manage_messages`). It does only when the campaign sends a
+ * direct DM: an inbound-DM trigger always does, and a comment trigger does when
+ * the opening DM is enabled — its button postback delivers through
+ * `sendDirectCampaignDelivery`, the classic Send API. A plain comment→private
+ * reply campaign uses `instagram_business_manage_comments` and must NOT be gated
+ * on the Conversations API (decoupling shipped in PR #39; see
+ * capability-registry.test.ts). This is the single source of truth for that
+ * decision, consumed at automation create/update.
+ */
+export function campaignRequiresMessageCapability(
+  triggerType: "COMMENT" | "INBOUND_DM",
+  openingDmEnabled: boolean,
+): boolean {
+  return (
+    triggerType === "INBOUND_DM" ||
+    (triggerType === "COMMENT" && openingDmEnabled)
+  );
+}
+
 export async function assertInstagramMessageCapability(args: {
   accountId: string;
   workspaceId: string;

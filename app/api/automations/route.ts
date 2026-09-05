@@ -14,6 +14,7 @@ import {
   InstagramCapabilityBlockedError,
   assertInstagramCommentCapability,
   assertInstagramMessageCapability,
+  campaignRequiresMessageCapability,
 } from "@/lib/meta/capabilities";
 import {
   canManageCampaigns,
@@ -608,7 +609,10 @@ export async function POST(request: NextRequest) {
     }
   }
   if (
-    parsed.data.triggerType === "INBOUND_DM" &&
+    campaignRequiresMessageCapability(
+      parsed.data.triggerType,
+      parsed.data.openingDmEnabled,
+    ) &&
     parsed.data.isActive &&
     instagramAccount.archivedAt === null
   ) {
@@ -868,7 +872,10 @@ export async function PATCH(request: NextRequest) {
     }
   }
   if (
-    (parsed.data.triggerType ?? existing.triggerType) === "INBOUND_DM" &&
+    campaignRequiresMessageCapability(
+      parsed.data.triggerType ?? existing.triggerType,
+      parsed.data.openingDmEnabled ?? existing.openingDmEnabled,
+    ) &&
     (parsed.data.isActive ?? existing.isActive) &&
     existing.instagramAccount.archivedAt === null
   ) {
