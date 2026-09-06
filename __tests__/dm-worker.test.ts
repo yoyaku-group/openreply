@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { Prisma } from "@/app/generated/prisma/client";
 
 const {
   mockPrisma,
@@ -427,6 +428,36 @@ describe("DM Worker — Full Pipeline", () => {
           status: "SKIPPED_DEDUP",
           mediaId: "media_101",
         }),
+      })
+    );
+  });
+
+  it("should skip on a lost per-user/media claim race (concurrent trigger, P2002)", async () => {
+    // Read-then-act pre-filter passes (findFirst SENT -> null, default), but a
+    // concurrent comment from the same commenter already holds the SENDING/SENT
+    // reservation, so the atomic PENDING->SENDING claim raises P2002. The row
+    // must be recorded SKIPPED_DEDUP and NO DM sent (race-proof backstop, P1-2b).
+    // Budget must not be reserved: the claim precedes reserveWorkspaceDMSend.
+    mockPrisma.dmLog.update.mockImplementation(
+      async (args?: { data?: { status?: string } }) => {
+        if (args?.data?.status === "SENDING") {
+          throw new Prisma.PrismaClientKnownRequestError(
+            "Unique constraint failed on the fields: (`automationId`,`mediaId`,`commenterId`)",
+            { code: "P2002", clientVersion: "7.0.0" }
+          );
+        }
+        return {};
+      }
+    );
+    const processor = getProcessor();
+
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "SKIPPED_DEDUP" }),
       })
     );
   });
