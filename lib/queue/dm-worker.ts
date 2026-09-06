@@ -11,9 +11,13 @@ import {
 } from "./client";
 import { prisma } from "@/lib/db/client";
 import { Prisma } from "@/app/generated/prisma/client";
-import { recordPrivateReplyCapability } from "@/lib/meta/capabilities";
+import {
+  recordPrivateReplyCapability,
+  recordPrivateReplyBlocked,
+} from "@/lib/meta/capabilities";
 import {
   MetaApiError,
+  PermissionError,
   getUserFollowStatus,
   sendCommentReply,
   sendDirectMessage,
@@ -749,6 +753,15 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           "[DM Worker] recordPrivateReplyCapability failed:",
           formatError(capError)
         );
+        // P1-3a-bis: surface a systematic capability-write failure instead of
+        // only logging it (bounded worker-alerts buffer). Best-effort.
+        await recordWorkerAlert({
+          level: "warning",
+          message: `PRIVATE_REPLY capability write failed: ${formatError(capError)}`,
+          jobId: job.id,
+          instagramAccountId: automation.instagramAccountId,
+          commentId,
+        }).catch(() => {});
       }
     } catch (error) {
       await releaseWorkspaceDMReservation(
@@ -769,6 +782,28 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           errorMessage: formatError(error),
         },
       });
+
+      // P1-3a-bis: a PermissionError (Meta code 10/100/200) on the private reply
+      // is an account-level capability denial, not a per-recipient error, so
+      // record PRIVATE_REPLY=BLOCKED for operator visibility. Observability only
+      // — not a gate blocker (that would deadlock recovery). Best-effort, and
+      // scoped to PermissionError so a per-recipient failure never blocks the
+      // whole account.
+      if (error instanceof PermissionError) {
+        try {
+          await recordPrivateReplyBlocked(automation.instagramAccountId, {
+            via: "comment_private_reply",
+            commentId,
+            code: error.code,
+            message: error.message,
+          });
+        } catch (capError) {
+          console.error(
+            "[DM Worker] recordPrivateReplyBlocked failed:",
+            formatError(capError)
+          );
+        }
+      }
       throw error;
     }
   }
