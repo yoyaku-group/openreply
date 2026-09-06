@@ -42,7 +42,7 @@ async function poll() {
   // P1-2b-bis: reclaim SENDING claims orphaned by a hard crash so they never
   // permanently block a commenter (independent of comment reconciliation).
   try {
-    const reclaimed = await reclaimStaleSendingClaims();
+    const reclaimed = await reclaimStaleSendingClaims(new Date(startedAt));
     if (reclaimed > 0) {
       console.log(`[DM Worker] Reclaimed ${reclaimed} stale SENDING claim(s)`);
     }
