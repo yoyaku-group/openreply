@@ -30,6 +30,7 @@ function registry(
     MESSAGES: capability("MESSAGES", "READY"),
     INSIGHTS: capability("INSIGHTS", "READY"),
     CONTENT_PUBLISH: capability("CONTENT_PUBLISH", "UNKNOWN"),
+    PRIVATE_REPLY: capability("PRIVATE_REPLY", "UNKNOWN"),
     ...overrides,
   };
 }
@@ -90,6 +91,47 @@ describe("evaluateInstagramFeature", () => {
     const result = evaluateInstagramFeature(
       "COMMENTS",
       registry({ COMMENTS: stale }),
+      ["comments"],
+      new Date(),
+      ["comments", "messages"],
+    );
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContain("comments=STALE");
+    vi.useRealTimers();
+  });
+
+  it("lets a fresh proven private reply rescue a stale comments probe", () => {
+    // P1-3a: a real successful private reply (event-sourced PRIVATE_REPLY) is
+    // stronger evidence than a stale probe, so it lifts the comments=STALE
+    // blocker — but never a hard BLOCKED, and only for COMMENTS.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-31T12:00:00Z"));
+    const stale = capability("COMMENTS", "READY");
+    stale.checkedAt = new Date("2026-08-29T12:00:00Z"); // > 24h old
+    const result = evaluateInstagramFeature(
+      "COMMENTS",
+      registry({
+        COMMENTS: stale,
+        PRIVATE_REPLY: capability("PRIVATE_REPLY", "READY"), // lastSuccessAt = now
+      }),
+      ["comments"],
+      new Date(),
+      ["comments", "messages"],
+    );
+    expect(result).toEqual({ ready: true, blockers: [] });
+    vi.useRealTimers();
+  });
+
+  it("does not let a stale proven private reply rescue a stale comments probe", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-31T12:00:00Z"));
+    const stale = capability("COMMENTS", "READY");
+    stale.checkedAt = new Date("2026-08-29T12:00:00Z");
+    const stalePrivateReply = capability("PRIVATE_REPLY", "READY");
+    stalePrivateReply.lastSuccessAt = new Date("2026-08-29T12:00:00Z"); // > 24h
+    const result = evaluateInstagramFeature(
+      "COMMENTS",
+      registry({ COMMENTS: stale, PRIVATE_REPLY: stalePrivateReply }),
       ["comments"],
       new Date(),
       ["comments", "messages"],

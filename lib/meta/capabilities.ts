@@ -16,6 +16,15 @@ import { getMetaAppConfiguration } from "@/lib/meta/app-config";
 const PROBE_CACHE_MS = 60 * 60 * 1000;
 export const CAPABILITY_STALE_MS = 24 * 60 * 60 * 1000;
 
+// The registry exposes every capability kind, but only INSTAGRAM_CAPABILITY_KINDS
+// are probe-driven. PRIVATE_REPLY is event-sourced (written by the DM worker on a
+// real successful send) and must never be added to the probe loop — there is no
+// way to probe it without sending a DM. It is seeded (UNKNOWN by default) so the
+// snapshot always carries an entry. Kept as a plain literal — never spread
+// INSTAGRAM_CAPABILITY_KINDS at module scope, that would make importing this
+// module fail wherever @/lib/meta/client is mocked without that export.
+const EVENT_SOURCED_CAPABILITY_KINDS = ["PRIVATE_REPLY"] as const;
+
 const LEGACY_SCOPE_BY_KIND: Partial<Record<InstagramCapabilityKind, string>> = {
   BASIC: "instagram_business_basic",
   COMMENTS: "instagram_business_manage_comments",
@@ -91,8 +100,14 @@ function unknownCapability(kind: InstagramCapabilityKind): CachedCapability {
 export function buildCapabilityRegistry(
   rows: CachedCapability[],
 ): Record<InstagramCapabilityKind, CachedCapability> {
+  // Computed at call time (never a module-level spread of the possibly-mocked
+  // INSTAGRAM_CAPABILITY_KINDS import — see EVENT_SOURCED_CAPABILITY_KINDS note).
+  const registryKinds: InstagramCapabilityKind[] = [
+    ...INSTAGRAM_CAPABILITY_KINDS,
+    ...EVENT_SOURCED_CAPABILITY_KINDS,
+  ];
   const result = Object.fromEntries(
-    INSTAGRAM_CAPABILITY_KINDS.map((kind) => [kind, unknownCapability(kind)]),
+    registryKinds.map((kind) => [kind, unknownCapability(kind)]),
   ) as Record<InstagramCapabilityKind, CachedCapability>;
   for (const row of rows) result[row.kind] = row;
   return result;
@@ -125,7 +140,18 @@ export function evaluateInstagramFeature(
       `${feature.toLowerCase()}=${capability.status}:${capability.reason ?? "NO_REASON"}`,
     );
   } else if (!isFresh(capability.checkedAt)) {
-    blockers.push(`${feature.toLowerCase()}=STALE`);
+    // A fresh, real private reply (event-sourced PRIVATE_REPLY, written by the
+    // worker on a successful send) proves the comment→DM capability is live now
+    // — stronger evidence than a stale probe — so it rescues probe staleness for
+    // COMMENTS. It only lifts STALENESS, never a hard BLOCKED above, and its
+    // absence never blocks (positive-only signal).
+    const privateReplyProvenFresh =
+      feature === "COMMENTS" &&
+      capabilities.PRIVATE_REPLY?.status === "READY" &&
+      isFresh(capabilities.PRIVATE_REPLY.lastSuccessAt);
+    if (!privateReplyProvenFresh) {
+      blockers.push(`${feature.toLowerCase()}=STALE`);
+    }
   }
 
   // A comment→DM campaign sends a *private reply* to the comment
@@ -499,6 +525,46 @@ export async function assertInstagramMessageCapability(args: {
       snapshot.features.messages.blockers,
     );
   }
+}
+
+/**
+ * Record the PRIVATE_REPLY transport capability from a real successful private
+ * reply (event-sourced — the DM worker calls this after a 200, never the probe).
+ * A genuine send is stronger evidence than the manage_comments probe, and
+ * `lastSuccessAt` lets {@link evaluateInstagramFeature} rescue a stale COMMENTS
+ * probe. Positive-only: this only ever records READY, so it can never block a
+ * fresh account that has not sent yet. Callers treat failures as best-effort —
+ * an observability write must never fail a DM that already sent.
+ */
+export async function recordPrivateReplyCapability(
+  instagramAccountId: string,
+  evidence: Record<string, string | number | boolean | null>,
+): Promise<void> {
+  const now = new Date();
+  await prisma.instagramCapability.upsert({
+    where: {
+      instagramAccountId_kind: {
+        instagramAccountId,
+        kind: "PRIVATE_REPLY",
+      },
+    },
+    create: {
+      instagramAccountId,
+      kind: "PRIVATE_REPLY",
+      status: "READY",
+      reason: "OBSERVED_SEND_SUCCESS",
+      evidence: evidence as Prisma.InputJsonValue,
+      checkedAt: now,
+      lastSuccessAt: now,
+    },
+    update: {
+      status: "READY",
+      reason: "OBSERVED_SEND_SUCCESS",
+      evidence: evidence as Prisma.InputJsonValue,
+      checkedAt: now,
+      lastSuccessAt: now,
+    },
+  });
 }
 
 export async function recordInstagramWebhookCapability(

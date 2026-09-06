@@ -26,6 +26,10 @@
  */
 
 import { prisma } from "@/lib/db/client";
+import type {
+  InstagramCapabilityKind,
+  InstagramCapabilityStatus,
+} from "@/app/generated/prisma/client";
 import { getDMQueue } from "@/lib/queue/client";
 import {
   getRecentMediaComments,
@@ -141,9 +145,8 @@ async function sweepCampaign(
       subscriptionCheckedAt: Date | null;
       lastCommentWebhookAt: Date | null;
       capabilities: Array<{
-        kind:
-          "BASIC" | "COMMENTS" | "MESSAGES" | "INSIGHTS" | "CONTENT_PUBLISH";
-        status: "UNKNOWN" | "READY" | "BLOCKED" | "ERROR" | "STALE";
+        kind: InstagramCapabilityKind;
+        status: InstagramCapabilityStatus;
         reason: string | null;
         evidence: unknown;
         checkedAt: Date | null;

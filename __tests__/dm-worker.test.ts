@@ -34,6 +34,9 @@ const {
     instagramAccount: {
       findUnique: vi.fn(),
     },
+    instagramCapability: {
+      upsert: vi.fn(),
+    },
     operationalEvent: {
       create: vi.fn(),
     },
@@ -59,6 +62,15 @@ vi.mock("@/lib/db/client", () => ({
 }));
 
 vi.mock("@/lib/meta/client", () => ({
+  // capabilities.ts (pulled in via recordPrivateReplyCapability) reads this at
+  // module load to seed the registry, so the mock must provide it.
+  INSTAGRAM_CAPABILITY_KINDS: [
+    "BASIC",
+    "COMMENTS",
+    "MESSAGES",
+    "INSIGHTS",
+    "CONTENT_PUBLISH",
+  ],
   sendPrivateReply: mockSendPrivateReply,
   sendPrivateReplyWithLinkButton: mockSendPrivateReplyWithLinkButton,
   sendPrivateReplyWithButton: mockSendPrivateReplyWithButton,
@@ -270,6 +282,7 @@ beforeEach(() => {
   mockPrisma.instagramAccount.findUnique.mockResolvedValue({
     workspaceId: "workspace_123",
   });
+  mockPrisma.instagramCapability.upsert.mockResolvedValue({});
   mockPrisma.operationalEvent.create.mockResolvedValue({});
   mockDecryptToken.mockReturnValue("decrypted_token");
   mockMatchKeywords.mockReturnValue({ matched: true, matchedKeyword: "LINK" });
@@ -372,6 +385,20 @@ describe("DM Worker — Full Pipeline", () => {
       },
       data: expect.objectContaining({ status: "SENT" }),
     });
+    // P1-3a: a successful private reply records the proven PRIVATE_REPLY
+    // transport capability (event-sourced).
+    expect(mockPrisma.instagramCapability.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          instagramAccountId_kind: {
+            instagramAccountId: "ig_account_row_1",
+            kind: "PRIVATE_REPLY",
+          },
+        },
+        create: expect.objectContaining({ status: "READY" }),
+        update: expect.objectContaining({ status: "READY" }),
+      })
+    );
   });
 
   it("should skip when no automations match the media", async () => {

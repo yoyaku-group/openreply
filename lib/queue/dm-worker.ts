@@ -11,6 +11,7 @@ import {
 } from "./client";
 import { prisma } from "@/lib/db/client";
 import { Prisma } from "@/app/generated/prisma/client";
+import { recordPrivateReplyCapability } from "@/lib/meta/capabilities";
 import {
   MetaApiError,
   getUserFollowStatus,
@@ -731,6 +732,24 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           errorMessage: null,
         },
       });
+
+      // Record the proven private-reply transport capability (P1-3a,
+      // event-sourced). Best-effort: an observability write must never fail a
+      // DM that already sent, so its own catch swallows any error rather than
+      // reaching the send catch below (which would wrongly mark this SENT row
+      // FAILED).
+      try {
+        await recordPrivateReplyCapability(automation.instagramAccountId, {
+          via: "comment_private_reply",
+          commentId,
+          mediaId: mediaId ?? null,
+        });
+      } catch (capError) {
+        console.error(
+          "[DM Worker] recordPrivateReplyCapability failed:",
+          formatError(capError)
+        );
+      }
     } catch (error) {
       await releaseWorkspaceDMReservation(
         automation.workspaceId,
