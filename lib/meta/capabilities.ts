@@ -567,6 +567,48 @@ export async function recordPrivateReplyCapability(
   });
 }
 
+/**
+ * Record a PRIVATE_REPLY permission denial from a real send (P1-3a-bis,
+ * event-sourced). The DM worker calls this ONLY for a PermissionError (Meta code
+ * 10/100/200) — an account-level capability problem, never a per-recipient
+ * error — so it is a safe negative signal. Sets BLOCKED (never touches
+ * lastSuccessAt). This is OBSERVABILITY only: it surfaces "this account's last
+ * real private reply was permission-denied" in the capability snapshot, and is
+ * deliberately NOT a gate blocker (blocking on it would deadlock — a blocked
+ * campaign can never send the success that flips it back to READY; recovery runs
+ * through re-auth + the COMMENTS probe instead). A later successful send upserts
+ * it back to READY. Callers treat failures as best-effort.
+ */
+export async function recordPrivateReplyBlocked(
+  instagramAccountId: string,
+  evidence: Record<string, string | number | boolean | null>,
+): Promise<void> {
+  const now = new Date();
+  await prisma.instagramCapability.upsert({
+    where: {
+      instagramAccountId_kind: {
+        instagramAccountId,
+        kind: "PRIVATE_REPLY",
+      },
+    },
+    create: {
+      instagramAccountId,
+      kind: "PRIVATE_REPLY",
+      status: "BLOCKED",
+      reason: "OBSERVED_PERMISSION_DENIED",
+      evidence: evidence as Prisma.InputJsonValue,
+      checkedAt: now,
+      lastSuccessAt: null,
+    },
+    update: {
+      status: "BLOCKED",
+      reason: "OBSERVED_PERMISSION_DENIED",
+      evidence: evidence as Prisma.InputJsonValue,
+      checkedAt: now,
+    },
+  });
+}
+
 export async function recordInstagramWebhookCapability(
   accountId: string,
   kind: "COMMENTS" | "MESSAGES",

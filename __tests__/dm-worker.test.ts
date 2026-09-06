@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Prisma } from "@/app/generated/prisma/client";
+import { PermissionError } from "@/lib/meta/client";
 
 const {
   mockPrisma,
@@ -90,6 +91,13 @@ vi.mock("@/lib/meta/client", () => ({
       super(message);
       this.code = code;
       this.name = "MetaApiError";
+    }
+  },
+  PermissionError: class PermissionError extends Error {
+    code = 100;
+    constructor(message: string) {
+      super(message);
+      this.name = "PermissionError";
     }
   },
 }));
@@ -506,6 +514,47 @@ describe("DM Worker — Full Pipeline", () => {
         data: expect.objectContaining({ status: "FAILED" }),
       })
     );
+  });
+
+  it("records PRIVATE_REPLY=BLOCKED when the send hits a PermissionError (P1-3a-bis)", async () => {
+    // A permission denial (Meta code 10/100/200) is an account-level capability
+    // problem, so record BLOCKED for visibility; the DmLog is FAILED and the job
+    // rethrows. A per-recipient error (any non-PermissionError) must NOT block.
+    mockSendPrivateReply.mockRejectedValue(new PermissionError("(#10) no perm"));
+    const processor = getProcessor();
+
+    await expect(processor(createMockJob())).rejects.toThrow();
+
+    expect(mockPrisma.instagramCapability.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          instagramAccountId_kind: {
+            instagramAccountId: "ig_account_row_1",
+            kind: "PRIVATE_REPLY",
+          },
+        },
+        create: expect.objectContaining({ status: "BLOCKED" }),
+        update: expect.objectContaining({ status: "BLOCKED" }),
+      })
+    );
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "FAILED" }),
+      })
+    );
+  });
+
+  it("does NOT record BLOCKED for a non-permission send error (per-recipient)", async () => {
+    mockSendPrivateReply.mockRejectedValue(new Error("recipient unavailable"));
+    const processor = getProcessor();
+
+    await expect(processor(createMockJob())).rejects.toThrow();
+
+    // No BLOCKED write — only a PermissionError blocks the whole account.
+    const blockedCalls = mockPrisma.instagramCapability.upsert.mock.calls.filter(
+      (c) => c[0]?.create?.status === "BLOCKED"
+    );
+    expect(blockedCalls).toHaveLength(0);
   });
 
   it("should skip when monthly plan limit is reached", async () => {
