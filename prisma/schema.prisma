@@ -545,6 +545,13 @@ enum InstagramCapabilityKind {
   MESSAGES
   INSIGHTS
   CONTENT_PUBLISH
+  // Event-sourced (P1-3a): written by the DM worker on a real successful
+  // private reply, never by the capability probe (there is no way to probe
+  // "can send a private reply" without actually sending one). READY +
+  // lastSuccessAt record proven transport; it is a positive-only signal (its
+  // absence/UNKNOWN never blocks — that would be a chicken-and-egg for a fresh
+  // account that has not sent yet).
+  PRIVATE_REPLY
 }
 
 enum InstagramCapabilityStatus {
