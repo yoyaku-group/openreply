@@ -172,6 +172,24 @@ async function sendDirectCampaignDelivery(input: {
   );
 }
 
+// Safety net for the P1-2b PENDING->SENDING claim: any uncaught failure between
+// the claim and a terminal status MUST revert the row, or the commenter is
+// permanently blocked on this media — SENDING is in the reserved set of the
+// partial unique index DmLog_reservation_unique, so a stuck SENDING makes every
+// later comment from that commenter hit P2002 and be silently SKIPPED_DEDUP
+// forever. Scoped to status='SENDING' via updateMany, so it's a no-op when a
+// nearer handler already moved the row to a terminal state (FAILED, SKIPPED_*).
+async function revertSendingClaim(
+  automationId: string,
+  commentId: string,
+  error: unknown
+): Promise<void> {
+  await prisma.dmLog.updateMany({
+    where: { automationId, commentId, status: "SENDING" },
+    data: { status: "FAILED", errorMessage: formatError(error) },
+  });
+}
+
 async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
   const {
     instagramAccountId,
@@ -479,7 +497,15 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       throw error;
     }
 
-    const usage = await reserveWorkspaceDMSend(automation.workspaceId);
+    let usage: Awaited<ReturnType<typeof reserveWorkspaceDMSend>>;
+    try {
+      usage = await reserveWorkspaceDMSend(automation.workspaceId);
+    } catch (error) {
+      // Guard the SENDING claim: reserveWorkspaceDMSend throwing would otherwise
+      // strand the row in SENDING (see revertSendingClaim).
+      await revertSendingClaim(automation.id, commentId, error);
+      throw error;
+    }
     if (!usage.allowed) {
       await prisma.dmLog.update({
         where: {
@@ -589,7 +615,20 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // else gets the "follow me first" prompt (re-verified on tap).
     let sendFollowPrompt = false;
     if (automation.requireFollow && !useOpeningDm) {
-      const alreadyFollows = await getUserFollowStatus(accessToken, commenterId);
+      let alreadyFollows: Awaited<ReturnType<typeof getUserFollowStatus>>;
+      try {
+        alreadyFollows = await getUserFollowStatus(accessToken, commenterId);
+      } catch (error) {
+        // Guard the SENDING claim: getUserFollowStatus (a Meta API call, the
+        // realistic persistent-failure source) throwing would otherwise strand
+        // the row in SENDING. Release the budget already reserved above too.
+        await releaseWorkspaceDMReservation(
+          automation.workspaceId,
+          usage.periodStart
+        );
+        await revertSendingClaim(automation.id, commentId, error);
+        throw error;
+      }
       sendFollowPrompt = alreadyFollows !== true;
     }
 

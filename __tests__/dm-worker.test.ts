@@ -462,6 +462,25 @@ describe("DM Worker — Full Pipeline", () => {
     );
   });
 
+  it("reverts the SENDING claim to FAILED if a post-claim step throws (no orphan)", async () => {
+    // After the PENDING->SENDING claim, a failing post-claim call (here
+    // reserveWorkspaceDMSend) must revert the row out of SENDING, otherwise it
+    // would sit in the reserved set forever and permanently block this commenter
+    // on this media. The job still rethrows so BullMQ can retry.
+    mockReserveWorkspaceDMSend.mockRejectedValue(new Error("db blip"));
+    const processor = getProcessor();
+
+    await expect(processor(createMockJob())).rejects.toThrow("db blip");
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: "SENDING" }),
+        data: expect.objectContaining({ status: "FAILED" }),
+      })
+    );
+  });
+
   it("should skip when monthly plan limit is reached", async () => {
     mockReserveWorkspaceDMSend.mockResolvedValue({
       allowed: false,
