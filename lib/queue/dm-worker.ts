@@ -258,6 +258,51 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       continue;
     }
 
+    // Per-user/media idempotence: a commenter only triggers a DM on their FIRST
+    // comment under a post (Instagram/ManyChat trigger semantics). If this
+    // person was already DM'd for this automation+media via an earlier comment,
+    // record this new comment as a dedup skip and never DM them twice per post.
+    // Only fires for a genuinely new comment (existingLog handles same-comment
+    // reprocessing above).
+    //
+    // KNOWN LIMITATION (follow-up P1-2b): this is a read-then-act check, not an
+    // atomic claim. Under worker concurrency (>1), two comments from the same
+    // commenter on the same post that arrive inside the send window can both see
+    // priorTrigger === null and both send. The (automationId, mediaId,
+    // commenterId) index is intentionally non-UNIQUE so skip rows can be
+    // audited. A fully race-proof guarantee needs a claim-before-send (a partial
+    // unique index on status='SENT' with conflict handling, or a dedicated claim
+    // row). Until then this closes the common (sequential) case; the rare
+    // concurrent double-DM is bounded and non-destructive.
+    if (!existingLog) {
+      const priorTrigger = await prisma.dmLog.findFirst({
+        where: {
+          automationId: automation.id,
+          mediaId,
+          commenterId,
+          status: "SENT",
+        },
+        select: { id: true },
+      });
+      if (priorTrigger) {
+        await prisma.dmLog.create({
+          data: {
+            workspaceId: automation.workspaceId,
+            automationId: automation.id,
+            instagramAccountId: automation.instagramAccountId,
+            commenterId,
+            commenterName,
+            commentText,
+            commentId,
+            mediaId,
+            matchedKeyword: matchResult.matchedKeyword,
+            status: "SKIPPED_DEDUP",
+          },
+        });
+        continue;
+      }
+    }
+
     if (!automation.instagramAccount.accessToken) {
       await prisma.dmLog.upsert({
         where: {
@@ -274,6 +319,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commenterName,
           commentText,
           commentId,
+          mediaId,
           matchedKeyword: matchResult.matchedKeyword,
           status: "FAILED",
           errorMessage: "No Instagram access token available",
@@ -305,6 +351,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commenterName,
           commentText,
           commentId,
+          mediaId,
           matchedKeyword: matchResult.matchedKeyword,
           status: "FAILED",
           errorMessage: "Failed to decrypt Instagram access token",
@@ -330,6 +377,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commenterName,
           commentText,
           commentId,
+          mediaId,
           matchedKeyword: matchResult.matchedKeyword,
           status: "PENDING",
           attempts: job.attemptsMade + 1,

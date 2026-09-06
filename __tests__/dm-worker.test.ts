@@ -255,8 +255,14 @@ beforeEach(() => {
   mockPrisma.dmLog.findUnique.mockResolvedValue(null);
   mockPrisma.dmLog.create.mockResolvedValue({});
   mockPrisma.dmLog.updateMany.mockResolvedValue({ count: 1 });
-  mockPrisma.dmLog.findFirst.mockResolvedValue({
-    commenterName: "commenter_user",
+  mockPrisma.dmLog.findFirst.mockImplementation(async (args?: {
+    where?: { status?: string };
+  }) => {
+    // Per-user/media idempotence probe (filters status: "SENT"): default is
+    // "no prior trigger" so a first comment still sends.
+    if (args?.where?.status === "SENT") return null;
+    // Opening-DM personalization probe.
+    return { commenterName: "commenter_user" };
   });
   mockPrisma.dmLog.upsert.mockResolvedValue({});
   mockPrisma.dmLog.update.mockResolvedValue({});
@@ -398,6 +404,31 @@ describe("DM Worker — Full Pipeline", () => {
 
     expect(mockSendPrivateReply).not.toHaveBeenCalled();
     expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+  });
+
+  it("should skip a repeat commenter already DM'd for this post (per-user/media dedup)", async () => {
+    // New comment (findUnique null) but this commenter already received a SENT
+    // DM for this automation+media via an earlier comment → dedup, no re-send.
+    mockPrisma.dmLog.findFirst.mockImplementation(
+      async (args?: { where?: { status?: string } }) => {
+        if (args?.where?.status === "SENT") return { id: "prior_sent_log" };
+        return { commenterName: "commenter_user" };
+      }
+    );
+    const processor = getProcessor();
+
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "SKIPPED_DEDUP",
+          mediaId: "media_101",
+        }),
+      })
+    );
   });
 
   it("should skip when monthly plan limit is reached", async () => {
