@@ -305,6 +305,11 @@ model DmLog {
   commenterName  String?
   commentText    String
   commentId      String
+  /// Numeric media_id of the post the comment was left on. Enables per-user
+  /// idempotence: a commenter only triggers a DM on their FIRST comment under a
+  /// post (Instagram/ManyChat semantics). Nullable for inbound-DM rows (no post)
+  /// and rows created before this column existed.
+  mediaId        String?
   matchedKeyword String?
   status         DmStatus  @default(PENDING)
   attempts       Int       @default(0)
@@ -329,6 +334,9 @@ model DmLog {
   @@index([automationId])
   @@index([instagramAccountId])
   @@index([status])
+  // Fast lookup for per-user/media idempotence (has this commenter already been
+  // DM'd for this automation+post?).
+  @@index([automationId, mediaId, commenterId])
 }
 
 // Every comment the system has seen, from either the webhook or the polling
