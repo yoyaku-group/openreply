@@ -1,6 +1,7 @@
 import { createDMWorker } from "@/lib/queue/dm-worker";
 import { recordWorkerHeartbeat } from "@/lib/ops/worker-health";
 import { reconcileComments } from "@/lib/polling/comment-reconciler";
+import { reclaimStaleSendingClaims } from "@/lib/queue/reclaim-sending-claims";
 import os from "node:os";
 
 const worker = createDMWorker();
@@ -36,6 +37,18 @@ async function poll() {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("[DM Worker] Comment reconciliation failed:", message);
+  }
+
+  // P1-2b-bis: reclaim SENDING claims orphaned by a hard crash so they never
+  // permanently block a commenter (independent of comment reconciliation).
+  try {
+    const reclaimed = await reclaimStaleSendingClaims();
+    if (reclaimed > 0) {
+      console.log(`[DM Worker] Reclaimed ${reclaimed} stale SENDING claim(s)`);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[DM Worker] Stale SENDING reclaim failed:", message);
   }
 }
 
