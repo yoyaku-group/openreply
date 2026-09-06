@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { Prisma } from "@/app/generated/prisma/client";
 
 const {
   mockPrisma,
@@ -427,6 +428,55 @@ describe("DM Worker — Full Pipeline", () => {
           status: "SKIPPED_DEDUP",
           mediaId: "media_101",
         }),
+      })
+    );
+  });
+
+  it("should skip on a lost per-user/media claim race (concurrent trigger, P2002)", async () => {
+    // Read-then-act pre-filter passes (findFirst SENT -> null, default), but a
+    // concurrent comment from the same commenter already holds the SENDING/SENT
+    // reservation, so the atomic PENDING->SENDING claim raises P2002. The row
+    // must be recorded SKIPPED_DEDUP and NO DM sent (race-proof backstop, P1-2b).
+    // Budget must not be reserved: the claim precedes reserveWorkspaceDMSend.
+    mockPrisma.dmLog.update.mockImplementation(
+      async (args?: { data?: { status?: string } }) => {
+        if (args?.data?.status === "SENDING") {
+          throw new Prisma.PrismaClientKnownRequestError(
+            "Unique constraint failed on the fields: (`automationId`,`mediaId`,`commenterId`)",
+            { code: "P2002", clientVersion: "7.0.0" }
+          );
+        }
+        return {};
+      }
+    );
+    const processor = getProcessor();
+
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "SKIPPED_DEDUP" }),
+      })
+    );
+  });
+
+  it("reverts the SENDING claim to FAILED if a post-claim step throws (no orphan)", async () => {
+    // After the PENDING->SENDING claim, a failing post-claim call (here
+    // reserveWorkspaceDMSend) must revert the row out of SENDING, otherwise it
+    // would sit in the reserved set forever and permanently block this commenter
+    // on this media. The job still rethrows so BullMQ can retry.
+    mockReserveWorkspaceDMSend.mockRejectedValue(new Error("db blip"));
+    const processor = getProcessor();
+
+    await expect(processor(createMockJob())).rejects.toThrow("db blip");
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: "SENDING" }),
+        data: expect.objectContaining({ status: "FAILED" }),
       })
     );
   });

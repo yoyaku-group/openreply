@@ -295,6 +295,16 @@ model Automation {
   @@index([calendarEventId])
 }
 
+/// Per-user/media DM idempotence is enforced race-proof by a PARTIAL UNIQUE
+/// INDEX that Prisma's schema DSL cannot express (no WHERE on @@unique):
+///   CREATE UNIQUE INDEX "DmLog_reservation_unique"
+///     ON "DmLog" ("automationId", "mediaId", "commenterId")
+///     WHERE status IN ('SENDING', 'SENT');
+/// It lives in migration 20260906010000_dmlog_media_reservation_unique and is
+/// intentionally raw-SQL only. `prisma migrate deploy` (prod) applies it and
+/// never drift-checks; `prisma migrate dev` (local) will flag it as drift on a
+/// later schema change — expected, do not "fix" by dropping it. The claim in
+/// dm-worker.ts (PENDING->SENDING before send) relies on this index.
 model DmLog {
   id                 String @id @default(cuid())
   workspaceId        String

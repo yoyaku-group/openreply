@@ -10,6 +10,7 @@ import {
   type ProcessPostbackJob,
 } from "./client";
 import { prisma } from "@/lib/db/client";
+import { Prisma } from "@/app/generated/prisma/client";
 import {
   MetaApiError,
   getUserFollowStatus,
@@ -171,6 +172,24 @@ async function sendDirectCampaignDelivery(input: {
   );
 }
 
+// Safety net for the P1-2b PENDING->SENDING claim: any uncaught failure between
+// the claim and a terminal status MUST revert the row, or the commenter is
+// permanently blocked on this media — SENDING is in the reserved set of the
+// partial unique index DmLog_reservation_unique, so a stuck SENDING makes every
+// later comment from that commenter hit P2002 and be silently SKIPPED_DEDUP
+// forever. Scoped to status='SENDING' via updateMany, so it's a no-op when a
+// nearer handler already moved the row to a terminal state (FAILED, SKIPPED_*).
+async function revertSendingClaim(
+  automationId: string,
+  commentId: string,
+  error: unknown
+): Promise<void> {
+  await prisma.dmLog.updateMany({
+    where: { automationId, commentId, status: "SENDING" },
+    data: { status: "FAILED", errorMessage: formatError(error) },
+  });
+}
+
 async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
   const {
     instagramAccountId,
@@ -265,15 +284,11 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // Only fires for a genuinely new comment (existingLog handles same-comment
     // reprocessing above).
     //
-    // KNOWN LIMITATION (follow-up P1-2b): this is a read-then-act check, not an
-    // atomic claim. Under worker concurrency (>1), two comments from the same
-    // commenter on the same post that arrive inside the send window can both see
-    // priorTrigger === null and both send. The (automationId, mediaId,
-    // commenterId) index is intentionally non-UNIQUE so skip rows can be
-    // audited. A fully race-proof guarantee needs a claim-before-send (a partial
-    // unique index on status='SENT' with conflict handling, or a dedicated claim
-    // row). Until then this closes the common (sequential) case; the rare
-    // concurrent double-DM is bounded and non-destructive.
+    // This read-then-act check is a cheap fast-path for the common (sequential)
+    // case. The race-proof guarantee is the atomic PENDING->SENDING claim below
+    // (before the send), enforced by the partial unique index
+    // `DmLog_reservation_unique` on (automationId, mediaId, commenterId) WHERE
+    // status IN ('SENDING','SENT') — see the claim block further down.
     if (!existingLog) {
       const priorTrigger = await prisma.dmLog.findFirst({
         where: {
@@ -445,7 +460,52 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // this run needed. Don't re-send the DM.
     if (!needsDm) continue;
 
-    const usage = await reserveWorkspaceDMSend(automation.workspaceId);
+    // Atomic per-user/media claim (P1-2b) — the race-proof backstop to the
+    // read-then-act pre-filter above. Transition this row PENDING -> SENDING,
+    // guarded by the partial unique index `DmLog_reservation_unique` on
+    // (automationId, mediaId, commenterId) WHERE status IN ('SENDING','SENT').
+    // If a concurrent comment from the same commenter on the same post already
+    // holds the live reservation, this UPDATE raises P2002: we mark the row
+    // SKIPPED_DEDUP and skip the send entirely. Placed after the public-reply
+    // leg and before any budget reservation so a losing comment costs no quota.
+    // (mediaId NULL — inbound-DM / legacy rows — never collides: NULLs are
+    // distinct in a Postgres unique index, so those flows are unaffected.)
+    try {
+      await prisma.dmLog.update({
+        where: {
+          automationId_commentId: { automationId: automation.id, commentId },
+        },
+        data: { status: "SENDING" },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        await prisma.dmLog.update({
+          where: {
+            automationId_commentId: { automationId: automation.id, commentId },
+          },
+          data: {
+            status: "SKIPPED_DEDUP",
+            errorMessage:
+              "Commenter already has a live DM reservation for this post (concurrent trigger)",
+          },
+        });
+        continue;
+      }
+      throw error;
+    }
+
+    let usage: Awaited<ReturnType<typeof reserveWorkspaceDMSend>>;
+    try {
+      usage = await reserveWorkspaceDMSend(automation.workspaceId);
+    } catch (error) {
+      // Guard the SENDING claim: reserveWorkspaceDMSend throwing would otherwise
+      // strand the row in SENDING (see revertSendingClaim).
+      await revertSendingClaim(automation.id, commentId, error);
+      throw error;
+    }
     if (!usage.allowed) {
       await prisma.dmLog.update({
         where: {
@@ -555,7 +615,20 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // else gets the "follow me first" prompt (re-verified on tap).
     let sendFollowPrompt = false;
     if (automation.requireFollow && !useOpeningDm) {
-      const alreadyFollows = await getUserFollowStatus(accessToken, commenterId);
+      let alreadyFollows: Awaited<ReturnType<typeof getUserFollowStatus>>;
+      try {
+        alreadyFollows = await getUserFollowStatus(accessToken, commenterId);
+      } catch (error) {
+        // Guard the SENDING claim: getUserFollowStatus (a Meta API call, the
+        // realistic persistent-failure source) throwing would otherwise strand
+        // the row in SENDING. Release the budget already reserved above too.
+        await releaseWorkspaceDMReservation(
+          automation.workspaceId,
+          usage.periodStart
+        );
+        await revertSendingClaim(automation.id, commentId, error);
+        throw error;
+      }
       sendFollowPrompt = alreadyFollows !== true;
     }
 
