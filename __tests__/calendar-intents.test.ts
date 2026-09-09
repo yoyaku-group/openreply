@@ -7,6 +7,9 @@ import {
 } from "@/lib/automations/calendar-intents";
 
 const base = {
+  source_revision: "revision-1",
+  delivery_allowed: true,
+  blocking_reasons: [],
   publication_key: "calendar:event-1",
   calendar_event_id: "event-1",
   workspace_key: "yoyaku",
@@ -64,6 +67,10 @@ describe("calendar intent contract", () => {
   it("deactivates a live campaign when a material intent changes", () => {
     const intent = normalizeCalendarIntent(base)!;
     expect(calendarAutomationUpdateState({
+      sourceRevision: base.source_revision,
+      calendarScheduledAt: new Date(base.scheduled_at),
+      calendarStatus: base.status,
+      calendarAutomationStatus: base.automation_status,
       isActive: true,
       postId: null,
       keywords: ["LINK"],
@@ -71,6 +78,10 @@ describe("calendar intent contract", () => {
     }, intent)).toEqual({ isActive: false, lifecycle: "PLANNED", materialChanged: true });
 
     expect(calendarAutomationUpdateState({
+      sourceRevision: base.source_revision,
+      calendarScheduledAt: new Date(base.scheduled_at),
+      calendarStatus: base.status,
+      calendarAutomationStatus: base.automation_status,
       isActive: true,
       postId: null,
       keywords: ["LINK"],
@@ -83,16 +94,47 @@ describe("calendar intent contract", () => {
       published_url: "https://www.instagram.com/p/example/",
     })!;
     expect(calendarAutomationUpdateState({
+      sourceRevision: base.source_revision,
+      calendarScheduledAt: new Date(base.scheduled_at),
+      calendarStatus: base.status,
+      calendarAutomationStatus: base.automation_status,
       isActive: true,
       postId: "media-123",
       keywords: ["LINK"],
       destinationUrl: base.destination_url,
     }, published)).toEqual({ isActive: true, lifecycle: "ACTIVE", materialChanged: false });
     expect(calendarAutomationUpdateState({
+      sourceRevision: base.source_revision,
+      calendarScheduledAt: new Date(base.scheduled_at),
+      calendarStatus: base.status,
+      calendarAutomationStatus: base.automation_status,
       isActive: true,
       postId: "media-old",
       keywords: ["LINK"],
       destinationUrl: base.destination_url,
     }, published)).toEqual({ isActive: false, lifecycle: "READY", materialChanged: true });
   });
+});
+
+// Lifecycle regression: a cancellation used to keep a bound active campaign live.
+it("suspends an unchanged media binding when the source cancels delivery", () => {
+  const intent = normalizeCalendarIntent({ ...base, external_id: "media-123",
+    status: "cancelled", delivery_allowed: false, blocking_reasons: ["cancelled"] })!;
+  expect(calendarAutomationUpdateState({ isActive: true, postId: "media-123",
+    keywords: ["LINK"], destinationUrl: base.destination_url }, intent).isActive).toBe(false);
+});
+
+it.each([
+  { source_revision: "revision-2" },
+  { scheduled_at: "2026-10-01T10:00:00.000Z" },
+  { status: "cancelled" },
+  { automation_status: "blocked" },
+])("requires human review after material source changes %j", (change) => {
+  const intent = normalizeCalendarIntent({ ...base, external_id: "media-123", ...change })!;
+  const existing = { isActive: true, postId: "media-123", keywords: ["LINK"],
+    destinationUrl: base.destination_url, sourceRevision: base.source_revision,
+    calendarScheduledAt: new Date(base.scheduled_at), calendarStatus: base.status,
+    calendarAutomationStatus: base.automation_status };
+  expect(calendarAutomationUpdateState(existing, intent).isActive).toBe(false);
+  expect(calendarAutomationUpdateState({ ...existing, isActive: false }, intent).isActive).toBe(false);
 });

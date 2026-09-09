@@ -20,7 +20,10 @@ const {
   mockIngestSavInboundEvent,
 } = vi.hoisted(() => ({
   mockPrisma: {
+    $transaction: vi.fn(),
+    $queryRaw: vi.fn(),
     automation: {
+      findUnique: vi.fn(),
       findMany: vi.fn(),
       findFirst: vi.fn(),
     },
@@ -270,6 +273,14 @@ function createMockInboundJob(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockPrisma.$transaction.mockImplementation((fn) => fn(mockPrisma));
+  mockPrisma.$queryRaw.mockResolvedValue([]);
+  mockPrisma.automation.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => {
+    const first = await mockPrisma.automation.findFirst.mock.results.at(-1)?.value;
+    if (first?.id === where.id) return first;
+    const many = await mockPrisma.automation.findMany.mock.results.at(-1)?.value;
+    return many?.find((row: { id: string }) => row.id === where.id) ?? null;
+  });
 
   mockPrisma.automation.findMany.mockResolvedValue([mockAutomation]);
   mockPrisma.automation.findFirst.mockResolvedValue(null);
@@ -1208,5 +1219,30 @@ describe("DM Worker — exact inbound keyword", () => {
         text: "MB059",
       })
     );
+  });
+});
+
+describe("dispatch activation recheck", () => {
+  it("blocks an opening DM when staff pause after the initial queue read", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([{ ...mockAutomation,
+      openingDmEnabled: true, openingDmMessage: "Open", openingDmButtonLabel: "Get link" }]);
+    mockPrisma.automation.findUnique.mockResolvedValue({ ...mockAutomation, isActive: false });
+    await expect(getProcessor()(createMockJob())).rejects.toThrow("inactive");
+    expect(mockSendPrivateReplyWithButton).not.toHaveBeenCalled();
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+  });
+  it("blocks a queued reveal when staff pause after the postback read", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(mockAutomation);
+    mockPrisma.automation.findUnique.mockResolvedValue({ ...mockAutomation, isActive: false });
+    await expect(getProcessor()(createMockPostbackJob())).rejects.toThrow("inactive");
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+  });
+  it("checks again before an appreciation follow-up", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue({ ...mockAutomation,
+      followUpEnabled: true, followUpMessage: "Thanks" });
+    mockPrisma.automation.findUnique.mockResolvedValueOnce(mockAutomation)
+      .mockResolvedValue({ ...mockAutomation, isActive: false });
+    await getProcessor()(createMockPostbackJob());
+    expect(mockSendDirectMessage).toHaveBeenCalledTimes(1);
   });
 });

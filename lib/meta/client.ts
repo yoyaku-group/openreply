@@ -167,6 +167,7 @@ export async function sendPrivateReply(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(20_000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
@@ -199,6 +200,7 @@ export async function sendPrivateReplyWithButton(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(20_000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
@@ -242,6 +244,7 @@ export async function sendDirectMessageWithButton(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(20_000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
@@ -327,6 +330,7 @@ export async function sendPrivateReplyWithLinkButton(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(20_000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
@@ -364,6 +368,7 @@ export async function sendDirectMessage(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(20_000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
@@ -393,6 +398,7 @@ export async function sendDirectMessageWithLinkButton(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(20_000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
@@ -423,6 +429,7 @@ export async function sendCommentReply(
 ): Promise<{ id: string }> {
   const response = await fetch(`${instagramGraphBase()}/${commentId}/replies`, {
     method: "POST",
+      signal: AbortSignal.timeout(20_000),
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${accessToken}`,
