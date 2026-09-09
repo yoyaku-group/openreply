@@ -26,6 +26,10 @@ export async function GET(request: NextRequest) {
   }
 
   if (process.env.ATTACH_NEXT_REEL_ENABLED !== "true") {
+    console.info(
+      "[attach-next-reel] run",
+      JSON.stringify({ enabled: false, pending: 0, checked: 0, bound: 0 })
+    );
     return NextResponse.json({
       success: true,
       data: { enabled: false, checked: 0, bound: 0, failedAccounts: 0 },
@@ -36,6 +40,10 @@ export async function GET(request: NextRequest) {
     where: { pendingNextReel: true },
     include: { instagramAccount: true },
   });
+  console.info(
+    "[attach-next-reel] pending",
+    JSON.stringify({ enabled: true, pending: pending.length })
+  );
 
   // Group by connected account so we fetch each account's media only once.
   const byAccount = new Map<
@@ -63,9 +71,25 @@ export async function GET(request: NextRequest) {
       media = await getUserMedia(token, 25);
     } catch (err) {
       failures.push(account.id);
-      console.error("[attach-next-reel] media fetch failed", account.id, err);
+      console.error(
+        "[attach-next-reel] media_fetch_failed",
+        JSON.stringify({
+          accountId: account.id,
+          campaigns: automations.length,
+          error: err instanceof Error ? err.name : "unknown",
+        })
+      );
       continue;
     }
+
+    console.info(
+      "[attach-next-reel] account_checked",
+      JSON.stringify({
+        accountId: account.id,
+        campaigns: automations.length,
+        media: media.length,
+      })
+    );
 
     for (const automation of automations) {
       const target = selectMediaForPendingAutomation(
@@ -83,12 +107,39 @@ export async function GET(request: NextRequest) {
           pendingNextReel: false,
         },
       });
+      console.info(
+        "[attach-next-reel] bound",
+        JSON.stringify({
+          automationId: automation.id,
+          mediaId: target.id,
+          mediaProductType: target.media_product_type ?? null,
+          publishedAt: target.timestamp,
+        })
+      );
       bound += 1;
     }
   }
 
+  console.info(
+    "[attach-next-reel] run_complete",
+    JSON.stringify({
+      enabled: true,
+      pending: pending.length,
+      accounts: byAccount.size,
+      checked,
+      bound,
+      failedAccounts: failures.length,
+    })
+  );
   return NextResponse.json({
     success: true,
-    data: { checked, bound, failedAccounts: failures.length },
+    data: {
+      enabled: true,
+      pending: pending.length,
+      accounts: byAccount.size,
+      checked,
+      bound,
+      failedAccounts: failures.length,
+    },
   });
 }
