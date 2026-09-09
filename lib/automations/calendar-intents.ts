@@ -3,6 +3,9 @@ import { z } from "zod";
 const HTTPS_URL = z.string().url().refine((value) => value.startsWith("https://"));
 
 const calendarIntentSchema = z.object({
+  source_revision: z.string().min(1).max(256),
+  delivery_allowed: z.boolean(),
+  blocking_reasons: z.array(z.string().max(200)).max(50),
   publication_key: z.string().min(3).max(200),
   calendar_event_id: z.string().min(1).max(256),
   workspace_key: z.enum(["yoyaku", "objects"]),
@@ -89,6 +92,10 @@ export function calendarAutomationUpdateState(
     postId: string | null;
     keywords: string[];
     destinationUrl: string | null;
+    sourceRevision?: string | null;
+    calendarScheduledAt?: Date | null;
+    calendarStatus?: string | null;
+    calendarAutomationStatus?: string | null;
   },
   intent: CalendarIntent
 ) {
@@ -98,11 +105,16 @@ export function calendarAutomationUpdateState(
     existing.postId !== postId ||
     existing.keywords.length !== 1 ||
     existing.keywords[0] !== intent.cta_keyword ||
-    existing.destinationUrl !== intent.destination_url;
-  const isActive = existing.isActive && !materialChanged;
+    existing.destinationUrl !== intent.destination_url ||
+    existing.sourceRevision !== intent.source_revision ||
+    (existing.calendarScheduledAt?.toISOString() ?? null) !==
+      (intent.scheduled_at ? new Date(intent.scheduled_at).toISOString() : null) ||
+    existing.calendarStatus !== intent.status ||
+    existing.calendarAutomationStatus !== intent.automation_status;
+  const isActive = existing.isActive && !materialChanged && intent.delivery_allowed && intent.blocking_reasons.length === 0;
   return {
     isActive,
-    lifecycle: isActive ? "ACTIVE" : postId ? "READY" : "PLANNED",
+    lifecycle: isActive ? "ACTIVE" : !intent.delivery_allowed || intent.blocking_reasons.length ? "PAUSED" : postId ? "READY" : "PLANNED",
     materialChanged,
   } as const;
 }
@@ -111,3 +123,10 @@ export function calendarCampaignName(intent: CalendarIntent): string {
   const subject = intent.release_skus[0] || intent.subject_key || intent.calendar_event_id;
   return `${subject} ${intent.cta_keyword} · Calendar`;
 }
+
+export const calendarRetirementSchema = z.object({
+  publication_key: z.string().min(3).max(200),
+  workspace_key: z.enum(["yoyaku", "objects"]),
+  source_revision: z.string().min(1).max(256),
+  reason: z.string().min(1).max(200),
+});

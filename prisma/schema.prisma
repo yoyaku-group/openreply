@@ -275,6 +275,11 @@ model Automation {
   calendarEventId     String?
   calendarScheduledAt DateTime?
   sourceWorkspaceKey  String?
+  sourceRevision      String?
+  sourceDeliveryAllowed Boolean @default(false)
+  sourceBlockingReasons String[] @default([])
+  calendarStatus      String?
+  calendarAutomationStatus String?
   archivedAt          DateTime?
   archivedReason      String?
 

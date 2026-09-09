@@ -42,6 +42,7 @@ import {
   renderMessageWithTracking,
   renderMessageWithoutLink,
 } from "@/lib/tracking/message";
+import { withAutomationDelivery, type DeliverySnapshot } from "@/lib/automations/delivery-guard";
 import { tracePipeline } from "@/lib/observability/pipeline-trace";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
@@ -109,7 +110,7 @@ function buildInlineLinkFallback(
   return extraUrls.length > 0 ? `${base}\n${extraUrls.join("\n")}` : base;
 }
 
-type DirectDeliveryAutomation = {
+type DirectDeliveryAutomation = DeliverySnapshot & {
   dmMessage: string;
   linkButtonLabel: string | null;
   trackedLinks: WorkerTrackedLink[];
@@ -137,20 +138,20 @@ async function sendDirectCampaignDelivery(input: {
     );
 
     try {
-      await sendDirectMessageWithLinkButton(
+      await withAutomationDelivery(automation, () => sendDirectMessageWithLinkButton(
         accessToken,
         automation.instagramAccount.instagramId,
         userId,
         bodyText,
         buttons
-      );
+      ));
     } catch (buttonError) {
       if (!canFallbackFromButtonTemplate(buttonError)) throw buttonError;
       console.log(
         `[DM Worker] Button template rejected in ${context}, falling back to inline link:`,
         formatError(buttonError)
       );
-      await sendDirectMessage(
+      await withAutomationDelivery(automation, () => sendDirectMessage(
         accessToken,
         automation.instagramAccount.instagramId,
         userId,
@@ -160,12 +161,12 @@ async function sendDirectCampaignDelivery(input: {
           automation.trackedLinks,
           bodyText
         )
-      );
+      ));
     }
     return;
   }
 
-  await sendDirectMessage(
+  await withAutomationDelivery(automation, () => sendDirectMessage(
     accessToken,
     automation.instagramAccount.instagramId,
     userId,
@@ -174,7 +175,7 @@ async function sendDirectCampaignDelivery(input: {
       commenterName,
       trackedLinks: automation.trackedLinks,
     })
-  );
+  ));
 }
 
 // Safety net for the P1-2b PENDING->SENDING claim: any uncaught failure between
@@ -438,7 +439,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commenterName,
           trackedLinks: automation.trackedLinks,
         });
-        await sendCommentReply(accessToken, commentId, publicReply);
+        await withAutomationDelivery(automation, () => sendCommentReply(accessToken, commentId, publicReply));
         await prisma.dmLog.update({
           where: {
             automationId_commentId: { automationId: automation.id, commentId },
@@ -644,7 +645,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commenterName,
           trackedLinks: [],
         });
-        await sendPrivateReplyWithButton(
+        await withAutomationDelivery(automation, () => sendPrivateReplyWithButton(
           accessToken,
           automation.instagramAccount.instagramId,
           commentId,
@@ -653,7 +654,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           automation.requireFollow
             ? `followcheck:${automation.id}`
             : `reveal:${automation.id}`
-        );
+        ));
       } else if (sendFollowPrompt) {
         const promptText = renderMessageWithoutLink({
           message:
@@ -661,14 +662,14 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
             "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over",
           commenterName,
         });
-        await sendPrivateReplyWithButton(
+        await withAutomationDelivery(automation, () => sendPrivateReplyWithButton(
           accessToken,
           automation.instagramAccount.instagramId,
           commentId,
           promptText,
           automation.followPromptButtonLabel || "i'm following",
           `followcheck:${automation.id}`
-        );
+        ));
       } else if (automation.trackedLinks.length > 0) {
         // Try button template first; if Meta rejects it, fall back to inline links.
         const bodyText =
@@ -682,13 +683,13 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         );
 
         try {
-          await sendPrivateReplyWithLinkButton(
+          await withAutomationDelivery(automation, () => sendPrivateReplyWithLinkButton(
             accessToken,
             automation.instagramAccount.instagramId,
             commentId,
             bodyText,
             buttons
-          );
+          ));
         } catch (buttonError) {
           if (!canFallbackFromButtonTemplate(buttonError)) throw buttonError;
           // Button template rejected; send as text with inline links instead.
@@ -702,12 +703,12 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
             automation.trackedLinks,
             bodyText
           );
-          await sendPrivateReply(
+          await withAutomationDelivery(automation, () => sendPrivateReply(
             accessToken,
             automation.instagramAccount.instagramId,
             commentId,
             fallbackMessage
-          );
+          ));
         }
       } else {
         const dmMessage = renderMessageWithTracking({
@@ -715,12 +716,12 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commenterName,
           trackedLinks: automation.trackedLinks,
         });
-        await sendPrivateReply(
+        await withAutomationDelivery(automation, () => sendPrivateReply(
           accessToken,
           automation.instagramAccount.instagramId,
           commentId,
           dmMessage
-        );
+        ));
       }
 
       await prisma.dmLog.update({
@@ -1234,14 +1235,14 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
         commenterName,
       });
       try {
-        await sendDirectMessageWithButton(
+        await withAutomationDelivery(automation, () => sendDirectMessageWithButton(
           accessToken,
           automation.instagramAccount.instagramId,
           userId,
           promptText,
           automation.followPromptButtonLabel || "i'm following",
           `followcheck:${automation.id}`
-        );
+        ));
       } catch (error) {
         console.log(
           "[DM Worker] Failed to re-send follow prompt:",
@@ -1287,15 +1288,15 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     // must not flip the reveal (already sent) to a failed state.
     if (automation.followUpEnabled && automation.followUpMessage?.trim()) {
       try {
-        await sendDirectMessage(
+        await withAutomationDelivery(automation, () => sendDirectMessage(
           accessToken,
           automation.instagramAccount.instagramId,
           userId,
           renderMessageWithoutLink({
-            message: automation.followUpMessage,
+            message: automation.followUpMessage as string,
             commenterName,
           })
-        );
+        ));
       } catch (followUpError) {
         console.log(
           "[DM Worker] Failed to send follow-up message:",
