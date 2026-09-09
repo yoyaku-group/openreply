@@ -120,6 +120,17 @@ describe("pending media binding", () => {
     media_type: "VIDEO",
     media_product_type: "REELS",
   });
+  const post = (
+    id: string,
+    timestamp: string,
+    caption?: string
+  ): InstagramMedia => ({
+    id,
+    timestamp,
+    caption,
+    media_type: "IMAGE",
+    media_product_type: "FEED",
+  });
 
   it("fails closed when a SKU-tagged automation has no exact hashtag match", () => {
     const media = [
@@ -142,9 +153,9 @@ describe("pending media binding", () => {
     ).toBe("earlier");
   });
 
-  it("retains explicit next-reel behavior only without a SKU", () => {
+  it("binds the next post or reel when no SKU is present", () => {
     const media = [
-      reel("next", "2026-08-02T10:00:00Z", "Instore announcement"),
+      post("next", "2026-08-02T10:00:00Z", "Instore announcement"),
       reel("later", "2026-08-03T10:00:00Z", "Another reel"),
     ];
 

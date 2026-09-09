@@ -5,8 +5,9 @@ import { captionMatchesCatno } from "@/lib/release-sync/shop-feed";
  * Select the only media an automation is allowed to bind to.
  *
  * SKU-tagged automations fail closed: a missing #SKU match must never fall
- * through to an unrelated reel. Legacy "next reel" behavior is retained only
- * for automations that were intentionally created without a catalogue number.
+ * through to an unrelated post. Legacy "next post or reel" behavior is
+ * retained only for automations that were intentionally created without a
+ * catalogue number.
  */
 export function selectMediaForPendingAutomation(
   media: InstagramMedia[],
@@ -26,5 +27,12 @@ export function selectMediaForPendingAutomation(
     );
   }
 
-  return eligible.find((item) => item.media_product_type === "REELS");
+  // The campaign builder promises the next post or reel. Meta labels feed
+  // posts as FEED and reels as REELS; ignore other media products (for example
+  // stories) so a pending campaign cannot bind to the wrong surface.
+  return eligible.find(
+    (item) =>
+      item.media_product_type === "FEED" ||
+      item.media_product_type === "REELS"
+  );
 }
