@@ -2,7 +2,8 @@
 # Calls OpenReply's application cron endpoints. Upstream relies on Vercel's
 # scheduler (vercel.json); self-hosted deployments must drive these routes
 # themselves or Instagram tokens silently expire after 60 days, follower
-# history never accumulates, and pending campaigns never bind to posts.
+# history never accumulates, and pending "next post or reel" campaigns never
+# bind to posts.
 set -euo pipefail
 
 readonly APP_DIR="/opt/openreply"
