@@ -296,6 +296,53 @@ async function lockInboundKeywordAccount(
   )`;
 }
 
+/**
+ * A user-armed "next post or reel" campaign has no post to tell it apart from
+ * its siblings, so exactly one may wait per Instagram account. Catalogue-tagged
+ * campaigns (calendar releases) are exempt: they bind deterministically by
+ * #catno caption match, so several can wait safely.
+ */
+async function findPendingNextConflict(
+  input: { instagramAccountId: string; excludeAutomationId?: string },
+  client: Pick<Prisma.TransactionClient, "automation"> = prisma,
+) {
+  return client.automation.findFirst({
+    where: {
+      instagramAccountId: input.instagramAccountId,
+      pendingNextReel: true,
+      catnoTag: null,
+      ...(input.excludeAutomationId
+        ? { id: { not: input.excludeAutomationId } }
+        : {}),
+    },
+    select: { id: true, name: true },
+  });
+}
+
+function pendingNextConflictResponse(conflict: { id: string; name: string }) {
+  return NextResponse.json(
+    {
+      success: false,
+      code: "PENDING_NEXT_CONFLICT",
+      error: `"${conflict.name}" is already waiting for the next post or reel on this Instagram account. Bind it to a specific post or stop it before arming another one.`,
+      conflict,
+    },
+    { status: 409 },
+  );
+}
+
+async function lockPendingNextAccount(
+  tx: Prisma.TransactionClient,
+  instagramAccountId: string,
+) {
+  // Serialize pending-next writes per Instagram account so two concurrent
+  // creations cannot both pass the one-pending check above.
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(
+    hashtext('openreply:pending-next'),
+    hashtext(${instagramAccountId})
+  )`;
+}
+
 async function postAccessibilityError(
   account: {
     id: string;
@@ -764,6 +811,26 @@ export async function POST(request: NextRequest) {
       return inboundKeywordConflictResponse(result.conflicts);
     }
     automation = result.automation;
+  } else if (pendingNextReel) {
+    const result = await prisma.$transaction(async (tx) => {
+      await lockPendingNextAccount(tx, instagramAccount.id);
+      const conflict = await findPendingNextConflict(
+        { instagramAccountId: instagramAccount.id },
+        tx,
+      );
+      if (conflict) return { automation: null, conflict } as const;
+      return {
+        automation: await tx.automation.create(createArgs),
+        conflict: null,
+      } as const;
+    });
+    if (result.conflict) {
+      return pendingNextConflictResponse(result.conflict);
+    }
+    if (!result.automation) {
+      throw new Error("Pending next transaction returned no automation");
+    }
+    automation = result.automation;
   } else {
     automation = await prisma.automation.create(createArgs);
   }
@@ -1034,6 +1101,35 @@ export async function PATCH(request: NextRequest) {
     });
     if (!result.updated) {
       return inboundKeywordConflictResponse(result.conflicts);
+    }
+    updated = result.updated;
+  } else if (
+    effectiveConfiguration.pendingNextReel &&
+    !existing.catnoTag
+  ) {
+    const result = await prisma.$transaction(async (tx) => {
+      await lockPendingNextAccount(tx, existing.instagramAccountId);
+      const conflict = await findPendingNextConflict(
+        {
+          instagramAccountId: existing.instagramAccountId,
+          excludeAutomationId: existing.id,
+        },
+        tx,
+      );
+      if (conflict) return { updated: null, conflict } as const;
+      return {
+        updated: await tx.automation.update({
+          where: { id: automationId },
+          data: { ...automationData, ...lifecycleData },
+        }),
+        conflict: null,
+      } as const;
+    });
+    if (result.conflict) {
+      return pendingNextConflictResponse(result.conflict);
+    }
+    if (!result.updated) {
+      throw new Error("Pending next transaction returned no automation");
     }
     updated = result.updated;
   } else {

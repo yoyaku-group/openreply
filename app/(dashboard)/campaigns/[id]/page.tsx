@@ -161,7 +161,7 @@ export default function CampaignDetailPage() {
       : campaign.matchAnyPost
         ? "Any post or reel"
         : campaign.pendingNextReel
-          ? "Your next reel"
+          ? "Your next post or reel"
           : "A specific post or reel";
   const matchText = campaign.matchAnyWord
     ? "Any comment"
