@@ -482,7 +482,7 @@ export default function CampaignsPage() {
                   </span>
                   {auto.pendingNextReel && (
                     <span className="shrink-0 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-400">
-                      Waiting for next reel
+                      Waiting for next post or reel
                     </span>
                   )}
                   {auto.source === "CALENDAR" && (

@@ -30,6 +30,7 @@ import {
 import { decryptToken } from "@/lib/meta/oauth";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
 import { matchInboundDmAutomations } from "@/lib/automations/inbound-dm";
+import { bindPendingAutomationsForMedia } from "@/lib/release-sync/attach-pending-automations";
 import { ingestSavInboundEvent } from "@/lib/sav/service";
 import { reserveDMSlot } from "@/lib/utils/rate-limiter";
 import {
@@ -196,18 +197,11 @@ async function revertSendingClaim(
   });
 }
 
-async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
-  const {
-    instagramAccountId,
-    commentId,
-    commentText,
-    commenterId,
-    commenterName,
-    mediaId,
-  } = job.data;
-  const requeueAttempt = job.data.requeueAttempt ?? 0;
-
-  const automations = await prisma.automation.findMany({
+async function findCommentAutomations(
+  instagramAccountId: string,
+  mediaId: string
+) {
+  return prisma.automation.findMany({
     where: {
       // Match campaigns bound to this specific post, plus any-post campaigns.
       OR: [{ postId: mediaId }, { matchAnyPost: true }],
@@ -231,6 +225,41 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     },
     orderBy: { createdAt: "asc" },
   });
+}
+
+async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
+  const {
+    instagramAccountId,
+    commentId,
+    commentText,
+    commenterId,
+    commenterName,
+    mediaId,
+  } = job.data;
+  const requeueAttempt = job.data.requeueAttempt ?? 0;
+
+  let automations = await findCommentAutomations(instagramAccountId, mediaId);
+
+  // Just-in-time bind: when nothing matches yet, the post may have just been
+  // published under a "next post or reel" campaign that the poll has not
+  // attached yet (Instagram sends no new-media webhook). Bind it now so this
+  // very comment triggers the DM instead of waiting for the next sweep.
+  if (automations.length === 0) {
+    try {
+      const bound = await bindPendingAutomationsForMedia({
+        instagramAccountId,
+        mediaId,
+      });
+      if (bound > 0) {
+        automations = await findCommentAutomations(instagramAccountId, mediaId);
+      }
+    } catch (error) {
+      console.error(
+        "[DM Worker] Just-in-time next post or reel binding failed:",
+        error instanceof Error ? error.message : "Unknown error"
+      );
+    }
+  }
 
   if (automations.length === 0) {
     const account = await prisma.instagramAccount.findUnique({

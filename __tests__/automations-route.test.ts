@@ -220,6 +220,46 @@ describe("POST /api/automations trigger modes", () => {
   });
 });
 
+describe("POST /api/automations pending-next guard", () => {
+  const pendingNextCampaign = {
+    name: "Next post campaign",
+    instagramAccountId: "account_1",
+    pendingNextReel: true,
+    keywords: ["LINK"],
+    dmMessage: "Here is the link.",
+    isActive: false,
+  };
+
+  it("creates the campaign when no other campaign waits for the next post", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(null);
+
+    const response = await POST(request(pendingNextCampaign) as never);
+
+    expect(response.status).toBe(201);
+    expect(mockPrisma.$executeRaw).toHaveBeenCalled();
+    expect(mockPrisma.automation.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ pendingNextReel: true, postId: null }),
+      })
+    );
+  });
+
+  it("returns 409 when another campaign already waits for the next post", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      id: "other",
+      name: "Elina instore",
+    });
+
+    const response = await POST(request(pendingNextCampaign) as never);
+    const payload = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(payload.code).toBe("PENDING_NEXT_CONFLICT");
+    expect(payload.error).toContain("Elina instore");
+    expect(mockPrisma.automation.create).not.toHaveBeenCalled();
+  });
+});
+
 describe("PATCH /api/automations trigger safety", () => {
   it("does not re-check Meta for an unrelated edit to an active campaign", async () => {
     mockPrisma.automation.findFirst.mockResolvedValue(existingCommentCampaign);
@@ -308,5 +348,61 @@ describe("PATCH /api/automations trigger safety", () => {
     expect(payload.code).toBe("INBOUND_KEYWORD_CONFLICT");
     expect(mockPrisma.$executeRaw).toHaveBeenCalled();
     expect(mockPrisma.automation.update).not.toHaveBeenCalled();
+  });
+
+  it("arms the next post or reel when no other campaign waits", async () => {
+    mockPrisma.automation.findFirst
+      .mockResolvedValueOnce(existingCommentCampaign)
+      .mockResolvedValueOnce(null);
+
+    const response = await PATCH(
+      patchRequest("automation_existing", {
+        pendingNextReel: true,
+        postId: null,
+      }) as never
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.automation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ pendingNextReel: true }),
+      })
+    );
+  });
+
+  it("returns 409 when another campaign already waits for the next post", async () => {
+    mockPrisma.automation.findFirst
+      .mockResolvedValueOnce(existingCommentCampaign)
+      .mockResolvedValueOnce({ id: "other", name: "Elina instore" });
+
+    const response = await PATCH(
+      patchRequest("automation_existing", {
+        pendingNextReel: true,
+        postId: null,
+      }) as never
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(payload.code).toBe("PENDING_NEXT_CONFLICT");
+    expect(mockPrisma.automation.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps catalogue-tagged campaigns exempt from the one-pending rule", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValueOnce({
+      ...existingCommentCampaign,
+      catnoTag: "TO001",
+      isActive: false,
+    });
+
+    const response = await PATCH(
+      patchRequest("automation_existing", {
+        pendingNextReel: true,
+        postId: null,
+      }) as never
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.automation.update).toHaveBeenCalled();
   });
 });

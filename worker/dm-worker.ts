@@ -2,6 +2,7 @@ import { createDMWorker } from "@/lib/queue/dm-worker";
 import { recordWorkerHeartbeat } from "@/lib/ops/worker-health";
 import { reconcileComments } from "@/lib/polling/comment-reconciler";
 import { reclaimStaleSendingClaims } from "@/lib/queue/reclaim-sending-claims";
+import { attachPendingNextReels } from "@/lib/release-sync/attach-pending-automations";
 import os from "node:os";
 
 const worker = createDMWorker();
@@ -32,6 +33,21 @@ void heartbeat();
 const heartbeatTimer = setInterval(() => void heartbeat(), HEARTBEAT_INTERVAL_MS);
 
 async function poll() {
+  // Bind "next post or reel" campaigns before reconciling comments, so a
+  // campaign armed for the next post goes live even when its post gets no
+  // comments (webhooks never announce a new media).
+  try {
+    const attach = await attachPendingNextReels();
+    if (attach.bound > 0) {
+      console.log(
+        `[DM Worker] Bound ${attach.bound} pending next post or reel campaign(s)`
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[DM Worker] Next post or reel binding failed:", message);
+  }
+
   try {
     await reconcileComments();
   } catch (error) {
