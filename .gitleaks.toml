@@ -1,0 +1,28 @@
+# .gitleaks.toml — openreply secret-scan config.
+#
+# Loaded by `.github/workflows/secret-scan.yml`. Extends the gitleaks default
+# ruleset (AWS / GitHub / Slack / Stripe / private keys / …). The YOYAKU-specific
+# rules live in the shared SSOT config
+# (`~/.gitleaks/config.toml` → `yoyaku-team-config/.gitleaks/config.toml`); this
+# repo-local file mirrors the sibling convention (interwave-live, ObjectsWebsite).
+#
+# Doctrine: adapt the fixture, never bypass the gate
+# (feedback_gitleaks_fixture_patterns). Every allowlist below is a verified
+# false positive, path-scoped AND value-scoped (condition = "AND") so a genuine
+# secret in the same file is still caught.
+
+title = "openreply"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Confirmed FP: deterministic throwaway ENCRYPTION_KEY in the CI build env only"
+condition = "AND"
+paths = ['''(^|/)\.github/workflows/ci\.yml$''']
+regexTarget = "secret"
+regexes = ['''^0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef$''']
+
+[[allowlists]]
+description = "Example env file holds placeholders by construction"
+paths = ['''(^|/)\.env\.example$''']
