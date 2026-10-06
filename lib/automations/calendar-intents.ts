@@ -23,6 +23,10 @@ const calendarIntentSchema = z.object({
   status: z.string().max(40),
   automation_status: z.string().max(40),
   updated_at: z.string().datetime({ offset: true }).optional(),
+  // Origin marker (plan delegated-roaming-turing F): set to "label_platform"
+  // for intents written by a label.yoyaku.fr scheduling. Auto-activation of a
+  // bound campaign is scoped to these, never to a hand-made calendar intent.
+  source: z.string().max(80).nullable().optional(),
 });
 
 export type CalendarIntent = z.infer<typeof calendarIntentSchema>;
@@ -97,7 +101,8 @@ export function calendarAutomationUpdateState(
     calendarStatus?: string | null;
     calendarAutomationStatus?: string | null;
   },
-  intent: CalendarIntent
+  intent: CalendarIntent,
+  opts: { autoActivate?: boolean } = {}
 ) {
   const postId = intent.external_id || null;
   const materialChanged =
@@ -111,7 +116,14 @@ export function calendarAutomationUpdateState(
       (intent.scheduled_at ? new Date(intent.scheduled_at).toISOString() : null) ||
     existing.calendarStatus !== intent.status ||
     existing.calendarAutomationStatus !== intent.automation_status;
-  const isActive = existing.isActive && !materialChanged && intent.delivery_allowed && intent.blocking_reasons.length === 0;
+  // Deactivation stays as before (an ACTIVE campaign turns off on a material
+  // change). Activation is allowed ONLY when the caller explicitly requests it
+  // (opts.autoActivate — the label.yoyaku.fr scheduling path, flag-gated) —
+  // never inferred here, so a human-less activation is a deliberate caller act.
+  const isActive =
+    (existing.isActive ? !materialChanged : !!opts.autoActivate) &&
+    intent.delivery_allowed &&
+    intent.blocking_reasons.length === 0;
   return {
     isActive,
     lifecycle: isActive ? "ACTIVE" : !intent.delivery_allowed || intent.blocking_reasons.length ? "PAUSED" : postId ? "READY" : "PLANNED",
@@ -120,7 +132,11 @@ export function calendarAutomationUpdateState(
 }
 
 export function calendarCampaignName(intent: CalendarIntent): string {
-  const subject = intent.release_skus[0] || intent.subject_key || intent.calendar_event_id;
+  // Named by the SKU alone (plan delegated-roaming-turing F): a release
+  // campaign is found by its catalogue number, not by a generic CTA suffix.
+  const sku = (intent.release_skus[0] || "").trim();
+  if (sku) return sku.toUpperCase();
+  const subject = intent.subject_key || intent.calendar_event_id;
   return `${subject} ${intent.cta_keyword} · Calendar`;
 }
 

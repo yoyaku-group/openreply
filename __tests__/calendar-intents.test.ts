@@ -35,7 +35,7 @@ describe("calendar intent contract", () => {
     expect(intent).not.toBeNull();
     expect(intent?.release_skus).toEqual(["MB059"]);
     expect(intent?.cta_keyword).toBe("LINK");
-    expect(intent && calendarCampaignName(intent)).toBe("MB059 LINK · Calendar");
+    expect(intent && calendarCampaignName(intent)).toBe("MB059");
   });
 
   it("fails closed on cross-tenant sender or CTA vocabulary", () => {
@@ -137,4 +137,27 @@ it.each([
     calendarAutomationStatus: base.automation_status };
   expect(calendarAutomationUpdateState(existing, intent).isActive).toBe(false);
   expect(calendarAutomationUpdateState({ ...existing, isActive: false }, intent).isActive).toBe(false);
+});
+
+it("carries the label_platform origin marker", () => {
+  const intent = normalizeCalendarIntent({ ...base, source: "label_platform" });
+  expect(intent?.source).toBe("label_platform");
+});
+
+it("auto-activates a bound campaign ONLY on an explicit opt-in", () => {
+  const intent = normalizeCalendarIntent({ ...base, external_id: "media-123", source: "label_platform" })!;
+  const existing = { isActive: false, postId: "media-123", keywords: ["LINK"], destinationUrl: base.destination_url };
+  // Human path (no opt-in): a bound, deliverable campaign still stays off.
+  expect(calendarAutomationUpdateState(existing, intent).isActive).toBe(false);
+  // Label.yoyaku.fr scheduling path (opt-in): activates without a human gesture.
+  expect(calendarAutomationUpdateState(existing, intent, { autoActivate: true }).isActive).toBe(true);
+});
+
+it("auto-activation still respects delivery_allowed + blocking reasons", () => {
+  const intent = normalizeCalendarIntent({
+    ...base, external_id: "media-123", source: "label_platform",
+    delivery_allowed: false, blocking_reasons: ["cancelled"],
+  })!;
+  const existing = { isActive: false, postId: "media-123", keywords: ["LINK"], destinationUrl: base.destination_url };
+  expect(calendarAutomationUpdateState(existing, intent, { autoActivate: true }).isActive).toBe(false);
 });

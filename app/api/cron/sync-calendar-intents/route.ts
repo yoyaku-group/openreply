@@ -89,7 +89,11 @@ export async function GET(request: NextRequest) {
           if (existing.source !== "CALENDAR" || existing.lifecycle === "ARCHIVED" ||
               existing.workspaceId !== workspaceId || existing.instagramAccountId !== account.id) return "rejected";
           const trackedLink = existing.trackedLinks[0] ?? null;
-          const state = calendarAutomationUpdateState({ ...existing, destinationUrl: trackedLink?.destinationUrl ?? null }, intent);
+          // Auto-activation is scoped to a label.yoyaku.fr scheduling intent and
+          // flag-gated (plan F). A hand-made calendar intent never auto-activates.
+          const autoActivate =
+            process.env.CALENDAR_AUTO_ACTIVATE_ENABLED === "1" && intent.source === "label_platform";
+          const state = calendarAutomationUpdateState({ ...existing, destinationUrl: trackedLink?.destinationUrl ?? null }, intent, { autoActivate });
           await tx.automation.update({ where: { id: existing.id }, data: {
             ...content, isActive: state.isActive, lifecycle: state.lifecycle,
           } });
