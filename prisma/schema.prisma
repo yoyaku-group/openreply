@@ -329,6 +329,9 @@ model DmLog {
   status         DmStatus  @default(PENDING)
   attempts       Int       @default(0)
   dmSentAt       DateTime?
+  /// Plan F: set when the single post-link follow-up was sent (~20h later), so
+  /// the follow-up runs at most once per DM.
+  followUpSentAt DateTime?
   errorMessage   String?
 
   // The public comment reply is delivered independently of the DM, so its
