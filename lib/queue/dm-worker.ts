@@ -79,10 +79,11 @@ type WorkerTrackedLink = {
  */
 function buildLinkButtons(
   trackedLinks: WorkerTrackedLink[],
-  primaryLabel: string | null
+  primaryLabel: string | null,
+  dmLogId?: string | null
 ): { title: string; url: string }[] {
   return trackedLinks.slice(0, 3).map((link, index) => ({
-    url: buildTrackedUrl(link.slug),
+    url: buildTrackedUrl(link.slug, undefined, dmLogId),
     title: (index === 0 ? primaryLabel : link.label) || link.label || "Open link",
   }));
 }
@@ -96,18 +97,19 @@ function buildInlineLinkFallback(
   message: string,
   commenterName: string | null | undefined,
   trackedLinks: WorkerTrackedLink[],
-  bodyText: string
+  bodyText: string,
+  dmLogId?: string | null
 ): string {
   let base =
     renderMessageWithTracking({ message, commenterName, trackedLinks }) ||
     bodyText;
   const primaryUrl = trackedLinks[0]
-    ? buildTrackedUrl(trackedLinks[0].slug)
+    ? buildTrackedUrl(trackedLinks[0].slug, undefined, dmLogId)
     : null;
   if (primaryUrl && !base.includes(primaryUrl)) {
     base = `${base}\n${primaryUrl}`;
   }
-  const extraUrls = trackedLinks.slice(1).map((link) => buildTrackedUrl(link.slug));
+  const extraUrls = trackedLinks.slice(1).map((link) => buildTrackedUrl(link.slug, undefined, dmLogId));
   return extraUrls.length > 0 ? `${base}\n${extraUrls.join("\n")}` : base;
 }
 
@@ -125,8 +127,9 @@ async function sendDirectCampaignDelivery(input: {
   userId: string;
   commenterName: string | null | undefined;
   context: string;
+  dmLogId?: string | null;
 }) {
-  const { accessToken, automation, userId, commenterName, context } = input;
+  const { accessToken, automation, userId, commenterName, context, dmLogId = null } = input;
   if (automation.trackedLinks.length > 0) {
     const bodyText =
       renderMessageWithoutLink({
@@ -135,7 +138,8 @@ async function sendDirectCampaignDelivery(input: {
       }) || "Here's your link:";
     const buttons = buildLinkButtons(
       automation.trackedLinks,
-      automation.linkButtonLabel
+      automation.linkButtonLabel,
+      dmLogId
     );
 
     try {
@@ -160,7 +164,8 @@ async function sendDirectCampaignDelivery(input: {
           automation.dmMessage,
           commenterName,
           automation.trackedLinks,
-          bodyText
+          bodyText,
+          dmLogId
         )
       ));
     }
@@ -1144,12 +1149,16 @@ async function processInboundMessage(
   }
 
   try {
+    const dmRow = await prisma.dmLog
+      .findUnique({ where: logWhere, select: { id: true } })
+      .catch(() => null);
     await sendDirectCampaignDelivery({
       accessToken,
       automation,
       userId: senderInstagramId,
       commenterName: senderUsername,
       context: "inbound DM keyword",
+      dmLogId: dmRow?.id || null,
     });
     await prisma.dmLog.update({
       where: logWhere,
@@ -1305,12 +1314,16 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   }
 
   try {
+    const dmRow = await prisma.dmLog
+      .findUnique({ where: { automationId_commentId: { automationId: automation.id, commentId: dedupeId } }, select: { id: true } })
+      .catch(() => null);
     await sendDirectCampaignDelivery({
       accessToken,
       automation,
       userId,
       commenterName,
       context: "postback",
+      dmLogId: dmRow?.id || null,
     });
     // Optional appreciation follow-up: once the link has been delivered on a
     // confirmed follow, send a short thank-you. Best-effort — a failure here
