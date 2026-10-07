@@ -51,14 +51,18 @@ export function renderMessageWithoutLink({
     .trim();
 }
 
-export function buildTrackedUrl(slug: string, baseUrl?: string) {
+export function buildTrackedUrl(slug: string, baseUrl?: string, dmLogId?: string | null) {
   const resolvedBaseUrl =
     baseUrl ??
     (typeof window !== "undefined"
       ? window.location.origin
       : process.env.NEXTAUTH_URL ?? "http://localhost:3000");
 
-  return `${resolvedBaseUrl.replace(/\/$/, "")}/r/${slug}`;
+  const base = `${resolvedBaseUrl.replace(/\/$/, "")}/r/${slug}`;
+  // Plan delegated-roaming-turing F: carry the DM log id so a click can be
+  // attributed to the person who requested the link (without opening it) —
+  // enabling the single ~20h follow-up. Optional/backward-compatible.
+  return dmLogId ? `${base}?d=${encodeURIComponent(dmLogId)}` : base;
 }
 
 export function renderMessageWithTracking({

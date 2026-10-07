@@ -394,6 +394,9 @@ model LinkClick {
   automationId       String
   instagramAccountId String
   trackedLinkId      String
+  /// Plan F: the DM log that delivered this link (from the ?d= query param), so
+  /// a click can be attributed to the person who requested it. Nullable/when absent.
+  dmLogId            String?
   ipHash             String?
   userAgent          String?
   referrer           String?
@@ -410,6 +413,7 @@ model LinkClick {
   @@index([trackedLinkId])
   @@index([createdAt])
   @@index([workspaceId, createdAt])
+  @@index([dmLogId])
 }
 
 model WebhookEvent {

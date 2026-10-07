@@ -33,6 +33,9 @@ export async function GET(request: NextRequest, { params }: RedirectRouteProps) 
       automationId: trackedLink.automationId,
       instagramAccountId: trackedLink.automation.instagramAccountId,
       trackedLinkId: trackedLink.id,
+      // Plan F: the DM log id carried by ?d= attributes the click to the person
+      // who was sent the link (no @mention of the clicker is ever exposed).
+      dmLogId: request.nextUrl.searchParams.get("d") || null,
       ipHash: hashClickIp(getRequestIp(request)),
       userAgent: request.headers.get("user-agent"),
       referrer: request.headers.get("referer"),
