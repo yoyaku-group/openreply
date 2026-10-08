@@ -15,6 +15,7 @@ export const INSTAGRAM_OAUTH_SCOPE_VALUES = [
   "instagram_business_manage_messages",
   "instagram_business_manage_comments",
   "instagram_business_manage_insights",
+  "instagram_business_content_publish",
 ] as const;
 const INSTAGRAM_OAUTH_SCOPE = INSTAGRAM_OAUTH_SCOPE_VALUES.join(",");
 const INSTAGRAM_OAUTH_URL = "https://api.instagram.com/oauth/authorize";
