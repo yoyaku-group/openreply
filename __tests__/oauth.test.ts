@@ -59,7 +59,11 @@ describe("INSTAGRAM_OAUTH_SCOPE contents (regression — drift guard)", () => {
     );
   });
 
-  it("contains exactly four implemented business scopes", () => {
-    expect(INSTAGRAM_OAUTH_SCOPE_VALUES).toHaveLength(4);
+  it("contains exactly the five implemented business scopes", () => {
+    expect(INSTAGRAM_OAUTH_SCOPE_VALUES).toEqual([
+      "instagram_business_basic", "instagram_business_manage_messages",
+      "instagram_business_manage_comments", "instagram_business_manage_insights",
+      "instagram_business_content_publish",
+    ]);
   });
 });
