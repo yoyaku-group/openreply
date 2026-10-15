@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const { mockPrisma } = vi.hoisted(() => ({
   mockPrisma: {
-    automation: { findFirst: vi.fn() },
+    automation: { findMany: vi.fn() },
     dmLog: { count: vi.fn() },
     linkClick: { count: vi.fn() },
   },
@@ -14,7 +14,7 @@ import { POST as lintCopy } from "@/app/api/internal/lint-copy/route";
 import { GET as campaignStats } from "@/app/api/internal/campaign-stats/route";
 import { NextRequest } from "next/server";
 
-const SECRET = "test-secret";
+const SECRET = "test-only-secret-".repeat(3);
 
 function lintRequest(body: unknown, auth: string | null = `Bearer ${SECRET}`) {
   return new NextRequest("http://localhost/api/internal/lint-copy", {
@@ -32,6 +32,7 @@ function statsRequest(query: string, auth: string | null = `Bearer ${SECRET}`) {
 
 beforeEach(() => {
   process.env.CRON_SECRET = SECRET;
+  process.env.CALENDAR_WORKSPACE_IDS = "yoyaku=workspace_yoyaku_123";
   vi.clearAllMocks();
 });
 
@@ -78,19 +79,19 @@ describe("GET /api/internal/campaign-stats", () => {
   });
 
   it("returns null when no campaign matches the catno", async () => {
-    mockPrisma.automation.findFirst.mockResolvedValue(null);
-    const res = await campaignStats(statsRequest("?sku=NOPE1"));
+    mockPrisma.automation.findMany.mockResolvedValue([]);
+    const res = await campaignStats(statsRequest("?sku=NOPE1&workspace_key=yoyaku&account_owner=yoyakurecordstore&publication_key=calendar:nope"));
     const json = await res.json();
     expect(json.data.automation).toBeNull();
-    expect(mockPrisma.automation.findFirst).toHaveBeenCalledWith(
+    expect(mockPrisma.automation.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { catnoTag: { equals: "NOPE1", mode: "insensitive" } },
+        where: expect.objectContaining({ catnoTag: { equals: "NOPE1", mode: "insensitive" }, publicationKey:"calendar:nope",workspaceId:"workspace_yoyaku_123" }),
       })
     );
   });
 
-  it("returns the newest matching campaign with SENT + click counts", async () => {
-    mockPrisma.automation.findFirst.mockResolvedValue({
+  it("returns the exact scoped campaign with SENT + click counts", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([{
       id: "a1",
       name: "HCLP008",
       triggerType: "COMMENT",
@@ -98,10 +99,10 @@ describe("GET /api/internal/campaign-stats", () => {
       isActive: true,
       postId: "p1",
       createdAt: new Date(0),
-    });
+    }]);
     mockPrisma.dmLog.count.mockResolvedValue(37);
     mockPrisma.linkClick.count.mockResolvedValue(35);
-    const res = await campaignStats(statsRequest("?sku=hclp008"));
+    const res = await campaignStats(statsRequest("?sku=hclp008&workspace_key=yoyaku&account_owner=yoyakurecordstore&publication_key=calendar:preorder"));
     const json = await res.json();
     expect(json.data.automation).toMatchObject({
       id: "a1",
@@ -111,12 +112,12 @@ describe("GET /api/internal/campaign-stats", () => {
       clicks: 35,
     });
     expect(mockPrisma.dmLog.count).toHaveBeenCalledWith({
-      where: { automationId: "a1", status: "SENT" },
+      where: { automationId: "a1", workspaceId:"workspace_yoyaku_123", status: "SENT" },
     });
   });
 
   it("returns the exact inbound keyword for non-post campaigns", async () => {
-    mockPrisma.automation.findFirst.mockResolvedValue({
+    mockPrisma.automation.findMany.mockResolvedValue([{
       id: "a2",
       name: "MB059",
       triggerType: "INBOUND_DM",
@@ -124,11 +125,11 @@ describe("GET /api/internal/campaign-stats", () => {
       isActive: true,
       postId: null,
       createdAt: new Date(0),
-    });
+    }]);
     mockPrisma.dmLog.count.mockResolvedValue(4);
     mockPrisma.linkClick.count.mockResolvedValue(3);
 
-    const res = await campaignStats(statsRequest("?sku=MB059"));
+    const res = await campaignStats(statsRequest("?sku=MB059&workspace_key=yoyaku&account_owner=yoyakurecordstore&automation_id=a2"));
     const json = await res.json();
 
     expect(json.data.automation).toMatchObject({

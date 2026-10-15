@@ -15,6 +15,8 @@ vi.mock("@/lib/db/client", () => ({
   prisma: mockPrisma,
 }));
 
+import { NextRequest } from "next/server";
+
 import { GET } from "../app/r/[slug]/route";
 
 beforeEach(() => {
@@ -35,7 +37,7 @@ describe("tracked link redirect route", () => {
     mockPrisma.linkClick.create.mockResolvedValue({});
 
     const response = await GET(
-      new Request("https://manychat-alternative.com/r/abc123", {
+      new NextRequest("https://manychat-alternative.com/r/abc123", {
         headers: {
           "user-agent": "vitest",
           referer: "https://instagram.com/",
@@ -67,7 +69,7 @@ describe("tracked link redirect route", () => {
     mockPrisma.trackedLink.findUnique.mockResolvedValue(null);
 
     const response = await GET(
-      new Request("https://manychat-alternative.com/r/missing") as Parameters<
+      new NextRequest("https://manychat-alternative.com/r/missing") as Parameters<
         typeof GET
       >[0],
       { params: Promise.resolve({ slug: "missing" }) }
