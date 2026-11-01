@@ -47,6 +47,16 @@ describe("Barcelona double text", () => {
     expect(violations[0].rule).toBe("bcn-double-text");
   });
 
+  it("accepts a short Spanish half that carries one signal", () => {
+    // A bare "Gracias, te escribimos pronto" has no accent but is clearly
+    // Spanish; one word is enough, the rule errs towards not blocking.
+    expect(
+      lintBarcelonaDoubleText(
+        "Here is your link to the Barcelona store.\n\nGracias, te escribimos pronto."
+      )
+    ).toEqual([]);
+  });
+
   it("accepts the shipped button labels", () => {
     expect(lintBarcelonaButtonLabel("Yes / Sí")).toEqual([]);
     expect(lintBarcelonaButtonLabel("Join / Únete")).toEqual([]);
