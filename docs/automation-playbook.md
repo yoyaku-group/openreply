@@ -28,6 +28,19 @@ by SQL, by CSV import or from a cron.
    `utm_source=instagram&utm_medium=dm&utm_campaign=<campaign-slug>`.
 5. **No follow gate** unless the goal is followers. `requireFollow` adds a step
    and loses people when the goal is an email or a sale.
+6. **Barcelona (BCN): double text, English then Spanish, on every message and
+   every button; both versions say the same thing.** English comes first, then
+   a blank line, then Spanish. The rule covers the opening DM, the reveal DM
+   and each button label (`Yes / Sí`, `Join / Únete`), and applies to both
+   triggers: the `COMMENT` campaign and the `BCN` keyword `INBOUND_DM` one. A
+   keyword or a `catnoTag` carrying `BCN` or `barcelona` is the marker.
+   `lib/copy/copy-linter.ts` carries the check: `isBarcelonaAutomation` reads
+   the marker off `keywords` / `catnoTag`, and `lintBarcelonaCampaign` verifies
+   the English half comes first, a Spanish half follows, and every button is
+   `English / Spanish`. Run it on the copy before saving a BCN campaign.
+
+   > « the openreply for BCN have to be in english and in spanish too !
+   > remember this rule double text » — Ben, 2026-11-01
 
 ## Which trigger
 

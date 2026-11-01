@@ -187,3 +187,176 @@ export function lintCampaignCopy(
 
   return { ok: violations.length === 0, violations };
 }
+
+/**
+ * Barcelona double text (playbook house style rule 6): every message and every
+ * button from a BCN automation carries the English version first, then the
+ * Spanish one, and both say the same thing.
+ *
+ * The Spanish half is recognised by its own signals — accents and the common
+ * Spanish words these DMs actually use — so a copy that only has a Spanish
+ * tail, or Spanish that comes first, is rejected. The rule is a shape check,
+ * not a translation check: it cannot tell whether the two halves say the same
+ * thing, only that both halves are there in the right order.
+ */
+/** A keyword is a whole word: `BCN` matches, `BCNX` does not. */
+const BARCELONA_KEYWORD = /\b(BCN|barcelona)\b/i;
+
+/**
+ * A hashtag is one run of characters, so a catnoTag carries the marker as a
+ * substring: `yoyakubarcelona` and `BCNOPEN` both count.
+ */
+const BARCELONA_TAG = /(BCN|barcelona)/i;
+
+/** Spanish-only words these DMs use, plus accent-bearing letters. */
+const SPANISH_WORDS: readonly RegExp[] = [
+  /\bde la\b/i,
+  /\ben la\b/i,
+  /\by te\b/i,
+  /\bla tienda\b/i,
+  /\babierta\b/i,
+  /\brecogida\b/i,
+  /\bgracias\b/i,
+  /\bquieres\b/i,
+  /\binvitaciones\b/i,
+  /\bnuestras\b/i,
+  /\bsesiones\b/i,
+  /\bmercados\b/i,
+  /\bsegunda mano\b/i,
+  /\btodo lo que\b/i,
+  /\brecoge\b/i,
+  /\benviamos\b/i,
+  /\benviaremos\b/i,
+  /\bunete\b/i,
+  /\bdom\b/i,
+];
+
+const SPANISH_ACCENTS = /[¿¡áéíóúñü]/i;
+
+function spanishSignals(text: string): number {
+  let hits = SPANISH_ACCENTS.test(text) ? 1 : 0;
+  for (const pattern of SPANISH_WORDS) {
+    if (pattern.test(text)) hits += 1;
+  }
+  return hits;
+}
+
+function isSpanishText(text: string): boolean {
+  return spanishSignals(text) >= 2;
+}
+
+export interface BarcelonaAutomationIdentity {
+  /** `Automation.keywords` — the keyword that triggers an INBOUND_DM campaign. */
+  keywords?: readonly string[] | null;
+  /** `Automation.catnoTag` — the hashtag a release campaign binds to. */
+  catnoTag?: string | null;
+}
+
+/** Whether this automation is a Barcelona one and owes the double text. */
+export function isBarcelonaAutomation(
+  identity: BarcelonaAutomationIdentity
+): boolean {
+  if (identity.catnoTag && BARCELONA_TAG.test(identity.catnoTag)) return true;
+  return (identity.keywords ?? []).some((keyword) =>
+    BARCELONA_KEYWORD.test(keyword)
+  );
+}
+
+/**
+ * A body is compliant when it splits into paragraphs, has an English part
+ * first, and has an English-free Spanish part after it.
+ */
+export function lintBarcelonaDoubleText(
+  text: string
+): LintViolation[] {
+  const violations: LintViolation[] = [];
+  const paragraphs = text
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+
+  const spanishAt = paragraphs.findIndex((paragraph) => isSpanishText(paragraph));
+
+  if (spanishAt === -1) {
+    violations.push({
+      rule: "bcn-double-text",
+      detail: "no Spanish version found (English only)",
+    });
+    return violations;
+  }
+
+  if (!paragraphs.slice(0, spanishAt).some((paragraph) => !isSpanishText(paragraph))) {
+    violations.push({
+      rule: "bcn-double-text",
+      detail: "Spanish comes before any English part",
+    });
+  }
+
+  return violations;
+}
+
+/**
+ * A button carries "EN / ES" in one label: two segments joined by " / ", the
+ * right one Spanish.
+ */
+export function lintBarcelonaButtonLabel(label: string): LintViolation[] {
+  const segments = label.split(" / ");
+  if (segments.length !== 2 || segments.some((segment) => !segment.trim())) {
+    return [
+      {
+        rule: "bcn-double-button",
+        detail: `expected "<English> / <Spanish>", got "${label}"`,
+      },
+    ];
+  }
+
+  const [, spanish] = segments;
+  if (spanishSignals(spanish.trim()) < 1) {
+    return [
+      {
+        rule: "bcn-double-button",
+        detail: `right half is not Spanish: "${spanish.trim()}"`,
+      },
+    ];
+  }
+
+  return [];
+}
+
+export interface BarcelonaCampaignCopy {
+  openingDmMessage?: string | null;
+  dmMessage: string;
+  openingDmButtonLabel?: string | null;
+  linkButtonLabel?: string | null;
+  secondaryButtonLabel?: string | null;
+}
+
+/** Lint every user-visible field of a Barcelona campaign. */
+export function lintBarcelonaCampaign(
+  copy: BarcelonaCampaignCopy
+): LintResult {
+  const violations: LintViolation[] = [];
+
+  for (const [field, value] of [
+    ["openingDmMessage", copy.openingDmMessage],
+    ["dmMessage", copy.dmMessage],
+  ] as const) {
+    if (!value) continue;
+    for (const violation of lintBarcelonaDoubleText(value)) {
+      violations.push({ ...violation, detail: `${field}: ${violation.detail}` });
+    }
+  }
+
+  for (const [field, value] of [
+    ["openingDmButtonLabel", copy.openingDmButtonLabel],
+    ["linkButtonLabel", copy.linkButtonLabel],
+    ["secondaryButtonLabel", copy.secondaryButtonLabel],
+  ] as const) {
+    if (!value) continue;
+    for (const violation of lintBarcelonaButtonLabel(value)) {
+      violations.push({ ...violation, detail: `${field}: ${violation.detail}` });
+    }
+  }
+
+  return { ok: violations.length === 0, violations };
+}
