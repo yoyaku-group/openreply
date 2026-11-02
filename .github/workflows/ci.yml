@@ -3,6 +3,10 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # main has no required checks, so `gh pr merge --auto` merges at once; this
+  # run verifies every merged commit on the exact source that deploy.sh ships.
+  push:
+    branches: [main]
 
 jobs:
   test:
