@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 import type { Prisma } from "@/app/generated/prisma/client";
+import {
+  createAutomationSchema,
+  updateAutomationSchema,
+} from "@/lib/automations/schema";
+import type { TriggerType } from "@/lib/automations/schema";
 import { getCurrentWorkspaceId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
 import { calculateCtr, normalizeTopKeywords } from "@/lib/tracking/analytics";
@@ -24,93 +28,6 @@ import {
 // This list is read-your-writes (created/imported campaigns must show up
 // immediately), so never cache it at the route or CDN layer.
 export const dynamic = "force-dynamic";
-
-const triggerTypeSchema = z.enum(["COMMENT", "INBOUND_DM"]);
-
-const createAutomationSchema = z.object({
-  name: z.string().min(1).max(100),
-  goal: z.string().min(1).max(120).optional().nullable(),
-  instagramAccountId: z.string().min(1).optional().nullable(),
-  triggerType: triggerTypeSchema.optional().default("COMMENT"),
-  postId: z.string().min(1).optional().nullable(),
-  postUrl: z.string().url().optional().nullable(),
-  pendingNextReel: z.boolean().optional().default(false),
-  matchAnyPost: z.boolean().optional().default(false),
-  keywords: z.array(z.string().min(1).max(50)).max(10).optional().default([]),
-  matchAnyWord: z.boolean().optional().default(false),
-  dmMessage: z.string().min(1).max(1000),
-  openingDmEnabled: z.boolean().optional().default(false),
-  openingDmMessage: z.string().max(1000).optional().nullable(),
-  openingDmButtonLabel: z.string().max(20).optional().nullable(),
-  linkButtonLabel: z.string().max(20).optional().nullable(),
-  requireFollow: z.boolean().optional().default(false),
-  followPromptMessage: z.string().max(1000).optional().nullable(),
-  followPromptButtonLabel: z.string().max(20).optional().nullable(),
-  followUpEnabled: z.boolean().optional().default(false),
-  followUpMessage: z.string().max(1000).optional().nullable(),
-  publicReplyEnabled: z.boolean().optional().default(false),
-  publicReplyMessage: z.string().max(1000).optional().nullable(),
-  publicReplyMessages: z
-    .array(z.string().max(1000))
-    .max(10)
-    .optional()
-    .default([]),
-  // Empty string means "no tracked link"; a URL sets one.
-  trackedDestinationUrl: z
-    .union([z.string().url(), z.literal("")])
-    .optional()
-    .nullable(),
-  // Optional second tracked link, rendered as a second DM button.
-  secondaryDestinationUrl: z
-    .union([z.string().url(), z.literal("")])
-    .optional()
-    .nullable(),
-  secondaryButtonLabel: z.string().max(20).optional().nullable(),
-  isActive: z.boolean().optional().default(true),
-  wholeWordMatch: z.boolean().optional().default(true),
-});
-
-const updateAutomationSchema = z.object({
-  name: z.string().min(1).max(100).optional(),
-  goal: z.string().min(1).max(120).optional().nullable(),
-  triggerType: triggerTypeSchema.optional(),
-  postId: z.string().min(1).optional().nullable(),
-  postUrl: z.string().url().optional().nullable(),
-  pendingNextReel: z.boolean().optional(),
-  matchAnyPost: z.boolean().optional(),
-  keywords: z.array(z.string().min(1).max(50)).max(10).optional(),
-  matchAnyWord: z.boolean().optional(),
-  dmMessage: z.string().min(1).max(1000).optional(),
-  openingDmEnabled: z.boolean().optional(),
-  openingDmMessage: z.string().max(1000).optional().nullable(),
-  openingDmButtonLabel: z.string().max(20).optional().nullable(),
-  linkButtonLabel: z.string().max(20).optional().nullable(),
-  requireFollow: z.boolean().optional(),
-  followPromptMessage: z.string().max(1000).optional().nullable(),
-  followPromptButtonLabel: z.string().max(20).optional().nullable(),
-  followUpEnabled: z.boolean().optional(),
-  followUpMessage: z.string().max(1000).optional().nullable(),
-  publicReplyEnabled: z.boolean().optional(),
-  publicReplyMessage: z.string().max(1000).optional().nullable(),
-  publicReplyMessages: z.array(z.string().max(1000)).max(10).optional(),
-  isActive: z.boolean().optional(),
-  wholeWordMatch: z.boolean().optional(),
-  reportShareEnabled: z.boolean().optional(),
-  // Empty string clears the tracked link; a URL updates/creates it; undefined
-  // leaves it unchanged.
-  trackedDestinationUrl: z
-    .union([z.string().url(), z.literal("")])
-    .optional()
-    .nullable(),
-  // Same semantics for the optional second tracked link / DM button.
-  secondaryDestinationUrl: z
-    .union([z.string().url(), z.literal("")])
-    .optional()
-    .nullable(),
-  secondaryButtonLabel: z.string().max(20).optional().nullable(),
-});
-
-type TriggerType = z.infer<typeof triggerTypeSchema>;
 
 interface AutomationConfiguration {
   triggerType: TriggerType;
