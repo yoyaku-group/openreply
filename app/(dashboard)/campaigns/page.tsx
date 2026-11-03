@@ -11,6 +11,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import { readCache, writeCache } from "@/lib/client-cache";
+import {
+  campaignStatus,
+  campaignStatusClass,
+} from "@/lib/automations/status";
 
 interface Campaign {
   id: string;
@@ -21,6 +25,7 @@ interface Campaign {
   postUrl: string | null;
   pendingNextReel: boolean;
   matchAnyPost: boolean;
+  catnoTag: string | null;
   keywords: string[];
   matchAnyWord: boolean;
   dmMessage: string;
@@ -267,6 +272,7 @@ export default function CampaignsPage() {
           postUrl: specific ? auto.postUrl : null,
           matchAnyPost: auto.matchAnyPost,
           pendingNextReel: auto.pendingNextReel,
+          catnoTag: auto.pendingNextReel ? auto.catnoTag : null,
           matchAnyWord: auto.matchAnyWord,
           keywords: auto.keywords,
           dmMessage: auto.dmMessage,
@@ -288,7 +294,10 @@ export default function CampaignsPage() {
       });
       const data = await res.json();
       if (data.success) void fetchAutomations();
-      else console.error("Duplicate failed:", data.error);
+      else {
+        console.error("Duplicate failed:", data.error);
+        setActionError(data.error ?? "Campaign could not be duplicated");
+      }
     } catch (err) {
       console.error("Failed to duplicate:", err);
     }
@@ -417,6 +426,7 @@ export default function CampaignsPage() {
       <div className="space-y-3">
         {filtered.map((auto) => {
           const videoUrl = auto.postId ? videos[auto.postId] : undefined;
+          const status = campaignStatus(auto);
           return (
           <div
             key={auto.id}
@@ -472,15 +482,13 @@ export default function CampaignsPage() {
                     @{auto.instagramAccount.username}
                   </span>
                   <span
-                    className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                      auto.isActive
-                        ? "bg-success/10 text-success"
-                        : "bg-zinc-500/10 text-zinc-400"
-                    }`}
+                    className={`text-xs px-2 py-0.5 rounded-full font-medium ${campaignStatusClass(
+                      status.key
+                    )}`}
                   >
-                    {auto.isActive ? "Active" : "Paused"}
+                    {status.label}
                   </span>
-                  {auto.pendingNextReel && (
+                  {auto.pendingNextReel && !auto.catnoTag && (
                     <span className="shrink-0 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-400">
                       Waiting for next post or reel
                     </span>
