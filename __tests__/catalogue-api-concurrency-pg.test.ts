@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-const context = vi.hoisted(() => ({ workspaceId: "", role: "OWNER" }));
+const { context, media } = vi.hoisted(() => ({
+  context: { workspaceId: "", role: "OWNER" },
+  media: { value: {} as Record<string, unknown> },
+}));
 vi.mock("@/lib/auth", () => ({ getCurrentWorkspaceId: vi.fn(() => context.workspaceId) }));
 vi.mock("@/lib/workspace-access", () => ({
   getCurrentWorkspaceContext: vi.fn(async () => context),
@@ -14,14 +17,21 @@ vi.mock("@/lib/meta/capabilities", () => ({
   assertInstagramMessageCapability: vi.fn(),
   campaignRequiresMessageCapability: vi.fn(() => false),
 }));
+vi.mock("@/lib/meta/client", () => ({
+  getMediaById: vi.fn(async () => media.value),
+  getUserMedia: vi.fn(async () => [media.value]),
+}));
+vi.mock("@/lib/meta/oauth", () => ({ decryptToken: vi.fn(() => "never-used-fixture") }));
 
 import { prisma } from "@/lib/db/client";
 import { POST, PATCH } from "@/app/api/automations/route";
+import { bindPendingAutomationsForMedia } from "@/lib/release-sync/attach-pending-automations";
 
 const databaseUrl = process.env.OPENREPLY_TEST_DATABASE_URL;
 const suite = databaseUrl ? describe : describe.skip;
 suite("catalogue API with real PostgreSQL transactions", () => {
   let accountId: string;
+  let instagramId: string;
   beforeAll(async () => {
     const url = new URL(databaseUrl!);
     if (url.hostname !== "127.0.0.1" || !url.pathname.includes("test")) {
@@ -36,8 +46,9 @@ suite("catalogue API with real PostgreSQL transactions", () => {
     context.workspaceId = workspace.id;
   });
   beforeEach(async () => {
+    instagramId = randomUUID();
     accountId = (await prisma.instagramAccount.create({ data: {
-      workspaceId: context.workspaceId, instagramId: randomUUID(),
+      workspaceId: context.workspaceId, instagramId,
       username: "catalogue_test", accessToken: "never-used-fixture",
     } })).id;
   });
@@ -89,5 +100,31 @@ suite("catalogue API with real PostgreSQL transactions", () => {
     expect((await response.json()).code).toBe("CATALOGUE_REF_CONFLICT");
     expect((await prisma.automation.findUniqueOrThrow({ where: { id: row.id } })).catnoTag)
       .toBe(`${tag}B`.toUpperCase());
+  });
+
+  it("does not attach a manual campaign when Calendar has already claimed the same post", async () => {
+    const tag = `REF${randomUUID().replaceAll("-", "")}`.toUpperCase();
+    const mediaId = `media-${randomUUID()}`;
+    const common = {
+      workspaceId: context.workspaceId, instagramAccountId: accountId,
+      catnoTag: tag, keywords: ["LINK"], dmMessage: "Fixture message",
+    };
+    const manual = await prisma.automation.create({ data: {
+      ...common, name: "Manual fixture", isActive: true, pendingNextReel: true,
+      createdAt: new Date(Date.now() - 10_000),
+    } });
+    await prisma.automation.create({ data: {
+      ...common, name: "Calendar fixture", source: "CALENDAR", lifecycle: "READY",
+      postId: mediaId, pendingNextReel: false, isActive: false,
+    } });
+    media.value = {
+      id: mediaId, caption: `Record #${tag}`, timestamp: new Date().toISOString(),
+      media_type: "IMAGE", media_product_type: "FEED",
+      permalink: "https://www.instagram.com/p/fixture/",
+    };
+    const bound = await bindPendingAutomationsForMedia({ instagramAccountId: instagramId, mediaId });
+    expect(bound).toBe(0);
+    expect(await prisma.automation.findUniqueOrThrow({ where: { id: manual.id } }))
+      .toMatchObject({ postId: null, isActive: false, lifecycle: "NEEDS_ATTENTION" });
   });
 });
