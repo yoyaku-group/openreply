@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseCatnoTag } from "@/lib/automations/catalogue";
 
 /**
  * The campaign payload contract, shared by the dashboard route and any script
@@ -9,6 +10,35 @@ import { z } from "zod";
 
 export const triggerTypeSchema = z.enum(["COMMENT", "INBOUND_DM"]);
 
+/**
+ * `catnoTag` is the Instagram hashtag that identifies a future publication
+ * (e.g. `#ABC001`). Exterior whitespace and one optional leading `#` are
+ * accepted; the stored value is canonical upper-case without the `#`. Invalid
+ * internal punctuation is rejected rather than silently removed.
+ */
+export const catnoTagSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const trimmed = value.trim();
+    return trimmed === "" ? null : trimmed;
+  },
+  z
+    .string()
+    .max(51)
+    .superRefine((value, ctx) => {
+      const parsed = parseCatnoTag(value);
+      if (!parsed.ok) {
+        ctx.addIssue({ code: "custom", message: parsed.message });
+      }
+    })
+    .transform((value) => {
+      const parsed = parseCatnoTag(value);
+      return parsed.ok ? parsed.value : value;
+    })
+    .nullable()
+    .optional(),
+);
+
 export const createAutomationSchema = z.object({
   name: z.string().min(1).max(100),
   goal: z.string().min(1).max(120).optional().nullable(),
@@ -18,6 +48,7 @@ export const createAutomationSchema = z.object({
   postUrl: z.string().url().optional().nullable(),
   pendingNextReel: z.boolean().optional().default(false),
   matchAnyPost: z.boolean().optional().default(false),
+  catnoTag: catnoTagSchema,
   keywords: z.array(z.string().min(1).max(50)).max(10).optional().default([]),
   matchAnyWord: z.boolean().optional().default(false),
   dmMessage: z.string().min(1).max(1000),
@@ -60,6 +91,7 @@ export const updateAutomationSchema = z.object({
   postUrl: z.string().url().optional().nullable(),
   pendingNextReel: z.boolean().optional(),
   matchAnyPost: z.boolean().optional(),
+  catnoTag: catnoTagSchema,
   keywords: z.array(z.string().min(1).max(50)).max(10).optional(),
   matchAnyWord: z.boolean().optional(),
   dmMessage: z.string().min(1).max(1000).optional(),

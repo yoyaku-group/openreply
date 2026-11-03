@@ -18,6 +18,7 @@ const {
   mockReserveWorkspaceDMSend,
   mockReleaseWorkspaceDMReservation,
   mockIngestSavInboundEvent,
+  mockBindPendingAutomationsForMedia,
 } = vi.hoisted(() => ({
   mockPrisma: {
     $transaction: vi.fn(),
@@ -59,6 +60,7 @@ const {
   mockReserveWorkspaceDMSend: vi.fn(),
   mockReleaseWorkspaceDMReservation: vi.fn(),
   mockIngestSavInboundEvent: vi.fn(),
+  mockBindPendingAutomationsForMedia: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -128,6 +130,10 @@ vi.mock("@/lib/ops/worker-health", () => ({
 
 vi.mock("@/lib/sav/service", () => ({
   ingestSavInboundEvent: mockIngestSavInboundEvent,
+}));
+
+vi.mock("@/lib/release-sync/attach-pending-automations", () => ({
+  bindPendingAutomationsForMedia: mockBindPendingAutomationsForMedia,
 }));
 
 vi.mock("@/lib/queue/client", () => ({
@@ -326,6 +332,7 @@ beforeEach(() => {
     status: "created",
     id: "sav_item_1",
   });
+  mockBindPendingAutomationsForMedia.mockResolvedValue(0);
   mockSendPrivateReply.mockResolvedValue({
     recipient_id: "commenter_999",
     message_id: "msg_001",
@@ -417,6 +424,50 @@ describe("DM Worker — Full Pipeline", () => {
         create: expect.objectContaining({ status: "READY" }),
         update: expect.objectContaining({ status: "READY" }),
       })
+    );
+  });
+
+  it("JIT-binds a catalogue campaign before choosing, even when an any-post campaign matches", async () => {
+    const anyPostCampaign = {
+      ...mockAutomation,
+      id: "auto_any_post",
+      postId: null,
+      matchAnyPost: true,
+      dmMessage: "Generic link",
+    };
+    const catalogueCampaign = {
+      ...mockAutomation,
+      id: "auto_catalogue",
+      postId: "media_101",
+      catnoTag: "ABC001",
+      dmMessage: "Catalogue link",
+    };
+    mockPrisma.automation.findMany
+      .mockResolvedValueOnce([anyPostCampaign])
+      .mockResolvedValueOnce([anyPostCampaign, catalogueCampaign]);
+    mockBindPendingAutomationsForMedia.mockResolvedValue(1);
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockBindPendingAutomationsForMedia).toHaveBeenCalledWith({
+      instagramAccountId: "ig_456",
+      mediaId: "media_101",
+    });
+    expect(mockPrisma.automation.findMany).toHaveBeenCalledTimes(2);
+    expect(mockSendPrivateReply).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "comment_555",
+      "Catalogue link"
+    );
+    // Existing multi-campaign semantics are preserved: each matching campaign
+    // keeps its own DM log and call to action.
+    expect(mockSendPrivateReply).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "comment_555",
+      "Generic link"
     );
   });
 

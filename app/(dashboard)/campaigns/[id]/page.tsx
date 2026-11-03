@@ -12,6 +12,11 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import CampaignPreview, { type PreviewTab } from "@/components/campaign-preview";
+import {
+  campaignStatus,
+  campaignStatusClass,
+} from "@/lib/automations/status";
+import { displayCatnoTag } from "@/lib/automations/catalogue";
 
 interface Campaign {
   id: string;
@@ -21,6 +26,7 @@ interface Campaign {
   postUrl: string | null;
   pendingNextReel: boolean;
   matchAnyPost: boolean;
+  catnoTag: string | null;
   keywords: string[];
   matchAnyWord: boolean;
   dmMessage: string;
@@ -39,6 +45,8 @@ interface Campaign {
   isActive: boolean;
   instagramAccountId: string;
   instagramAccount: { username: string };
+  source?: string | null;
+  lifecycle?: string | null;
   trackedLinks?: { destinationUrl: string; label?: string | null }[];
   analytics: {
     sent: number;
@@ -154,10 +162,14 @@ export default function CampaignDetailPage() {
         : [];
   const hasLink = Boolean(campaign.trackedLinks?.[0]?.destinationUrl);
   const hasSecondLink = Boolean(campaign.trackedLinks?.[1]?.destinationUrl);
+  const status = campaignStatus(campaign);
+  const catalogueDisplay = displayCatnoTag(campaign.catnoTag);
 
   const trigger =
     campaign.triggerType === "INBOUND_DM"
       ? "Exact inbound Instagram DM"
+      : campaign.catnoTag && campaign.pendingNextReel
+        ? `Your next post or reel carrying ${catalogueDisplay}`
       : campaign.matchAnyPost
         ? "Any post or reel"
         : campaign.pendingNextReel
@@ -189,15 +201,22 @@ export default function CampaignDetailPage() {
         <div className="flex items-center gap-2">
           <h1 className="truncate text-lg font-semibold">{campaign.name}</h1>
           <span
-            className={`shrink-0 rounded px-2 py-0.5 text-xs font-semibold ${
-              campaign.isActive
-                ? "bg-success/10 text-success"
-                : "bg-zinc-500/10 text-zinc-400"
-            }`}
+            className={`shrink-0 rounded px-2 py-0.5 text-xs font-semibold ${campaignStatusClass(
+              status.key
+            )}`}
           >
-            {campaign.isActive ? "LIVE" : "Paused"}
+            {status.label}
           </span>
         </div>
+
+        {status.key === "needs_attention" && (
+          <div className="rounded border border-error/20 bg-error/10 p-3 text-sm text-error">
+            This campaign needs attention before it can send. A Calendar
+            campaign may now cover the same catalogue reference, or the binder
+            could not safely attach it. Review both campaigns and keep a single
+            DM call to action.
+          </div>
+        )}
 
         {campaign.triggerType === "COMMENT" ? (
         <>

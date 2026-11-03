@@ -25,6 +25,7 @@ import {
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import { selectMediaForPendingAutomation } from "@/lib/release-sync/media-binding";
+import { findUnboundCalendarConflict } from "@/lib/automations/catalogue";
 
 export interface AttachSummary {
   enabled: boolean;
@@ -32,6 +33,7 @@ export interface AttachSummary {
   accounts: number;
   checked: number;
   bound: number;
+  conflicts: number;
   failedAccounts: number;
 }
 
@@ -97,6 +99,46 @@ async function bindPendingAutomation(binding: MediaBinding): Promise<boolean> {
 }
 
 /**
+ * A Calendar campaign for the same reference may appear after the manual
+ * campaign was armed. Never bind the manual one in that case: doing so would
+ * create two DM CTAs for the same publication. Park it visibly instead of
+ * silently dropping it.
+ */
+async function hasCalendarConflict(automation: {
+  id: string;
+  instagramAccountId: string;
+  catnoTag: string | null;
+}): Promise<boolean> {
+  if (!automation.catnoTag) return false;
+  const conflict = await findUnboundCalendarConflict(
+    {
+      instagramAccountId: automation.instagramAccountId,
+      catnoTag: automation.catnoTag,
+      excludeAutomationId: automation.id,
+    },
+    prisma,
+  );
+  if (!conflict) return false;
+  await prisma.automation.updateMany({
+    where: {
+      id: automation.id,
+      pendingNextReel: true,
+      lifecycle: { not: "NEEDS_ATTENTION" },
+    },
+    data: { isActive: false, lifecycle: "NEEDS_ATTENTION" },
+  });
+  console.warn(
+    "[attach-next-reel] calendar_conflict",
+    JSON.stringify({
+      automationId: automation.id,
+      catnoTag: automation.catnoTag,
+      calendarAutomationId: conflict.id,
+    }),
+  );
+  return true;
+}
+
+/**
  * JIT bind: attach the account's pending campaigns to the media a comment just
  * arrived on. Returns how many campaigns were bound. Never throws — a failed
  * lookup must not block processing of the comment itself.
@@ -156,6 +198,8 @@ export async function bindPendingAutomationsForMedia(input: {
 
   let bound = 0;
   for (const binding of selectBindingsForMedia(pending, media)) {
+    const automation = pending.find((item) => item.id === binding.automationId);
+    if (automation && (await hasCalendarConflict(automation))) continue;
     if (!(await bindPendingAutomation(binding))) continue;
     bound += 1;
     console.info(
@@ -187,6 +231,7 @@ export async function attachPendingNextReels(): Promise<AttachSummary> {
       accounts: 0,
       checked: 0,
       bound: 0,
+      conflicts: 0,
       failedAccounts: 0,
     };
   }
@@ -220,6 +265,7 @@ export async function attachPendingNextReels(): Promise<AttachSummary> {
   }
 
   let bound = 0;
+  let conflicts = 0;
   let checked = 0;
   const failures: string[] = [];
 
@@ -260,6 +306,10 @@ export async function attachPendingNextReels(): Promise<AttachSummary> {
         automation.catnoTag,
       );
       if (!target) continue;
+      if (await hasCalendarConflict(automation)) {
+        conflicts += 1;
+        continue;
+      }
       const didBind = await bindPendingAutomation({
         automationId: automation.id,
         mediaId: target.id,
@@ -287,6 +337,7 @@ export async function attachPendingNextReels(): Promise<AttachSummary> {
       accounts: byAccount.size,
       checked,
       bound,
+      conflicts,
       failedAccounts: failures.length,
     }),
   );
@@ -297,6 +348,7 @@ export async function attachPendingNextReels(): Promise<AttachSummary> {
     accounts: byAccount.size,
     checked,
     bound,
+    conflicts,
     failedAccounts: failures.length,
   };
 }

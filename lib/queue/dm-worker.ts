@@ -245,25 +245,24 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
 
   let automations = await findCommentAutomations(instagramAccountId, mediaId);
 
-  // Just-in-time bind: when nothing matches yet, the post may have just been
-  // published under a "next post or reel" campaign that the poll has not
-  // attached yet (Instagram sends no new-media webhook). Bind it now so this
-  // very comment triggers the DM instead of waiting for the next sweep.
-  if (automations.length === 0) {
-    try {
-      const bound = await bindPendingAutomationsForMedia({
-        instagramAccountId,
-        mediaId,
-      });
-      if (bound > 0) {
-        automations = await findCommentAutomations(instagramAccountId, mediaId);
-      }
-    } catch (error) {
-      console.error(
-        "[DM Worker] Just-in-time next post or reel binding failed:",
-        error instanceof Error ? error.message : "Unknown error"
-      );
+  // Just-in-time bind: the post may have just been published under a "next
+  // post or reel" campaign that the poll has not attached yet (Instagram sends
+  // no new-media webhook). Try even when an any-post campaign already matched:
+  // otherwise the first eligible comment would be consumed before the new
+  // catalogue-specific campaign could bind, and it would miss the comment.
+  try {
+    const bound = await bindPendingAutomationsForMedia({
+      instagramAccountId,
+      mediaId,
+    });
+    if (bound > 0) {
+      automations = await findCommentAutomations(instagramAccountId, mediaId);
     }
+  } catch (error) {
+    console.error(
+      "[DM Worker] Just-in-time next post or reel binding failed:",
+      error instanceof Error ? error.message : "Unknown error"
+    );
   }
 
   if (automations.length === 0) {

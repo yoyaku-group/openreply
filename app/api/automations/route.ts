@@ -12,6 +12,14 @@ import { buildTrackedUrl } from "@/lib/tracking/message";
 import { generateTrackedLinkSlug } from "@/lib/tracking/server";
 import { buildReportUrl, generateReportShareSlug } from "@/lib/reports/share";
 import { normalizeInboundDmKeywords } from "@/lib/automations/inbound-dm";
+import {
+  findPendingCatalogueConflict,
+  findUnboundCalendarConflict,
+  lockPendingAutomationAccount,
+  normalizeCatnoTag,
+  type PendingCatalogueConflict,
+} from "@/lib/automations/catalogue";
+import { isAttachBinderEnabled } from "@/lib/release-sync/attach-pending-automations";
 import { getMediaById } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import {
@@ -34,6 +42,7 @@ interface AutomationConfiguration {
   postId?: string | null;
   pendingNextReel: boolean;
   matchAnyPost: boolean;
+  catnoTag?: string | null;
   keywords: string[];
   matchAnyWord: boolean;
   openingDmEnabled: boolean;
@@ -90,6 +99,35 @@ function validateAutomationConfiguration(
       message: "Choose which post(s) trigger the campaign",
     });
   }
+  if (configuration.pendingNextReel && configuration.matchAnyPost) {
+    issues.push({
+      path: "pendingNextReel",
+      message: "Choose either the next post or any post, not both",
+    });
+  }
+  if (configuration.catnoTag) {
+    if (configuration.triggerType !== "COMMENT") {
+      issues.push({
+        path: "catnoTag",
+        message: "Catalogue hashtags only apply to comment campaigns",
+      });
+    }
+    if (!configuration.pendingNextReel && !configuration.postId) {
+      issues.push({
+        path: "catnoTag",
+        message: "A catalogue hashtag is only valid while waiting for a future publication",
+      });
+    }
+    if (
+      configuration.pendingNextReel &&
+      (configuration.matchAnyPost || configuration.postId)
+    ) {
+      issues.push({
+        path: "catnoTag",
+        message: "A catalogue hashtag cannot be combined with an existing post or any-post target",
+      });
+    }
+  }
   if (!configuration.matchAnyWord && configuration.keywords.length === 0) {
     issues.push({
       path: "keywords",
@@ -133,6 +171,7 @@ function inboundDmOnlyFields() {
     postUrl: null,
     pendingNextReel: false,
     matchAnyPost: false,
+    catnoTag: null,
     matchAnyWord: false,
     openingDmEnabled: false,
     openingDmMessage: null,
@@ -248,16 +287,45 @@ function pendingNextConflictResponse(conflict: { id: string; name: string }) {
   );
 }
 
-async function lockPendingNextAccount(
-  tx: Prisma.TransactionClient,
-  instagramAccountId: string,
+function catalogueConflictResponse(
+  conflict: PendingCatalogueConflict,
+  catnoTag: string,
 ) {
-  // Serialize pending-next writes per Instagram account so two concurrent
-  // creations cannot both pass the one-pending check above.
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(
-    hashtext('openreply:pending-next'),
-    hashtext(${instagramAccountId})
-  )`;
+  return NextResponse.json(
+    {
+      success: false,
+      code: "CATALOGUE_REF_CONFLICT",
+      error: `"${conflict.name}" is already waiting for #${catnoTag}. Pause or delete that campaign, or let it bind to its publication before arming another one.`,
+      conflict,
+      conflictUrl: `/campaigns/${conflict.id}`,
+    },
+    { status: 409 },
+  );
+}
+
+function calendarConflictResponse(conflict: PendingCatalogueConflict) {
+  return NextResponse.json(
+    {
+      success: false,
+      code: "CALENDAR_CAMPAIGN_CONFLICT",
+      error: `Calendar is already planning this release as "${conflict.name}". Review that Calendar campaign instead of creating a second DM CTA.`,
+      conflict,
+      conflictUrl: `/campaigns/${conflict.id}`,
+    },
+    { status: 409 },
+  );
+}
+
+function catalogueBinderDisabledResponse() {
+  return NextResponse.json(
+    {
+      success: false,
+      code: "CATALOGUE_BINDING_DISABLED",
+      error:
+        "Future-publication campaigns need the attach binder enabled on this deployment (ATTACH_NEXT_REEL_ENABLED=true). Save as a draft, or ask an operator to enable it before validating for publication.",
+    },
+    { status: 409 },
+  );
 }
 
 async function postAccessibilityError(
@@ -521,6 +589,26 @@ export async function POST(request: NextRequest) {
     return configurationError(configurationIssues);
   }
 
+  const catnoTag = parsed.data.catnoTag ?? null;
+  if (catnoTag && !parsed.data.pendingNextReel) {
+    return configurationError([
+      {
+        path: "catnoTag",
+        message:
+          "A catalogue hashtag campaign must wait for a future publication",
+      },
+    ]);
+  }
+  if (catnoTag && !parsed.data.trackedDestinationUrl) {
+    return configurationError([
+      {
+        path: "trackedDestinationUrl",
+        message:
+          "Add the destination link for a future-publication campaign (required even for a draft)",
+      },
+    ]);
+  }
+
   const requestedInstagramAccountId =
     parsed.data.instagramAccountId && parsed.data.instagramAccountId !== "all"
       ? parsed.data.instagramAccountId
@@ -553,6 +641,12 @@ export async function POST(request: NextRequest) {
       { success: false, error: "Connect Instagram before creating campaigns" },
       { status: 400 },
     );
+  }
+
+  const armingCatalogue =
+    Boolean(catnoTag) && parsed.data.pendingNextReel && parsed.data.isActive;
+  if (armingCatalogue && !isAttachBinderEnabled()) {
+    return catalogueBinderDisabledResponse();
   }
 
   if (
@@ -661,6 +755,7 @@ export async function POST(request: NextRequest) {
       postUrl: isSpecificPost ? parsed.data.postUrl : null,
       pendingNextReel,
       matchAnyPost,
+      catnoTag,
       keywords: matchAnyWord ? [] : parsed.data.keywords,
       matchAnyWord,
       dmMessage: parsed.data.dmMessage,
@@ -730,17 +825,59 @@ export async function POST(request: NextRequest) {
     automation = result.automation;
   } else if (pendingNextReel) {
     const result = await prisma.$transaction(async (tx) => {
-      await lockPendingNextAccount(tx, instagramAccount.id);
-      const conflict = await findPendingNextConflict(
-        { instagramAccountId: instagramAccount.id },
-        tx,
-      );
-      if (conflict) return { automation: null, conflict } as const;
+      await lockPendingAutomationAccount(tx, instagramAccount.id);
+      if (catnoTag) {
+        const catalogueConflict = await findPendingCatalogueConflict(
+          { instagramAccountId: instagramAccount.id, catnoTag },
+          tx,
+        );
+        if (catalogueConflict) {
+          return {
+            automation: null,
+            catalogueConflict,
+            calendarConflict: null,
+            conflict: null,
+          } as const;
+        }
+        const calendarConflict = await findUnboundCalendarConflict(
+          { instagramAccountId: instagramAccount.id, catnoTag },
+          tx,
+        );
+        if (calendarConflict) {
+          return {
+            automation: null,
+            catalogueConflict: null,
+            calendarConflict,
+            conflict: null,
+          } as const;
+        }
+      } else {
+        const conflict = await findPendingNextConflict(
+          { instagramAccountId: instagramAccount.id },
+          tx,
+        );
+        if (conflict) {
+          return {
+            automation: null,
+            catalogueConflict: null,
+            calendarConflict: null,
+            conflict,
+          } as const;
+        }
+      }
       return {
         automation: await tx.automation.create(createArgs),
+        catalogueConflict: null,
+        calendarConflict: null,
         conflict: null,
       } as const;
     });
+    if (result.catalogueConflict) {
+      return catalogueConflictResponse(result.catalogueConflict, catnoTag!);
+    }
+    if (result.calendarConflict) {
+      return calendarConflictResponse(result.calendarConflict);
+    }
     if (result.conflict) {
       return pendingNextConflictResponse(result.conflict);
     }
@@ -814,6 +951,7 @@ export async function PATCH(request: NextRequest) {
           archivedAt: true,
         },
       },
+      trackedLinks: { orderBy: { createdAt: "asc" } },
     },
   });
 
@@ -822,6 +960,58 @@ export async function PATCH(request: NextRequest) {
       { success: false, error: "Campaign not found" },
       { status: 404 },
     );
+  }
+
+  const existingCatnoTag = normalizeCatnoTag(existing.catnoTag);
+  const requestedCatnoTag =
+    parsed.data.catnoTag !== undefined ? parsed.data.catnoTag ?? null : undefined;
+  const existingAttachedCatalogue = Boolean(
+    existingCatnoTag && !existing.pendingNextReel && existing.postId,
+  );
+
+  // Calendar campaigns keep their source binding. Pause and copy edits remain
+  // available, but the manual builder may never re-arm, retarget or overwrite
+  // the Calendar-owned publication/keyword/link.
+  if (existing.source === "CALENDAR") {
+    const existingPrimaryUrl =
+      existing.trackedLinks?.[0]?.destinationUrl ?? null;
+    const requestedPrimaryUrl =
+      parsed.data.trackedDestinationUrl === undefined ||
+      parsed.data.trackedDestinationUrl === null
+        ? existingPrimaryUrl
+        : parsed.data.trackedDestinationUrl || null;
+    const keywordsChanged =
+      parsed.data.keywords !== undefined &&
+      (parsed.data.keywords.length !== existing.keywords.length ||
+        parsed.data.keywords.some(
+          (keyword, index) => keyword !== existing.keywords[index],
+        ));
+    const bindingChanged =
+      (parsed.data.triggerType !== undefined &&
+        parsed.data.triggerType !== existing.triggerType) ||
+      (parsed.data.postId !== undefined &&
+        parsed.data.postId !== existing.postId) ||
+      (parsed.data.postUrl !== undefined &&
+        parsed.data.postUrl !== existing.postUrl) ||
+      (parsed.data.pendingNextReel !== undefined &&
+        parsed.data.pendingNextReel !== existing.pendingNextReel) ||
+      (parsed.data.matchAnyPost !== undefined &&
+        parsed.data.matchAnyPost !== existing.matchAnyPost) ||
+      (requestedCatnoTag !== undefined &&
+        requestedCatnoTag !== existingCatnoTag) ||
+      keywordsChanged ||
+      requestedPrimaryUrl !== existingPrimaryUrl;
+    if (bindingChanged) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: "CALENDAR_BINDING_IMMUTABLE",
+          error:
+            "Calendar owns this campaign's publication, keyword and destination. Pause it or edit its copy in OpenReply; retargeting happens through the planning source.",
+        },
+        { status: 409 },
+      );
+    }
   }
 
   if (
@@ -833,6 +1023,36 @@ export async function PATCH(request: NextRequest) {
       {
         success: false,
         error: "Calendar campaign is waiting for exact Meta publication proof",
+      },
+      { status: 409 },
+    );
+  }
+
+  if (
+    parsed.data.pendingNextReel === true &&
+    existingAttachedCatalogue
+  ) {
+    return NextResponse.json(
+      {
+        success: false,
+        code: "CATALOGUE_REARM_BLOCKED",
+        error:
+          "This catalogue campaign is already bound to a publication. Create a new campaign for another publication instead of re-arming it.",
+      },
+      { status: 409 },
+    );
+  }
+  if (
+    existingAttachedCatalogue &&
+    requestedCatnoTag !== undefined &&
+    requestedCatnoTag !== existingCatnoTag
+  ) {
+    return NextResponse.json(
+      {
+        success: false,
+        code: "CATALOGUE_TAG_IMMUTABLE",
+        error:
+          "The catalogue hashtag of a bound campaign is read-only. Create a new campaign for a different reference.",
       },
       { status: 409 },
     );
@@ -876,12 +1096,32 @@ export async function PATCH(request: NextRequest) {
     }
   }
 
+  const effectiveTriggerType = parsed.data.triggerType ?? existing.triggerType;
+  const effectivePendingNextReel =
+    parsed.data.pendingNextReel ?? existing.pendingNextReel;
+  const effectiveMatchAnyPost =
+    parsed.data.matchAnyPost ?? existing.matchAnyPost;
+  let effectiveCatnoTag: string | null;
+  if (effectiveTriggerType !== "COMMENT") {
+    effectiveCatnoTag = null;
+  } else if (effectivePendingNextReel) {
+    effectiveCatnoTag =
+      requestedCatnoTag !== undefined ? requestedCatnoTag : existingCatnoTag;
+  } else if (existing.pendingNextReel) {
+    // Switching away from "next post or reel" clears the waiting reference.
+    effectiveCatnoTag = null;
+  } else {
+    effectiveCatnoTag =
+      requestedCatnoTag !== undefined ? requestedCatnoTag : existingCatnoTag;
+  }
+
   const effectiveConfiguration: AutomationConfiguration = {
-    triggerType: parsed.data.triggerType ?? existing.triggerType,
+    triggerType: effectiveTriggerType,
     postId:
       parsed.data.postId !== undefined ? parsed.data.postId : existing.postId,
-    pendingNextReel: parsed.data.pendingNextReel ?? existing.pendingNextReel,
-    matchAnyPost: parsed.data.matchAnyPost ?? existing.matchAnyPost,
+    pendingNextReel: effectivePendingNextReel,
+    matchAnyPost: effectiveMatchAnyPost,
+    catnoTag: effectiveCatnoTag,
     keywords: parsed.data.keywords ?? existing.keywords,
     matchAnyWord: parsed.data.matchAnyWord ?? existing.matchAnyWord,
     openingDmEnabled: parsed.data.openingDmEnabled ?? existing.openingDmEnabled,
@@ -913,12 +1153,40 @@ export async function PATCH(request: NextRequest) {
   }
 
   const effectiveIsActive = parsed.data.isActive ?? existing.isActive;
+  const effectivePrimaryUrl =
+    parsed.data.trackedDestinationUrl !== undefined &&
+    parsed.data.trackedDestinationUrl !== null
+      ? parsed.data.trackedDestinationUrl || null
+      : existing.trackedLinks?.[0]?.destinationUrl ?? null;
+  if (effectiveCatnoTag && !effectivePrimaryUrl) {
+    return configurationError([
+      {
+        path: "trackedDestinationUrl",
+        message:
+          "Add the destination link for a future-publication campaign (required even for a draft)",
+      },
+    ]);
+  }
+  const activating = parsed.data.isActive === true && !existing.isActive;
+  const newlyWaitingCatalogue = Boolean(
+    effectiveCatnoTag &&
+      effectivePendingNextReel &&
+      (activating ||
+        !existing.pendingNextReel ||
+        existingCatnoTag !== effectiveCatnoTag),
+  );
+  if (
+    newlyWaitingCatalogue &&
+    effectiveIsActive &&
+    !isAttachBinderEnabled()
+  ) {
+    return catalogueBinderDisabledResponse();
+  }
   const isSpecificCommentPost =
     effectiveConfiguration.triggerType === "COMMENT" &&
     !effectiveConfiguration.matchAnyPost &&
     !effectiveConfiguration.pendingNextReel &&
     Boolean(effectiveConfiguration.postId);
-  const activating = parsed.data.isActive === true && !existing.isActive;
   const triggerTargetChanged =
     (parsed.data.triggerType !== undefined &&
       parsed.data.triggerType !== existing.triggerType) ||
@@ -951,6 +1219,14 @@ export async function PATCH(request: NextRequest) {
   const lifecycleData =
     existing.source === "CALENDAR" && parsed.data.isActive !== undefined
       ? { lifecycle: parsed.data.isActive ? "ACTIVE" : "READY" }
+      : parsed.data.isActive !== undefined
+        ? {
+            lifecycle: parsed.data.isActive
+              ? "ACTIVE"
+              : existing.lifecycle === "NEEDS_ATTENTION"
+                ? "NEEDS_ATTENTION"
+                : "PAUSED",
+          }
       : {};
 
   if (effectiveConfiguration.triggerType === "INBOUND_DM") {
@@ -991,6 +1267,10 @@ export async function PATCH(request: NextRequest) {
     automationData.publicReplyMessages = [];
     automationData.publicReplyMessage = null;
   }
+  // The effective reference is authoritative: normal edits preserve it,
+  // switching away from a waiting target clears it, and inbound campaigns have
+  // no catalogue scope.
+  automationData.catnoTag = effectiveCatnoTag;
 
   let updated;
   if (
@@ -1020,28 +1300,79 @@ export async function PATCH(request: NextRequest) {
       return inboundKeywordConflictResponse(result.conflicts);
     }
     updated = result.updated;
-  } else if (
-    effectiveConfiguration.pendingNextReel &&
-    !existing.catnoTag
-  ) {
+  } else if (effectiveConfiguration.pendingNextReel) {
     const result = await prisma.$transaction(async (tx) => {
-      await lockPendingNextAccount(tx, existing.instagramAccountId);
-      const conflict = await findPendingNextConflict(
-        {
-          instagramAccountId: existing.instagramAccountId,
-          excludeAutomationId: existing.id,
-        },
-        tx,
-      );
-      if (conflict) return { updated: null, conflict } as const;
+      await lockPendingAutomationAccount(tx, existing.instagramAccountId);
+
+      if (effectiveCatnoTag) {
+        const catalogueConflict = await findPendingCatalogueConflict(
+          {
+            instagramAccountId: existing.instagramAccountId,
+            catnoTag: effectiveCatnoTag,
+            excludeAutomationId: existing.id,
+          },
+          tx,
+        );
+        if (catalogueConflict) {
+          return {
+            updated: null,
+            catalogueConflict,
+            calendarConflict: null,
+            conflict: null,
+          } as const;
+        }
+        const calendarConflict = await findUnboundCalendarConflict(
+          {
+            instagramAccountId: existing.instagramAccountId,
+            catnoTag: effectiveCatnoTag,
+            excludeAutomationId: existing.id,
+          },
+          tx,
+        );
+        if (calendarConflict) {
+          return {
+            updated: null,
+            catalogueConflict: null,
+            calendarConflict,
+            conflict: null,
+          } as const;
+        }
+      } else {
+        const conflict = await findPendingNextConflict(
+          {
+            instagramAccountId: existing.instagramAccountId,
+            excludeAutomationId: existing.id,
+          },
+          tx,
+        );
+        if (conflict) {
+          return {
+            updated: null,
+            catalogueConflict: null,
+            calendarConflict: null,
+            conflict,
+          } as const;
+        }
+      }
       return {
         updated: await tx.automation.update({
           where: { id: automationId },
           data: { ...automationData, ...lifecycleData },
         }),
+        catalogueConflict: null,
+        calendarConflict: null,
         conflict: null,
       } as const;
     });
+    if (result.catalogueConflict) {
+      return catalogueConflictResponse(
+        result.catalogueConflict,
+        effectiveCatnoTag!,
+      );
+    }
+    if (result.calendarConflict) {
+      return calendarConflictResponse(result.calendarConflict);
+    }
     if (result.conflict) {
       return pendingNextConflictResponse(result.conflict);
     }

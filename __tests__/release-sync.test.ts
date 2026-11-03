@@ -101,6 +101,15 @@ describe("caption catno matching", () => {
     expect(captionMatchesCatno("#GETTRAUM017", "GETTRAUM01")).toBe(false);
   });
 
+  it("accepts a legacy leading # in the stored reference", () => {
+    expect(captionMatchesCatno("Out now #TO001", "#to001")).toBe(true);
+  });
+
+  it("treats underscore as part of the hashtag boundary", () => {
+    expect(captionMatchesCatno("#ABC001_EXTRA", "ABC001")).toBe(false);
+    expect(captionMatchesCatno("#ABC001 EXTRA", "ABC001")).toBe(true);
+  });
+
   it("requires the hashtag form and a caption", () => {
     expect(captionMatchesCatno("TO001 without hash", "TO001")).toBe(false);
     expect(captionMatchesCatno(undefined, "TO001")).toBe(false);
@@ -135,6 +144,21 @@ describe("pending media binding", () => {
   it("fails closed when a SKU-tagged automation has no exact hashtag match", () => {
     const media = [
       reel("unrelated", "2026-08-02T10:00:00Z", "New reel #OTHER001"),
+    ];
+
+    expect(
+      selectMediaForPendingAutomation(media, createdAt, "TO001")
+    ).toBeUndefined();
+  });
+
+  it("never binds a SKU-tagged automation to a story or an older post", () => {
+    const media = [
+      reel("old", "2026-07-30T10:00:00Z", "#TO001 before the campaign"),
+      {
+        ...reel("story", "2026-08-02T10:00:00Z", "#TO001 story"),
+        media_product_type: "STORIES",
+      },
+      reel("wrong", "2026-08-02T11:00:00Z", "#TO0011 wrong"),
     ];
 
     expect(
