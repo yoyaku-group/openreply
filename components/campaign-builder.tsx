@@ -485,7 +485,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         triggerScope === "catalogue"
           ? catalogueTag
           : mode === "edit" && loadedCatnoTag && triggerScope === "specific"
-            ? displayCatnoTag(loadedCatnoTag)
+            ? undefined
             : null,
       matchAnyWord: triggerType === "COMMENT" && matchMode === "any",
       keywords:
@@ -707,7 +707,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 disabled={saving}
                 className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted hover:text-foreground disabled:opacity-50"
               >
-                Validate for publication
+                {isCatalogueScope ? "Validate for publication" : "Go Live"}
               </button>
               ))}
           {mode === "new" && (
@@ -729,7 +729,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             {saving
               ? "Saving…"
               : mode === "new"
-                ? "Validate for publication"
+                ? isCatalogueScope ? "Validate for publication" : "Go Live"
                 : isActive
                   ? "Save changes"
                   : "Save draft"}
@@ -854,10 +854,11 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
           </Radio>
           {triggerScope === "catalogue" && (
             <div className="space-y-2 rounded-lg border border-border p-3">
-              <label className="text-sm font-medium text-foreground">
+              <label htmlFor="catalogue-tag" className="text-sm font-medium text-foreground">
                 Catalogue hashtag
               </label>
               <input
+                id="catalogue-tag"
                 value={catnoTagInput}
                 onChange={(e) => setCatnoTagInput(e.target.value)}
                 placeholder="#ABC001"
@@ -867,7 +868,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               <p className="text-xs text-muted">
                 The hashtag printed on the release post (for example #ABC001).
                 It is not the keyword commenters type. A campaign waits for the
-                first feed post or reel published after you validate it whose
+                first feed post or reel published after you create this campaign whose
                 caption carries this exact hashtag.
               </p>
               {catalogueDisplay && (
@@ -1094,9 +1095,11 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
               maxLength={1000}
             />
-            {linkOpen ? (
+            {linkOpen || isCatalogueScope ? (
               <div className="space-y-2">
+                {isCatalogueScope && <label htmlFor="catalogue-destination" className="text-sm text-foreground">Destination link</label>}
                 <input
+                  id="catalogue-destination"
                   value={trackedDestinationUrl}
                   onChange={(e) => setTrackedDestinationUrl(e.target.value)}
                   onBlur={ensureLinkToken}

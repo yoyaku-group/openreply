@@ -108,12 +108,13 @@ async function hasCalendarConflict(automation: {
   id: string;
   instagramAccountId: string;
   catnoTag: string | null;
-}): Promise<boolean> {
+}, mediaId: string): Promise<boolean> {
   if (!automation.catnoTag) return false;
   const conflict = await findUnboundCalendarConflict(
     {
       instagramAccountId: automation.instagramAccountId,
       catnoTag: automation.catnoTag,
+      mediaId,
       excludeAutomationId: automation.id,
     },
     prisma,
@@ -199,7 +200,7 @@ export async function bindPendingAutomationsForMedia(input: {
   let bound = 0;
   for (const binding of selectBindingsForMedia(pending, media)) {
     const automation = pending.find((item) => item.id === binding.automationId);
-    if (automation && (await hasCalendarConflict(automation))) continue;
+    if (automation && (await hasCalendarConflict(automation, binding.mediaId))) continue;
     if (!(await bindPendingAutomation(binding))) continue;
     bound += 1;
     console.info(
@@ -306,7 +307,7 @@ export async function attachPendingNextReels(): Promise<AttachSummary> {
         automation.catnoTag,
       );
       if (!target) continue;
-      if (await hasCalendarConflict(automation)) {
+      if (await hasCalendarConflict(automation, target.id)) {
         conflicts += 1;
         continue;
       }

@@ -50,6 +50,25 @@ export function displayCatnoTag(value: string | null | undefined): string | null
   return normalized ? `#${normalized}` : null;
 }
 
+/**
+ * Compare references for immutability checks. Canonical forms compare
+ * case-insensitively; legacy values that the new strict input would reject
+ * (for example punctuation already stored on a bound campaign) still compare
+ * exactly so ordinary edits can preserve them without resubmitting them.
+ */
+export function catnoTagsEqual(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  if (left == null || right == null) return left == null && right == null;
+  const normalizedLeft = normalizeCatnoTag(left);
+  const normalizedRight = normalizeCatnoTag(right);
+  if (normalizedLeft && normalizedRight) {
+    return normalizedLeft === normalizedRight;
+  }
+  return left.trim() === right.trim();
+}
+
 type AutomationClient = Pick<Prisma.TransactionClient, "automation">;
 
 /**
@@ -130,12 +149,16 @@ export async function findPendingCatalogueConflict(
 /**
  * Calendar owns planning. A Calendar campaign with the same reference that has
  * not bound to a publication yet would otherwise create a second DM CTA once
- * the identically tagged post goes live.
+ * the identically tagged post goes live. When a candidate media is supplied,
+ * also treat a Calendar campaign already bound to that exact media as a
+ * conflict: the Calendar binder may have won the race after the manual
+ * campaign was armed.
  */
 export async function findUnboundCalendarConflict(
   input: {
     instagramAccountId: string;
     catnoTag: string;
+    mediaId?: string | null;
     excludeAutomationId?: string;
   },
   client: AutomationClient,
@@ -145,9 +168,13 @@ export async function findUnboundCalendarConflict(
       instagramAccountId: input.instagramAccountId,
       source: "CALENDAR",
       pendingNextReel: false,
-      postId: null,
       lifecycle: { not: "ARCHIVED" },
-      ...catnoTagWhere(input.catnoTag),
+      AND: [
+        catnoTagWhere(input.catnoTag),
+        input.mediaId
+          ? { OR: [{ postId: null }, { postId: input.mediaId }] }
+          : { postId: null },
+      ],
       ...(input.excludeAutomationId
         ? { id: { not: input.excludeAutomationId } }
         : {}),

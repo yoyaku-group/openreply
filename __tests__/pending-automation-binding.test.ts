@@ -275,7 +275,6 @@ describe("bindPendingAutomationsForMedia (just-in-time)", () => {
         where: expect.objectContaining({
           source: "CALENDAR",
           pendingNextReel: false,
-          postId: null,
           id: { not: "automation_1" },
         }),
       })

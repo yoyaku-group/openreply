@@ -13,6 +13,7 @@ import { generateTrackedLinkSlug } from "@/lib/tracking/server";
 import { buildReportUrl, generateReportShareSlug } from "@/lib/reports/share";
 import { normalizeInboundDmKeywords } from "@/lib/automations/inbound-dm";
 import {
+  catnoTagsEqual,
   findPendingCatalogueConflict,
   findUnboundCalendarConflict,
   lockPendingAutomationAccount,
@@ -295,7 +296,7 @@ function catalogueConflictResponse(
     {
       success: false,
       code: "CATALOGUE_REF_CONFLICT",
-      error: `"${conflict.name}" is already waiting for #${catnoTag}. Pause or delete that campaign, or let it bind to its publication before arming another one.`,
+      error: `"${conflict.name}" is already waiting for #${catnoTag}. Open that campaign and change its target, or wait for it to attach to its publication before arming another one.`,
       conflict,
       conflictUrl: `/campaigns/${conflict.id}`,
     },
@@ -322,7 +323,7 @@ function catalogueBinderDisabledResponse() {
       success: false,
       code: "CATALOGUE_BINDING_DISABLED",
       error:
-        "Future-publication campaigns need the attach binder enabled on this deployment (ATTACH_NEXT_REEL_ENABLED=true). Save as a draft, or ask an operator to enable it before validating for publication.",
+        "Future-publication campaigns cannot be armed yet on this deployment. Save the campaign as a draft and contact an administrator before validating it for publication.",
     },
     { status: 409 },
   );
@@ -789,6 +790,7 @@ export async function POST(request: NextRequest) {
           ? (publicReplyList[0] ?? parsed.data.publicReplyMessage ?? null)
           : null,
       isActive: parsed.data.isActive,
+      lifecycle: parsed.data.isActive ? "ACTIVE" : "PLANNED",
       wholeWordMatch: parsed.data.wholeWordMatch,
       workspaceId,
       instagramAccountId: instagramAccount.id,
@@ -962,11 +964,16 @@ export async function PATCH(request: NextRequest) {
     );
   }
 
-  const existingCatnoTag = normalizeCatnoTag(existing.catnoTag);
+  // Keep a legacy stored value intact when the new strict input would reject
+  // it (for example punctuation on an already-bound campaign). Ordinary edits
+  // omit catnoTag, so this raw value is preserved without being revalidated.
+  const existingCatnoTagRaw = existing.catnoTag?.trim() || null;
+  const existingCatnoTag =
+    normalizeCatnoTag(existing.catnoTag) ?? existingCatnoTagRaw;
   const requestedCatnoTag =
     parsed.data.catnoTag !== undefined ? parsed.data.catnoTag ?? null : undefined;
   const existingAttachedCatalogue = Boolean(
-    existingCatnoTag && !existing.pendingNextReel && existing.postId,
+    existingCatnoTagRaw && !existing.pendingNextReel && existing.postId,
   );
 
   // Calendar campaigns keep their source binding. Pause and copy edits remain
@@ -998,7 +1005,7 @@ export async function PATCH(request: NextRequest) {
       (parsed.data.matchAnyPost !== undefined &&
         parsed.data.matchAnyPost !== existing.matchAnyPost) ||
       (requestedCatnoTag !== undefined &&
-        requestedCatnoTag !== existingCatnoTag) ||
+        !catnoTagsEqual(requestedCatnoTag, existingCatnoTagRaw)) ||
       keywordsChanged ||
       requestedPrimaryUrl !== existingPrimaryUrl;
     if (bindingChanged) {
@@ -1045,7 +1052,7 @@ export async function PATCH(request: NextRequest) {
   if (
     existingAttachedCatalogue &&
     requestedCatnoTag !== undefined &&
-    requestedCatnoTag !== existingCatnoTag
+    !catnoTagsEqual(requestedCatnoTag, existingCatnoTagRaw)
   ) {
     return NextResponse.json(
       {
@@ -1225,7 +1232,9 @@ export async function PATCH(request: NextRequest) {
               ? "ACTIVE"
               : existing.lifecycle === "NEEDS_ATTENTION"
                 ? "NEEDS_ATTENTION"
-                : "PAUSED",
+                : !existing.isActive && existing.lifecycle
+                  ? existing.lifecycle
+                  : "PAUSED",
           }
       : {};
 

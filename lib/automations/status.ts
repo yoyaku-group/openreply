@@ -25,6 +25,7 @@ export interface CampaignStatusInput {
  * One status vocabulary for the list, detail and builder views.
  * - Draft: not approved/armed yet (or a Calendar draft awaiting review).
  * - Waiting for #ABC001: approved, armed, not bound to its publication yet.
+ * - Waiting for next post or reel: the generic armed state.
  * - Active: sending on its bound target.
  * - Paused: explicitly stopped.
  * - Needs attention: the binder found a Calendar conflict or another
@@ -36,15 +37,26 @@ export function campaignStatus(campaign: CampaignStatusInput): CampaignStatus {
   }
   if (campaign.isActive) {
     const tag = displayCatnoTag(campaign.catnoTag);
-    return campaign.pendingNextReel && tag
-      ? { key: "waiting", label: `Waiting for ${tag}` }
-      : { key: "active", label: "Active" };
+    if (campaign.pendingNextReel) {
+      return {
+        key: "waiting",
+        label: tag ? `Waiting for ${tag}` : "Waiting for next post or reel",
+      };
+    }
+    return { key: "active", label: "Active" };
   }
-  if (
-    (campaign.source === "CALENDAR" &&
-      (campaign.lifecycle === "PLANNED" || campaign.lifecycle === "READY")) ||
-    (campaign.pendingNextReel && !campaign.postId)
-  ) {
+  // The lifecycle distinguishes a saved draft from an explicit operator stop.
+  // Attachment deliberately leaves both isActive and lifecycle untouched, so
+  // an unapproved draft that binds while inactive stays a Draft.
+  if (campaign.lifecycle === "PLANNED" || campaign.lifecycle === "READY") {
+    return { key: "draft", label: "Draft" };
+  }
+  if (campaign.lifecycle === "PAUSED") {
+    return { key: "paused", label: "Paused" };
+  }
+  // Legacy inactive drafts were created before lifecycle was written; keep
+  // them recognisable instead of mislabelling them as explicitly paused.
+  if (campaign.pendingNextReel && !campaign.postId) {
     return { key: "draft", label: "Draft" };
   }
   return { key: "paused", label: "Paused" };

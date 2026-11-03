@@ -2,6 +2,21 @@ import { describe, expect, it } from "vitest";
 import { campaignStatus } from "@/lib/automations/status";
 
 describe("campaignStatus", () => {
+  it("keeps an explicitly paused waiting campaign distinct from a draft", () => {
+    expect(campaignStatus({ isActive: false, pendingNextReel: true,
+      catnoTag: "ABC001", lifecycle: "PAUSED" }).key).toBe("paused");
+  });
+
+  it("keeps a draft unapproved after attachment", () => {
+    expect(campaignStatus({ isActive: false, pendingNextReel: false,
+      postId: "media_1", catnoTag: "ABC001", lifecycle: "PLANNED" }).key).toBe("draft");
+  });
+
+  it("does not label a generic campaign active before publication", () => {
+    expect(campaignStatus({ isActive: true, pendingNextReel: true })).toEqual({
+      key: "waiting", label: "Waiting for next post or reel",
+    });
+  });
   it("labels an armed catalogue campaign as waiting, never LIVE", () => {
     const status = campaignStatus({
       isActive: true,

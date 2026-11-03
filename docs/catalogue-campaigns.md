@@ -2,7 +2,7 @@
 
 OpenReply can hold a comment-to-DM campaign for a release that is not published
 yet. The campaign waits for the first feed post or reel published after it was
-validated whose caption carries the release catalogue hashtag. Metricool (or
+created whose caption carries the release catalogue hashtag. Metricool (or
 any other publisher) remains the publisher; Calendar remains the planning
 owner. OpenReply only attaches and sends the DM.
 
@@ -53,8 +53,8 @@ Readiness errors:
   Keep the campaign as a draft and ask an operator to enable it; do not claim
   the campaign is live.
 - `CATALOGUE_REF_CONFLICT`: another campaign is already waiting for the same
-  hashtag and account. Open the linked campaign and pause, delete or let it
-  bind before arming another.
+  hashtag and account. Open the linked campaign and change its target, or let
+  it attach before preparing another. Pausing keeps the reference reserved.
 - `CALENDAR_CAMPAIGN_CONFLICT`: Calendar already plans this release. Review the
   linked Calendar campaign instead of creating a second DM call to action.
 - `INSTAGRAM_CAPABILITY_BLOCKED`: the account cannot read comments or send the
@@ -63,8 +63,8 @@ Readiness errors:
 
 ## Français
 
-1. **Créez une campagne** dans OpenReply, choisissez `Commentaire sur une
-   publication` puis `Une future publication avec un hashtag catalogue`.
+1. **Créez une campagne** dans OpenReply, choisissez `Comment on a post or reel`
+   puis `a future publication with a catalogue hashtag` (publication à venir par référence).
 2. **Saisissez le hashtag catalogue** imprimé sur la sortie, par exemple
    `#ABC001`. Le `#` initial est facultatif et la forme stockée est en
    majuscules. Ce hashtag identifie la future publication. Ce n'est **pas** le
@@ -73,8 +73,8 @@ Readiness errors:
    catalogue).
 3. **Ajoutez un lien de destination.** Il est obligatoire pour ce mode, même
    pour un brouillon.
-4. **Enregistrer le brouillon** garde la campagne hors de la file. **Valider
-   pour publication** l'arme. Ne validez qu'une fois le lien, le message et les
+4. **Save draft** enregistre le brouillon sans autoriser l'envoi. **Validate
+   for publication** autorise la réponse après rattachement. Ne validez qu'une fois le lien, le message et les
    libellés de boutons approuvés pour la semaine.
 5. Après validation, aucune seconde activation n'est nécessaire. Dès qu'une
    publication correspondante apparaît, OpenReply attache la campagne et envoie
@@ -109,8 +109,8 @@ Erreurs de disponibilité :
   déploiement. Gardez la campagne en brouillon et demandez à un opérateur de
   l'activer ; ne déclarez pas la campagne en ligne.
 - `CATALOGUE_REF_CONFLICT` : une autre campagne attend déjà le même hashtag et
-  le même compte. Ouvrez la campagne liée et mettez-la en pause, supprimez-la,
-  ou laissez-la s'attacher avant d'en armer une autre.
+  le même compte. Ouvrez la campagne indiquée et changez sa cible, ou attendez
+  son rattachement avant d'en préparer une autre. La pause conserve la réservation.
 - `CALENDAR_CAMPAIGN_CONFLICT` : Calendar planifie déjà cette sortie. Examinez
   la campagne Calendar liée au lieu de créer un second appel à l'action DM.
 - `INSTAGRAM_CAPABILITY_BLOCKED` : le compte ne peut pas lire les commentaires
