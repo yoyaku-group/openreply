@@ -292,6 +292,39 @@ describe("bindPendingAutomationsForMedia (just-in-time)", () => {
     });
   });
 
+  it("ignores a paused Calendar row when looking for a conflict", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      {
+        ...pendingAutomation({ catnoTag: "ABC001" }),
+        instagramAccountId: "account_1",
+        instagramAccount: { accessToken: "encrypted" },
+      },
+    ]);
+    mockGetMediaById.mockResolvedValue(media({ caption: "#ABC001 out now" }));
+
+    await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+
+    // A paused Calendar campaign cannot send, so it must not park a sendable
+    // manual campaign.
+    expect(mockPrisma.automation.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          source: "CALENDAR",
+          lifecycle: { notIn: ["ARCHIVED", "PAUSED"] },
+        }),
+      })
+    );
+    expect(mockPrisma.automation.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "automation_1", pendingNextReel: true },
+        data: expect.objectContaining({ postId: "media_1" }),
+      })
+    );
+  });
+
   it("does nothing when the binder is disabled", async () => {
     process.env.ATTACH_NEXT_REEL_ENABLED = "false";
 
