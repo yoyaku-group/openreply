@@ -80,10 +80,13 @@ export async function GET(request: NextRequest) {
           calendarStatus: intent.status,
           calendarAutomationStatus: intent.automation_status,
         };
+        // Anyone who comments receives the DM. The Calendar CTA keyword only
+        // signals that the post wants a campaign, so it is not stored as a
+        // comment filter: every Calendar campaign matches any comment.
         const content = {
           name: calendarCampaignName(intent), postId, postUrl: intent.published_url || null,
           pendingNextReel: false, catnoTag: intent.release_skus[0] || null,
-          keywords: [intent.cta_keyword], ...provenance,
+          keywords: [], matchAnyWord: true, ...provenance,
         };
         if (existing) {
           if (existing.source !== "CALENDAR" || existing.lifecycle === "ARCHIVED" ||
@@ -110,7 +113,7 @@ export async function GET(request: NextRequest) {
         await tx.automation.create({ data: {
           ...content, workspaceId, instagramAccountId: account.id,
           goal: "Calendar comment-to-DM draft", triggerType: "COMMENT",
-          matchAnyPost: false, matchAnyWord: false, dmMessage: "Here you go:",
+          matchAnyPost: false, dmMessage: "Here you go:",
           openingDmEnabled: true, openingDmMessage: "Here is the link you asked for.",
           openingDmButtonLabel: "Get the link", linkButtonLabel: "Open link",
           isActive: false, wholeWordMatch: true, source: "CALENDAR",

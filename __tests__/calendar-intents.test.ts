@@ -73,7 +73,6 @@ describe("calendar intent contract", () => {
       calendarAutomationStatus: base.automation_status,
       isActive: true,
       postId: null,
-      keywords: ["LINK"],
       destinationUrl: base.destination_url,
     }, intent)).toEqual({ isActive: false, lifecycle: "PLANNED", materialChanged: true });
 
@@ -84,7 +83,6 @@ describe("calendar intent contract", () => {
       calendarAutomationStatus: base.automation_status,
       isActive: true,
       postId: null,
-      keywords: ["LINK"],
       destinationUrl: "https://yoyaku.io/release/old/",
     }, intent)).toEqual({ isActive: false, lifecycle: "PLANNED", materialChanged: true });
 
@@ -100,7 +98,6 @@ describe("calendar intent contract", () => {
       calendarAutomationStatus: base.automation_status,
       isActive: true,
       postId: "media-123",
-      keywords: ["LINK"],
       destinationUrl: base.destination_url,
     }, published)).toEqual({ isActive: true, lifecycle: "ACTIVE", materialChanged: false });
     expect(calendarAutomationUpdateState({
@@ -110,9 +107,41 @@ describe("calendar intent contract", () => {
       calendarAutomationStatus: base.automation_status,
       isActive: true,
       postId: "media-old",
-      keywords: ["LINK"],
       destinationUrl: base.destination_url,
     }, published)).toEqual({ isActive: false, lifecycle: "READY", materialChanged: true });
+  });
+
+  it("never compares the CTA keyword, so a keyword rename keeps an active campaign live", () => {
+    const published = normalizeCalendarIntent({
+      ...base,
+      external_id: "media-123",
+      published_url: "https://www.instagram.com/p/example/",
+    })!;
+    const renamed = normalizeCalendarIntent({
+      ...base,
+      cta_keyword: "BACK",
+      external_id: "media-123",
+      published_url: "https://www.instagram.com/p/example/",
+    })!;
+    // Nothing but the CTA keyword differs between the two intents.
+    expect(calendarAutomationUpdateState({
+      sourceRevision: base.source_revision,
+      calendarScheduledAt: new Date(base.scheduled_at),
+      calendarStatus: base.status,
+      calendarAutomationStatus: base.automation_status,
+      isActive: true,
+      postId: "media-123",
+      destinationUrl: base.destination_url,
+    }, renamed)).toEqual({ isActive: true, lifecycle: "ACTIVE", materialChanged: false });
+    expect(calendarAutomationUpdateState({
+      sourceRevision: base.source_revision,
+      calendarScheduledAt: new Date(base.scheduled_at),
+      calendarStatus: base.status,
+      calendarAutomationStatus: base.automation_status,
+      isActive: true,
+      postId: "media-123",
+      destinationUrl: base.destination_url,
+    }, published)).toEqual({ isActive: true, lifecycle: "ACTIVE", materialChanged: false });
   });
 });
 
@@ -121,7 +150,7 @@ it("suspends an unchanged media binding when the source cancels delivery", () =>
   const intent = normalizeCalendarIntent({ ...base, external_id: "media-123",
     status: "cancelled", delivery_allowed: false, blocking_reasons: ["cancelled"] })!;
   expect(calendarAutomationUpdateState({ isActive: true, postId: "media-123",
-    keywords: ["LINK"], destinationUrl: base.destination_url }, intent).isActive).toBe(false);
+    destinationUrl: base.destination_url }, intent).isActive).toBe(false);
 });
 
 it.each([
@@ -131,7 +160,7 @@ it.each([
   { automation_status: "blocked" },
 ])("requires human review after material source changes %j", (change) => {
   const intent = normalizeCalendarIntent({ ...base, external_id: "media-123", ...change })!;
-  const existing = { isActive: true, postId: "media-123", keywords: ["LINK"],
+  const existing = { isActive: true, postId: "media-123",
     destinationUrl: base.destination_url, sourceRevision: base.source_revision,
     calendarScheduledAt: new Date(base.scheduled_at), calendarStatus: base.status,
     calendarAutomationStatus: base.automation_status };
@@ -146,7 +175,7 @@ it("carries the label_platform origin marker", () => {
 
 it("auto-activates a bound campaign ONLY on an explicit opt-in", () => {
   const intent = normalizeCalendarIntent({ ...base, external_id: "media-123", source: "label_platform" })!;
-  const existing = { isActive: false, postId: "media-123", keywords: ["LINK"], destinationUrl: base.destination_url };
+  const existing = { isActive: false, postId: "media-123", destinationUrl: base.destination_url };
   // Human path (no opt-in): a bound, deliverable campaign still stays off.
   expect(calendarAutomationUpdateState(existing, intent).isActive).toBe(false);
   // Label.yoyaku.fr scheduling path (opt-in): activates without a human gesture.
@@ -158,6 +187,6 @@ it("auto-activation still respects delivery_allowed + blocking reasons", () => {
     ...base, external_id: "media-123", source: "label_platform",
     delivery_allowed: false, blocking_reasons: ["cancelled"],
   })!;
-  const existing = { isActive: false, postId: "media-123", keywords: ["LINK"], destinationUrl: base.destination_url };
+  const existing = { isActive: false, postId: "media-123", destinationUrl: base.destination_url };
   expect(calendarAutomationUpdateState(existing, intent, { autoActivate: true }).isActive).toBe(false);
 });

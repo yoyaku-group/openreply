@@ -310,8 +310,9 @@ action only I can do:
    account ID trap (store user_id, not id) and that the app must be published
    for real webhooks to arrive.
 
-6. Test. Have me create a campaign and comment a keyword from a second account,
-   then confirm the DM sent by checking the DmLog table and the DM Logs page.
+6. Test. Have me create a campaign and comment on the post from a second
+   account, then confirm the DM sent by checking the DmLog table and the DM
+   Logs page.
 
 Rules for you:
 - Never invent Meta dashboard steps. If a screen does not match the guide, ask
@@ -324,7 +325,7 @@ Rules for you:
 Start by reading the docs, then ask me question 1.
 ```
 
-By the end, `/api/health` returns `status: ok` with `worker.healthy: true`, and a comment with your keyword from a second account produces a `SENT` row in the DM logs. If you get there, you are done.
+By the end, `/api/health` returns `status: ok` with `worker.healthy: true`, and a comment from a second account on the campaign post produces a `SENT` row in the DM logs. If you get there, you are done.
 
 ## Letting other people use your instance
 

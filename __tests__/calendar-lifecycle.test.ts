@@ -22,7 +22,7 @@ function automation(overrides: Record<string, unknown> = {}) {
   return { id: "auto-1", source: "CALENDAR", sourceRevision: "revision-1",
     publicationKey: intent.publication_key, workspaceId: "ws_yoyaku_123", instagramAccountId: "ig-yoyaku",
     sourceWorkspaceKey: "yoyaku", sourceDeliveryAllowed: true, sourceBlockingReasons: [],
-    isActive: true, lifecycle: "ACTIVE", postId: "media-1", keywords: ["TICKETS"],
+    isActive: true, lifecycle: "ACTIVE", postId: "media-1", keywords: [], matchAnyWord: true,
     calendarScheduledAt: new Date(intent.scheduled_at), calendarStatus: "published", calendarAutomationStatus: "ready",
     trackedLinks: [{ id: "link-1", destinationUrl: intent.destination_url }], ...overrides };
 }
@@ -91,9 +91,22 @@ describe("explicit Calendar lifecycle sync", () => {
     feed([intent]); await sync(); expect(current?.isActive).toBe(true);
     expect(db.$queryRaw).toHaveBeenCalled();
   });
+  it("never deactivates an active campaign over a Calendar keyword change", async () => {
+    feed([{ ...intent, cta_keyword: "BACK" }]); await sync();
+    expect(current?.isActive).toBe(true);
+    expect(current?.lifecycle).toBe("ACTIVE");
+    expect(current?.keywords).toEqual([]);
+  });
   it("creates blocked source intentions only as inactive paused drafts", async () => {
     current = null; feed([{ ...intent, delivery_allowed: false, blocking_reasons: ["tbc"] }]); await sync();
     expect(current).toMatchObject({ isActive: false, lifecycle: "PAUSED" });
+  });
+  it("creates a Calendar campaign that matches any comment", async () => {
+    current = null; feed([intent]); await sync();
+    expect(current).toMatchObject({ keywords: [], matchAnyWord: true });
+    expect(db.automation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ keywords: [], matchAnyWord: true }),
+    });
   });
   it("never crosses workspaces for an intent or tombstone", async () => {
     feed([{ ...intent, workspace_key: "objects", account_owner: "objects.press", cta_keyword: "PRESSING", destination_url: "https://objects.press" }],

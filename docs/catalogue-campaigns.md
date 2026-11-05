@@ -1,5 +1,9 @@
 # Future publication campaigns (catalogue hashtags)
 
+Anyone who comments receives the private message. YOYAKU never asks for a
+specific word, so a comment campaign matches every comment unless someone
+deliberately narrows it to a word.
+
 OpenReply can hold a comment-to-DM campaign for a release that is not published
 yet. The campaign waits for the first feed post or reel published after it was
 created whose caption carries the release catalogue hashtag. Metricool (or
@@ -12,9 +16,8 @@ owner. OpenReply only attaches and sends the DM.
    `A future publication with a catalogue hashtag`.
 2. **Enter the catalogue hashtag** printed on the release, for example
    `#ABC001`. The leading `#` is optional and the stored form is upper-case.
-   This hashtag identifies the future post. It is **not** the keyword
-   commenters type: set that keyword separately (the builder pre-fills `LINK`
-   for a new catalogue campaign only).
+   This hashtag identifies the future post. It says nothing about the comment
+   matcher, which stays on `any word`.
 3. **Add a destination link.** It is required for this scope, even when saving
    a draft.
 4. **Save draft** keeps the campaign out of the queue. **Validate for
@@ -22,7 +25,7 @@ owner. OpenReply only attaches and sends the DM.
    the button labels are approved for the week.
 5. After validation, no second activation step is needed. When a matching
    publication appears, OpenReply attaches the campaign and starts sending on
-   matching comments.
+   every comment.
 
 Rules:
 
@@ -43,7 +46,7 @@ Rules:
   links the active campaign. Each comment would otherwise receive two private
   messages, because the duplicate-send guard is per campaign.
 - A caption must carry one reference. Two references on one post attach two
-  campaigns to that post, and every matching comment then receives two private
+  campaigns to that post, and every comment then receives two private
   messages.
 
 Status vocabulary:
@@ -52,7 +55,7 @@ Status vocabulary:
 |---|---|
 | **Draft** | Saved, not approved. It cannot send. |
 | **Waiting for #ABC001** | Approved and looking for its publication. |
-| **Active** | Attached and sending on matching comments. |
+| **Active** | Attached and sending on every comment. |
 | **Paused** | Stopped, including after a manual pause. |
 | **Needs attention** | A conflict or readiness problem requires a human decision. |
 
@@ -76,10 +79,8 @@ Readiness errors:
    puis `a future publication with a catalogue hashtag` (publication à venir par référence).
 2. **Saisissez le hashtag catalogue** imprimé sur la sortie, par exemple
    `#ABC001`. Le `#` initial est facultatif et la forme stockée est en
-   majuscules. Ce hashtag identifie la future publication. Ce n'est **pas** le
-   mot-clé que les internautes commentent : renseignez ce mot-clé séparément
-   (le formulaire pré-remplit `LINK` uniquement pour une nouvelle campagne
-   catalogue).
+   majuscules. Ce hashtag identifie la future publication. Il ne change rien au
+   filtre de commentaire, qui reste sur `any word`.
 3. **Ajoutez un lien de destination.** Il est obligatoire pour ce mode, même
    pour un brouillon.
 4. **Save draft** enregistre le brouillon sans autoriser l'envoi. **Validate
@@ -87,7 +88,7 @@ Readiness errors:
    libellés de boutons approuvés pour la semaine.
 5. Après validation, aucune seconde activation n'est nécessaire. Dès qu'une
    publication correspondante apparaît, OpenReply attache la campagne et envoie
-   le DM sur les commentaires correspondants.
+   le DM sur chaque commentaire.
 
 Règles :
 
@@ -110,7 +111,7 @@ Règles :
   s'applique par campagne.
 - Une légende doit porter une seule référence. Deux références sur une même
   publication rattachent deux campagnes à cette publication, et chaque
-  commentaire correspondant reçoit alors deux messages privés.
+  commentaire reçoit alors deux messages privés.
 
 Statuts :
 
@@ -118,7 +119,7 @@ Statuts :
 |---|---|
 | **Draft** | Enregistrée, non approuvée. Elle ne peut pas envoyer. |
 | **Waiting for #ABC001** | Approuvée, en attente de sa publication. |
-| **Active** | Attachée et envoi sur les commentaires correspondants. |
+| **Active** | Attachée et envoi sur chaque commentaire. |
 | **Paused** | Arrêtée, y compris après une pause manuelle. |
 | **Needs attention** | Un conflit ou un problème de disponibilité demande une décision humaine. |
 

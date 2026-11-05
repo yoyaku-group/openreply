@@ -15,8 +15,8 @@ import { parseCsv } from "@/lib/utils/csv";
 import { IMPORT_QUEUE_KEY, IMPORT_ACCOUNT_KEY } from "@/lib/import-queue";
 
 const SAMPLE = `keywords,dm_message,public_reply,tracked_url,opening_dm,opening_dm_button
-"yc","here it is: {link}","sent. check dms","https://events.ycombinator.com/startup-school-2026","hey! click below for the referral","send link"
-"LINK,SHOP","grab it here: {link}","dmed u",,,`;
+"","here it is: {link}","sent. check dms","https://events.ycombinator.com/startup-school-2026","hey! click below for the referral","send link"
+"","grab it here: {link}","dmed u",,,`;
 
 export default function ImportCampaignsPage() {
   const router = useRouter();
@@ -55,8 +55,8 @@ export default function ImportCampaignsPage() {
         .filter(Boolean)
         .slice(0, 10);
       const dmMessage = (r.dm_message ?? r.message ?? "").trim();
-      if (keywords.length === 0 || !dmMessage) {
-        setError(`Row ${i + 1} is missing keywords or a message.`);
+      if (!dmMessage) {
+        setError(`Row ${i + 1} is missing a message.`);
         return;
       }
       rows.push({
@@ -89,15 +89,17 @@ export default function ImportCampaignsPage() {
         <p className="text-sm text-muted mt-1">
           Paste a CSV with one row per campaign. Each row opens in the builder
           prefilled and editable, so you can review it and pick the reel before
-          saving. Required columns are{" "}
-          <code className="text-accent">keywords</code> and{" "}
+          saving. The only required column is{" "}
           <code className="text-accent">dm_message</code>. Optional:{" "}
           <code className="text-accent">name</code>,{" "}
+          <code className="text-accent">keywords</code>,{" "}
           <code className="text-accent">public_reply</code>,{" "}
           <code className="text-accent">tracked_url</code>,{" "}
           <code className="text-accent">opening_dm</code>,{" "}
-          <code className="text-accent">opening_dm_button</code>. Keywords go in
-          one cell, separated by commas. Use{" "}
+          <code className="text-accent">opening_dm_button</code>. Leave{" "}
+          <code className="text-accent">keywords</code> empty and every comment
+          gets the DM; fill it, separated by commas in one cell, and only those
+          words count. Use{" "}
           <code className="text-accent">{"{link}"}</code> in the message to
           insert the tracked link.
         </p>

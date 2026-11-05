@@ -521,14 +521,20 @@ export default function CampaignsPage() {
 
                 {/* Keywords */}
                 <div className="flex flex-wrap gap-1.5 mb-2">
-                  {auto.keywords.map((kw) => (
-                    <span
-                      key={kw}
-                      className="px-2 py-0.5 rounded-md bg-accent/10 text-accent text-xs font-medium border border-accent/10"
-                    >
-                      {kw}
+                  {auto.matchAnyWord ? (
+                    <span className="px-2 py-0.5 rounded-md bg-accent/10 text-accent text-xs font-medium border border-accent/10">
+                      Any comment
                     </span>
-                  ))}
+                  ) : (
+                    auto.keywords.map((kw) => (
+                      <span
+                        key={kw}
+                        className="px-2 py-0.5 rounded-md bg-accent/10 text-accent text-xs font-medium border border-accent/10"
+                      >
+                        {kw}
+                      </span>
+                    ))
+                  )}
                 </div>
 
                 {/* DM preview */}
