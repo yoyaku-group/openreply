@@ -804,7 +804,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               setTriggerType("COMMENT");
               const matcher = nextMatcher(
                 { matchMode, keywordText },
-                { kind: "triggerType", triggerType: "COMMENT" },
+                { kind: "triggerType", triggerType: "COMMENT", from: triggerType },
                 mode
               );
               setMatchMode(matcher.matchMode);
@@ -819,7 +819,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               setTriggerType("INBOUND_DM");
               const matcher = nextMatcher(
                 { matchMode, keywordText },
-                { kind: "triggerType", triggerType: "INBOUND_DM" },
+                { kind: "triggerType", triggerType: "INBOUND_DM", from: triggerType },
                 mode
               );
               setMatchMode(matcher.matchMode);

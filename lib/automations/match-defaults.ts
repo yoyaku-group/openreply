@@ -45,16 +45,19 @@ export function matcherFromKeywords(keywords: string[]): MatcherState {
 }
 
 export type MatcherEvent =
-  | { kind: "triggerType"; triggerType: TriggerType }
+  | { kind: "triggerType"; triggerType: TriggerType; from: TriggerType }
   | { kind: "triggerScope"; scope: TriggerScope };
 
 /**
  * Next matcher state for a builder interaction.
  *
  * Selecting a trigger scope (including the catalogue one) leaves the matcher
- * alone. Switching the trigger type applies the create defaults on a new
- * campaign and keeps the stored values on an existing one, so a campaign saved
- * with a specific word still opens and saves with that word.
+ * alone. Re-selecting the trigger type a campaign is already on leaves it alone
+ * too: the radios fire their click handler even when already checked, and a
+ * second click must not discard a word the operator just typed. Switching the
+ * trigger type applies the create defaults on a new campaign and keeps the
+ * stored values on an existing one, so a campaign saved with a specific word
+ * still opens and saves with that word.
  */
 export function nextMatcher(
   current: MatcherState,
@@ -62,6 +65,7 @@ export function nextMatcher(
   mode: BuilderMode
 ): MatcherState {
   if (event.kind === "triggerScope") return current;
+  if (event.triggerType === event.from) return current;
   if (mode === "edit") return current;
   return defaultMatcher(event.triggerType);
 }

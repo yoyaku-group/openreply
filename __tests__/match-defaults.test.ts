@@ -36,17 +36,46 @@ describe("comment matcher defaults", () => {
     expect(
       nextMatcher(
         started,
-        { kind: "triggerType", triggerType: "INBOUND_DM" },
+        { kind: "triggerType", triggerType: "INBOUND_DM", from: "COMMENT" },
         "new"
       )
     ).toEqual({ matchMode: "specific", keywordText: "" });
     expect(
       nextMatcher(
         { matchMode: "specific", keywordText: "MB059" },
-        { kind: "triggerType", triggerType: "COMMENT" },
+        { kind: "triggerType", triggerType: "COMMENT", from: "INBOUND_DM" },
         "new"
       )
     ).toEqual({ matchMode: "any", keywordText: "" });
+  });
+
+  it("keeps a typed word when the already selected trigger type is clicked again", () => {
+    // The radios run their click handler even when already checked, so a
+    // second click on the current trigger type must not reset the matcher.
+    const typed = { matchMode: "specific" as const, keywordText: "MB059" };
+    expect(
+      nextMatcher(
+        typed,
+        { kind: "triggerType", triggerType: "COMMENT", from: "COMMENT" },
+        "new"
+      )
+    ).toBe(typed);
+    expect(
+      nextMatcher(
+        typed,
+        { kind: "triggerType", triggerType: "INBOUND_DM", from: "INBOUND_DM" },
+        "new"
+      )
+    ).toBe(typed);
+    // And the untouched defaults are returned unchanged too.
+    const started = defaultMatcher("COMMENT");
+    expect(
+      nextMatcher(
+        started,
+        { kind: "triggerType", triggerType: "COMMENT", from: "COMMENT" },
+        "new"
+      )
+    ).toBe(started);
   });
 
   it("keeps the stored values when an existing campaign switches trigger type", () => {
@@ -54,7 +83,7 @@ describe("comment matcher defaults", () => {
     expect(
       nextMatcher(
         stored,
-        { kind: "triggerType", triggerType: "COMMENT" },
+        { kind: "triggerType", triggerType: "COMMENT", from: "INBOUND_DM" },
         "edit"
       )
     ).toBe(stored);
