@@ -25,6 +25,7 @@ import {
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import { selectMediaForPendingAutomation } from "@/lib/release-sync/media-binding";
+import { findUnboundCalendarConflict } from "@/lib/automations/catalogue";
 
 export interface AttachSummary {
   enabled: boolean;
@@ -32,6 +33,7 @@ export interface AttachSummary {
   accounts: number;
   checked: number;
   bound: number;
+  conflicts: number;
   failedAccounts: number;
 }
 
@@ -51,6 +53,53 @@ export interface MediaBinding {
 /** The self-hosted binder runs only when explicitly enabled. */
 export function isAttachBinderEnabled(): boolean {
   return process.env.ATTACH_NEXT_REEL_ENABLED === "true";
+}
+
+const MEDIA_MEMO_TTL_MS = 5 * 60 * 1000;
+const MEDIA_MEMO_MAX_ENTRIES = 1000;
+
+/**
+ * Every comment on a post runs the JIT bind, and the Meta Graph call budget is
+ * shared with DM sends. The team keeps a campaign waiting most weeks, so the
+ * fetch would cost one call per comment on every post. Remember a successful
+ * lookup per account, media and exact pending set for a few minutes: arming a
+ * new campaign changes the set and therefore takes effect at once. Failures are
+ * never remembered, so a transient error is retried on the next comment.
+ */
+const mediaMemo = new Map<string, { media: InstagramMedia; expiresAt: number }>();
+
+function mediaMemoKey(
+  instagramAccountId: string,
+  mediaId: string,
+  pendingIds: string[],
+): string {
+  return [instagramAccountId, mediaId, ...pendingIds].join("\u0000");
+}
+
+function readMediaMemo(key: string): InstagramMedia | null {
+  const entry = mediaMemo.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    mediaMemo.delete(key);
+    return null;
+  }
+  return entry.media;
+}
+
+function writeMediaMemo(key: string, media: InstagramMedia) {
+  mediaMemo.delete(key);
+  mediaMemo.set(key, { media, expiresAt: Date.now() + MEDIA_MEMO_TTL_MS });
+  // Map iteration is insertion order, so the first key is the oldest entry.
+  while (mediaMemo.size > MEDIA_MEMO_MAX_ENTRIES) {
+    const oldest = mediaMemo.keys().next();
+    if (oldest.done) break;
+    mediaMemo.delete(oldest.value);
+  }
+}
+
+/** Test-only: drop every memoized media lookup. */
+export function resetMediaMemo() {
+  mediaMemo.clear();
 }
 
 /**
@@ -97,6 +146,47 @@ async function bindPendingAutomation(binding: MediaBinding): Promise<boolean> {
 }
 
 /**
+ * A Calendar campaign for the same reference may appear after the manual
+ * campaign was armed. Never bind the manual one in that case: doing so would
+ * create two DM CTAs for the same publication. Park it visibly instead of
+ * silently dropping it.
+ */
+async function hasCalendarConflict(automation: {
+  id: string;
+  instagramAccountId: string;
+  catnoTag: string | null;
+}, mediaId: string): Promise<boolean> {
+  if (!automation.catnoTag) return false;
+  const conflict = await findUnboundCalendarConflict(
+    {
+      instagramAccountId: automation.instagramAccountId,
+      catnoTag: automation.catnoTag,
+      mediaId,
+      excludeAutomationId: automation.id,
+    },
+    prisma,
+  );
+  if (!conflict) return false;
+  await prisma.automation.updateMany({
+    where: {
+      id: automation.id,
+      pendingNextReel: true,
+      lifecycle: { not: "NEEDS_ATTENTION" },
+    },
+    data: { isActive: false, lifecycle: "NEEDS_ATTENTION" },
+  });
+  console.warn(
+    "[attach-next-reel] calendar_conflict",
+    JSON.stringify({
+      automationId: automation.id,
+      catnoTag: automation.catnoTag,
+      calendarAutomationId: conflict.id,
+    }),
+  );
+  return true;
+}
+
+/**
  * JIT bind: attach the account's pending campaigns to the media a comment just
  * arrived on. Returns how many campaigns were bound. Never throws — a failed
  * lookup must not block processing of the comment itself.
@@ -139,23 +229,35 @@ export async function bindPendingAutomationsForMedia(input: {
   const accessToken = pending[0].instagramAccount?.accessToken;
   if (!accessToken) return 0;
 
-  let media: InstagramMedia;
-  try {
-    media = await getMediaById(decryptToken(accessToken), input.mediaId);
-  } catch (error) {
-    console.error(
-      "[attach-next-reel] jit_media_fetch_failed",
-      JSON.stringify({
-        accountId: input.instagramAccountId,
-        mediaId: input.mediaId,
-        error: error instanceof Error ? error.name : "unknown",
-      }),
-    );
-    return 0;
+  const pendingIds = pending.map((item) => item.id).sort();
+  const memoKey = mediaMemoKey(
+    input.instagramAccountId,
+    input.mediaId,
+    pendingIds,
+  );
+
+  let media = readMediaMemo(memoKey);
+  if (!media) {
+    try {
+      media = await getMediaById(decryptToken(accessToken), input.mediaId);
+    } catch (error) {
+      console.error(
+        "[attach-next-reel] jit_media_fetch_failed",
+        JSON.stringify({
+          accountId: input.instagramAccountId,
+          mediaId: input.mediaId,
+          error: error instanceof Error ? error.name : "unknown",
+        }),
+      );
+      return 0;
+    }
+    writeMediaMemo(memoKey, media);
   }
 
   let bound = 0;
   for (const binding of selectBindingsForMedia(pending, media)) {
+    const automation = pending.find((item) => item.id === binding.automationId);
+    if (automation && (await hasCalendarConflict(automation, binding.mediaId))) continue;
     if (!(await bindPendingAutomation(binding))) continue;
     bound += 1;
     console.info(
@@ -187,6 +289,7 @@ export async function attachPendingNextReels(): Promise<AttachSummary> {
       accounts: 0,
       checked: 0,
       bound: 0,
+      conflicts: 0,
       failedAccounts: 0,
     };
   }
@@ -220,6 +323,7 @@ export async function attachPendingNextReels(): Promise<AttachSummary> {
   }
 
   let bound = 0;
+  let conflicts = 0;
   let checked = 0;
   const failures: string[] = [];
 
@@ -260,6 +364,10 @@ export async function attachPendingNextReels(): Promise<AttachSummary> {
         automation.catnoTag,
       );
       if (!target) continue;
+      if (await hasCalendarConflict(automation, target.id)) {
+        conflicts += 1;
+        continue;
+      }
       const didBind = await bindPendingAutomation({
         automationId: automation.id,
         mediaId: target.id,
@@ -287,6 +395,7 @@ export async function attachPendingNextReels(): Promise<AttachSummary> {
       accounts: byAccount.size,
       checked,
       bound,
+      conflicts,
       failedAccounts: failures.length,
     }),
   );
@@ -297,6 +406,7 @@ export async function attachPendingNextReels(): Promise<AttachSummary> {
     accounts: byAccount.size,
     checked,
     bound,
+    conflicts,
     failedAccounts: failures.length,
   };
 }

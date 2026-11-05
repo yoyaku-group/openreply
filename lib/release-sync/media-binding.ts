@@ -15,7 +15,15 @@ export function selectMediaForPendingAutomation(
   catnoTag: string | null
 ): InstagramMedia | undefined {
   const eligible = media
-    .filter((item) => new Date(item.timestamp) > createdAt)
+    .filter(
+      (item) =>
+        new Date(item.timestamp) > createdAt &&
+        // Meta labels feed posts as FEED and reels as REELS; ignore other
+        // surfaces (for example stories) for both catalogue and generic
+        // campaigns. A story can never satisfy a feed/reel comment campaign.
+        (item.media_product_type === "FEED" ||
+          item.media_product_type === "REELS")
+    )
     .sort(
       (a, b) =>
         new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
@@ -27,12 +35,6 @@ export function selectMediaForPendingAutomation(
     );
   }
 
-  // The campaign builder promises the next post or reel. Meta labels feed
-  // posts as FEED and reels as REELS; ignore other media products (for example
-  // stories) so a pending campaign cannot bind to the wrong surface.
-  return eligible.find(
-    (item) =>
-      item.media_product_type === "FEED" ||
-      item.media_product_type === "REELS"
-  );
+  // The campaign builder promises the next post or reel.
+  return eligible[0];
 }

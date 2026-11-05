@@ -14,17 +14,23 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import PostPicker from "@/components/post-picker";
 import CampaignPreview, { type PreviewTab } from "@/components/campaign-preview";
 import { readCache, writeCache } from "@/lib/client-cache";
+import { displayCatnoTag, parseCatnoTag } from "@/lib/automations/catalogue";
+import {
+  campaignStatus,
+  campaignStatusClass,
+} from "@/lib/automations/status";
 import {
   IMPORT_QUEUE_KEY,
   IMPORT_ACCOUNT_KEY,
   type ImportRow,
 } from "@/lib/import-queue";
 
-type TriggerScope = "specific" | "any" | "next";
+type TriggerScope = "specific" | "any" | "next" | "catalogue";
 type MatchMode = "specific" | "any";
 type TriggerType = "COMMENT" | "INBOUND_DM";
 
@@ -36,6 +42,7 @@ interface LoadedCampaign {
   postUrl: string | null;
   pendingNextReel: boolean;
   matchAnyPost: boolean;
+  catnoTag: string | null;
   keywords: string[];
   matchAnyWord: boolean;
   dmMessage: string;
@@ -53,6 +60,8 @@ interface LoadedCampaign {
   publicReplyMessages: string[];
   isActive: boolean;
   instagramAccountId: string;
+  source?: string | null;
+  lifecycle?: string | null;
   trackedLinks?: { destinationUrl: string; label?: string | null }[];
 }
 
@@ -137,6 +146,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   const [notFound, setNotFound] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [conflictUrl, setConflictUrl] = useState<string | null>(null);
 
   const [name, setName] = useState("");
   const [accounts, setAccounts] = useState<AccountOption[]>([]);
@@ -151,6 +161,11 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   const [postUrl, setPostUrl] = useState<string | null>(null);
   const [postThumb, setPostThumb] = useState<string | null>(null);
   const [postCaption, setPostCaption] = useState("");
+  const [catnoTagInput, setCatnoTagInput] = useState("");
+  const [loadedCatnoTag, setLoadedCatnoTag] = useState<string | null>(null);
+  const [catnoCopied, setCatnoCopied] = useState(false);
+  const [loadedSource, setLoadedSource] = useState<string | null>(null);
+  const [loadedLifecycle, setLoadedLifecycle] = useState<string | null>(null);
 
   // Post IDs already tied to another automation on this account, so the picker
   // can flag them and the user knows not to double-assign. Maps postId ->
@@ -196,6 +211,32 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         .filter(Boolean),
     [keywordText]
   );
+
+  const parsedCatalogueTag = useMemo(
+    () => (catnoTagInput.trim() ? parseCatnoTag(catnoTagInput) : null),
+    [catnoTagInput]
+  );
+  const catalogueTag = parsedCatalogueTag?.ok
+    ? parsedCatalogueTag.value
+    : null;
+  const catalogueDisplay = catalogueTag ? `#${catalogueTag}` : null;
+  const isCatalogueScope =
+    triggerType === "COMMENT" && triggerScope === "catalogue";
+  const status = campaignStatus({
+    isActive,
+    pendingNextReel:
+      triggerType === "COMMENT" &&
+      (triggerScope === "next" || triggerScope === "catalogue"),
+    postId,
+    catnoTag:
+      triggerScope === "catalogue"
+        ? catalogueTag
+        : triggerScope === "specific"
+          ? loadedCatnoTag
+          : null,
+    source: loadedSource,
+    lifecycle: loadedLifecycle,
+  });
 
   // Fetch the connected account's real avatar for the preview (cache-first so
   // it shows instantly on a return visit instead of a blank circle).
@@ -253,8 +294,20 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         setSelectedAccountId(c.instagramAccountId);
         setTriggerType(c.triggerType ?? "COMMENT");
         setTriggerScope(
-          c.matchAnyPost ? "any" : c.pendingNextReel ? "next" : "specific"
+          c.catnoTag && c.pendingNextReel
+            ? "catalogue"
+            : c.matchAnyPost
+              ? "any"
+              : c.pendingNextReel
+                ? "next"
+                : "specific"
         );
+        setCatnoTagInput(
+          c.catnoTag ? (displayCatnoTag(c.catnoTag) ?? "") : ""
+        );
+        setLoadedCatnoTag(c.catnoTag ?? null);
+        setLoadedSource(c.source ?? null);
+        setLoadedLifecycle(c.lifecycle ?? null);
         setPostId(c.postId);
         setPostUrl(c.postUrl);
         setMatchMode(c.matchAnyWord ? "any" : "specific");
@@ -327,6 +380,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
     setPostUrl(null);
     setPostThumb(null);
     setPostCaption("");
+    setCatnoTagInput("");
     setMatchMode("specific");
     setKeywordText((row.keywords ?? []).join(", "));
     setDmMessage(row.dmMessage ?? "");
@@ -385,10 +439,22 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
 
   async function handleSubmit(activeValue: boolean) {
     setError(null);
+    setConflictUrl(null);
 
     if (!selectedAccountId) return setError("Connect an Instagram account first.");
     if (triggerType === "COMMENT" && triggerScope === "specific" && !postId)
       return setError("Pick a post or reel to trigger the campaign.");
+    if (isCatalogueScope) {
+      if (!parsedCatalogueTag) {
+        return setError("Enter the catalogue hashtag printed on the publication.");
+      }
+      if (!parsedCatalogueTag.ok) return setError(parsedCatalogueTag.message);
+      if (!trackedDestinationUrl.trim()) {
+        return setError(
+          "Add the destination link for a future-publication campaign (required even for a draft)."
+        );
+      }
+    }
     if (triggerType === "COMMENT" && matchMode === "specific" && keywords.length === 0)
       return setError("Add at least one keyword, or switch to any word.");
     if (triggerType === "INBOUND_DM" && keywords.length === 0)
@@ -412,7 +478,15 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
       postUrl:
         triggerType === "COMMENT" && triggerScope === "specific" ? postUrl : null,
       matchAnyPost: triggerType === "COMMENT" && triggerScope === "any",
-      pendingNextReel: triggerType === "COMMENT" && triggerScope === "next",
+      pendingNextReel:
+        triggerType === "COMMENT" &&
+        (triggerScope === "next" || triggerScope === "catalogue"),
+      catnoTag:
+        triggerScope === "catalogue"
+          ? catalogueTag
+          : mode === "edit" && loadedCatnoTag && triggerScope === "specific"
+            ? undefined
+            : null,
       matchAnyWord: triggerType === "COMMENT" && matchMode === "any",
       keywords:
         triggerType === "COMMENT" && matchMode === "any" ? [] : keywords,
@@ -501,6 +575,9 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         router.push("/campaigns");
         router.refresh();
       } else {
+        if (typeof data.conflictUrl === "string") {
+          setConflictUrl(data.conflictUrl);
+        }
         // Surface the specific field that failed validation instead of a
         // generic "Invalid input".
         const fieldErrors = data.details?.fieldErrors as
@@ -591,11 +668,11 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 {name || "Untitled campaign"}
               </span>
               <span
-                className={`rounded px-2 py-0.5 text-xs font-semibold ${
-                  isActive ? "bg-success/15 text-success" : "bg-zinc-500/15 text-zinc-400"
-                }`}
+                className={`rounded px-2 py-0.5 text-xs font-semibold ${campaignStatusClass(
+                  status.key
+                )}`}
               >
-                {isActive ? "LIVE" : "PAUSED"}
+                {status.label}
               </span>
             </>
           ) : (
@@ -621,7 +698,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 disabled={saving}
                 className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted hover:text-foreground disabled:opacity-50"
               >
-                Stop
+                Pause
               </button>
             ) : (
               <button
@@ -630,8 +707,8 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 disabled={saving}
                 className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted hover:text-foreground disabled:opacity-50"
               >
-                Go Live
-                </button>
+                {isCatalogueScope ? "Validate for publication" : "Go Live"}
+              </button>
               ))}
           {mode === "new" && (
             <button
@@ -649,7 +726,13 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             disabled={saving}
             className="rounded-lg bg-accent px-5 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
           >
-            {saving ? "Saving…" : mode === "new" ? "Go Live" : "Save changes"}
+            {saving
+              ? "Saving…"
+              : mode === "new"
+                ? isCatalogueScope ? "Validate for publication" : "Go Live"
+                : isActive
+                  ? "Save changes"
+                  : "Save draft"}
           </button>
         </div>
       </div>
@@ -663,6 +746,16 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             className="rounded border border-error/20 bg-error/10 p-3 text-sm text-error"
           >
             {error}
+            {conflictUrl && (
+              <div className="mt-2">
+                <Link
+                  href={conflictUrl}
+                  className="font-medium underline underline-offset-2"
+                >
+                  Open the conflicting campaign
+                </Link>
+              </div>
+            )}
           </div>
         )}
 
@@ -745,6 +838,73 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
           >
             next post or reel
           </Radio>
+          <Radio
+            checked={triggerScope === "catalogue"}
+            onSelect={() => {
+              setTriggerScope("catalogue");
+              // The catalogue hashtag identifies the post. It is never the
+              // comment keyword, but LINK is the house default for releases.
+              if (mode === "new" && !keywordText.trim()) {
+                setMatchMode("specific");
+                setKeywordText("LINK");
+              }
+            }}
+          >
+            a future publication with a catalogue hashtag
+          </Radio>
+          {triggerScope === "catalogue" && (
+            <div className="space-y-2 rounded-lg border border-border p-3">
+              <label htmlFor="catalogue-tag" className="text-sm font-medium text-foreground">
+                Catalogue hashtag
+              </label>
+              <input
+                id="catalogue-tag"
+                value={catnoTagInput}
+                onChange={(e) => setCatnoTagInput(e.target.value)}
+                placeholder="#ABC001"
+                maxLength={51}
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
+              />
+              <p className="text-xs text-muted">
+                The hashtag printed on the release post (for example #ABC001).
+                It is not the keyword commenters type. A campaign waits for the
+                first feed post or reel published after you create this campaign whose
+                caption carries this exact hashtag.
+              </p>
+              {catalogueDisplay && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <code className="rounded bg-accent/10 px-2 py-1 text-sm font-semibold text-accent">
+                    {catalogueDisplay}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(catalogueDisplay);
+                        setCatnoCopied(true);
+                        window.setTimeout(() => setCatnoCopied(false), 1500);
+                      } catch {
+                        // Clipboard access can be denied; the value stays
+                        // visible and selectable.
+                      }
+                    }}
+                    className="rounded border border-border px-2 py-1 text-xs font-medium text-muted hover:text-foreground"
+                  >
+                    {catnoCopied ? "Copied" : "Copy hashtag"}
+                  </button>
+                </div>
+              )}
+              {parsedCatalogueTag && !parsedCatalogueTag.ok && (
+                <p className="text-xs text-error">{parsedCatalogueTag.message}</p>
+              )}
+              {!trackedDestinationUrl.trim() && (
+                <p className="text-xs text-amber-400">
+                  A destination link is required for this scope, even when you
+                  save it as a draft.
+                </p>
+              )}
+            </div>
+          )}
         </Section>
 
         <Section title="And this comment has">
@@ -762,7 +922,12 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 placeholder="Enter a word or multiple"
                 className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
               />
-              <p className="text-xs text-muted">Use commas to separate words</p>
+              <p className="text-xs text-muted">
+                Use commas to separate words.
+                {isCatalogueScope
+                  ? " This is the word commenters type, not the catalogue hashtag."
+                  : ""}
+              </p>
             </div>
           )}
           <Radio
@@ -930,9 +1095,11 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
               maxLength={1000}
             />
-            {linkOpen ? (
+            {linkOpen || isCatalogueScope ? (
               <div className="space-y-2">
+                {isCatalogueScope && <label htmlFor="catalogue-destination" className="text-sm text-foreground">Destination link</label>}
                 <input
+                  id="catalogue-destination"
                   value={trackedDestinationUrl}
                   onChange={(e) => setTrackedDestinationUrl(e.target.value)}
                   onBlur={ensureLinkToken}

@@ -105,12 +105,19 @@ export function deriveInstoreEvents(sessions: ShopInstoreSession[]): DerivedEven
   }));
 }
 
-/** #TO001 in a caption, case-insensitive, not followed by more catno chars. */
+/**
+ * #TO001 in a caption, case-insensitive, not followed by more catno chars.
+ * Underscores are catno characters too: #ABC001 must not match #ABC001_EXTRA.
+ */
 export function captionMatchesCatno(
   caption: string | undefined,
   catno: string
 ): boolean {
   if (!caption) return false;
-  const escaped = catno.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`#${escaped}(?![A-Za-z0-9])`, "i").test(caption);
+  // Callers normally pass the canonical bare token, but legacy Calendar rows
+  // have stored a leading `#`; accept either form.
+  const token = catno.trim().replace(/^#/, "");
+  if (!token) return false;
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`#${escaped}(?![A-Za-z0-9_])`, "i").test(caption);
 }

@@ -6,6 +6,7 @@ const { mockPrisma, mockGetMediaById, mockGetUserMedia, mockDecryptToken } =
     mockPrisma: {
       automation: {
         findMany: vi.fn(),
+        findFirst: vi.fn(),
         updateMany: vi.fn(),
       },
     },
@@ -24,6 +25,7 @@ vi.mock("@/lib/meta/oauth", () => ({ decryptToken: mockDecryptToken }));
 import {
   attachPendingNextReels,
   bindPendingAutomationsForMedia,
+  resetMediaMemo,
   selectBindingsForMedia,
 } from "@/lib/release-sync/attach-pending-automations";
 
@@ -52,10 +54,12 @@ function pendingAutomation(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetMediaMemo();
   process.env.ATTACH_NEXT_REEL_ENABLED = "true";
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   mockDecryptToken.mockReturnValue("decrypted_token");
+  mockPrisma.automation.findFirst.mockResolvedValue(null);
   mockPrisma.automation.updateMany.mockResolvedValue({ count: 1 });
 });
 
@@ -219,6 +223,108 @@ describe("bindPendingAutomationsForMedia (just-in-time)", () => {
     expect(mockPrisma.automation.updateMany).not.toHaveBeenCalled();
   });
 
+  it("binds a catalogue campaign to the matching media a comment arrived on", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      {
+        ...pendingAutomation({ catnoTag: "ABC001" }),
+        instagramAccountId: "account_1",
+        instagramAccount: { accessToken: "encrypted" },
+      },
+    ]);
+    mockGetMediaById.mockResolvedValue(
+      media({ caption: "Out now #abc001", media_product_type: "FEED" })
+    );
+
+    const bound = await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+
+    expect(bound).toBe(1);
+    expect(mockPrisma.automation.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "automation_1", pendingNextReel: true },
+        data: expect.objectContaining({ postId: "media_1" }),
+      })
+    );
+  });
+
+  it("parks a catalogue campaign when Calendar gained the same reference later", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      {
+        ...pendingAutomation({ catnoTag: "ABC001" }),
+        instagramAccountId: "account_1",
+        instagramAccount: { accessToken: "encrypted" },
+      },
+    ]);
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      id: "calendar_1",
+      name: "Calendar ABC001",
+      source: "CALENDAR",
+      lifecycle: "READY",
+      isActive: false,
+    });
+    mockGetMediaById.mockResolvedValue(media({ caption: "#ABC001 out now" }));
+
+    const bound = await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+
+    expect(bound).toBe(0);
+    expect(mockPrisma.automation.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          source: "CALENDAR",
+          pendingNextReel: false,
+          id: { not: "automation_1" },
+        }),
+      })
+    );
+    expect(mockPrisma.automation.updateMany).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.automation.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "automation_1",
+        pendingNextReel: true,
+        lifecycle: { not: "NEEDS_ATTENTION" },
+      },
+      data: { isActive: false, lifecycle: "NEEDS_ATTENTION" },
+    });
+  });
+
+  it("ignores a paused Calendar row when looking for a conflict", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      {
+        ...pendingAutomation({ catnoTag: "ABC001" }),
+        instagramAccountId: "account_1",
+        instagramAccount: { accessToken: "encrypted" },
+      },
+    ]);
+    mockGetMediaById.mockResolvedValue(media({ caption: "#ABC001 out now" }));
+
+    await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+
+    // A paused Calendar campaign cannot send, so it must not park a sendable
+    // manual campaign.
+    expect(mockPrisma.automation.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          source: "CALENDAR",
+          lifecycle: { notIn: ["ARCHIVED", "PAUSED"] },
+        }),
+      })
+    );
+    expect(mockPrisma.automation.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "automation_1", pendingNextReel: true },
+        data: expect.objectContaining({ postId: "media_1" }),
+      })
+    );
+  });
+
   it("does nothing when the binder is disabled", async () => {
     process.env.ATTACH_NEXT_REEL_ENABLED = "false";
 
@@ -229,6 +335,68 @@ describe("bindPendingAutomationsForMedia (just-in-time)", () => {
 
     expect(bound).toBe(0);
     expect(mockPrisma.automation.findMany).not.toHaveBeenCalled();
+  });
+
+  it("fetches the media once per pending set and again when the set changes", async () => {
+    const pendingRow = (id: string, catnoTag: string) => ({
+      ...pendingAutomation({ id, catnoTag }),
+      instagramAccountId: "account_1",
+      instagramAccount: { accessToken: "encrypted" },
+    });
+    mockGetMediaById.mockResolvedValue(
+      media({ caption: "#ABC001 out now #ABC002 too" })
+    );
+
+    mockPrisma.automation.findMany.mockResolvedValue([
+      pendingRow("automation_abc001", "ABC001"),
+    ]);
+    await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+    await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+
+    expect(mockGetMediaById).toHaveBeenCalledTimes(1);
+
+    // Arming a second campaign changes the pending set, so the fetch happens
+    // again at once rather than waiting for the memo to expire.
+    mockPrisma.automation.findMany.mockResolvedValue([
+      pendingRow("automation_abc001", "ABC001"),
+      pendingRow("automation_abc002", "ABC002"),
+    ]);
+    await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+
+    expect(mockGetMediaById).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a media fetch that failed", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      {
+        ...pendingAutomation(),
+        instagramAccountId: "account_1",
+        instagramAccount: { accessToken: "encrypted" },
+      },
+    ]);
+    mockGetMediaById.mockRejectedValueOnce(new Error("rate limited"));
+    mockGetMediaById.mockResolvedValue(media());
+
+    await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+    const bound = await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+
+    expect(mockGetMediaById).toHaveBeenCalledTimes(2);
+    expect(bound).toBe(1);
   });
 });
 
@@ -244,6 +412,7 @@ describe("attachPendingNextReels (sweep)", () => {
       accounts: 0,
       checked: 0,
       bound: 0,
+      conflicts: 0,
       failedAccounts: 0,
     });
     expect(mockPrisma.automation.findMany).not.toHaveBeenCalled();
@@ -296,6 +465,72 @@ describe("attachPendingNextReels (sweep)", () => {
 
     expect(summary.bound).toBe(0);
     expect(mockPrisma.automation.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("binds three catalogue references to their own earliest matching publication", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue(
+      ["TO001", "TO002", "TO003"].map((tag) => ({
+        ...pendingAutomation({ id: `automation_${tag}`, catnoTag: tag }),
+        instagramAccountId: "account_1",
+        instagramAccount: { id: "account_1", accessToken: "encrypted" },
+      }))
+    );
+    mockGetUserMedia.mockResolvedValue([
+      // Old post before any campaign existed, and a story with a valid tag:
+      // neither may satisfy the campaign.
+      media({
+        id: "to001_before",
+        timestamp: "2026-09-17T13:00:00+0000",
+        caption: "#TO001 old",
+      }),
+      media({
+        id: "to001_story",
+        timestamp: "2026-09-17T15:30:00+0000",
+        media_product_type: "STORIES",
+        caption: "#TO001 story",
+      }),
+      // Deliberately out of order.
+      media({
+        id: "to002_late",
+        timestamp: "2026-09-18T10:00:00+0000",
+        caption: "#TO002 late",
+      }),
+      media({
+        id: "to001_first",
+        timestamp: "2026-09-17T15:00:00+0000",
+        caption: "Out now #to001",
+      }),
+      media({
+        id: "to003_first",
+        timestamp: "2026-09-17T17:00:00+0000",
+        caption: "#TO003",
+      }),
+      media({
+        id: "to002_first",
+        timestamp: "2026-09-17T16:00:00+0000",
+        caption: "#TO002",
+      }),
+      media({
+        id: "wrong_tag",
+        timestamp: "2026-09-17T15:10:00+0000",
+        caption: "#TO9999",
+      }),
+    ]);
+
+    const summary = await attachPendingNextReels();
+
+    expect(summary).toMatchObject({ bound: 3, conflicts: 0 });
+    const boundTo = new Map(
+      mockPrisma.automation.updateMany.mock.calls.map(([args]) => [
+        args.where.id,
+        args.data.postId,
+      ])
+    );
+    expect(Object.fromEntries(boundTo)).toEqual({
+      automation_TO001: "to001_first",
+      automation_TO002: "to002_first",
+      automation_TO003: "to003_first",
+    });
   });
 
   it("does not double-count a campaign bound by a concurrent driver", async () => {
