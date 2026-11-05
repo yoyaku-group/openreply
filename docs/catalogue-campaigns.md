@@ -30,12 +30,21 @@ Rules:
   included. A different catalogue reference can wait alongside it. Once the
   first campaign binds to its publication, a new one may be prepared for a
   later release.
-- A draft never sends. A paused campaign stops sending immediately.
+- A draft never sends. A paused campaign stops sending immediately. A paused
+  Calendar campaign does not reserve the reference and does not park a manual
+  campaign.
 - Calendar owns planning. If Calendar already has a campaign for the same
   release, OpenReply refuses a second DM call to action and links you to the
   existing campaign. If a Calendar campaign appears after the manual one was
   armed, the binder parks the manual campaign as **Needs attention** instead of
   creating a duplicate DM.
+- A Calendar campaign cannot be activated on a post already served by an active
+  manual campaign with the same reference. OpenReply refuses the activation and
+  links the active campaign. Each comment would otherwise receive two private
+  messages, because the duplicate-send guard is per campaign.
+- A caption must carry one reference. Two references on one post attach two
+  campaigns to that post, and every matching comment then receives two private
+  messages.
 
 Status vocabulary:
 
@@ -87,11 +96,21 @@ Règles :
   Une fois la première campagne attachée à sa publication, une nouvelle peut
   être préparée pour une sortie ultérieure.
 - Un brouillon n'envoie jamais. Une campagne en pause s'arrête immédiatement.
+  Une campagne Calendar en pause ne réserve pas la référence et ne bloque pas
+  une campagne manuelle.
 - Calendar reste propriétaire de la planification. Si Calendar a déjà une
   campagne pour la même sortie, OpenReply refuse un second appel à l'action DM
   et renvoie vers la campagne existante. Si une campagne Calendar apparaît
   après l'armement manuel, le binder place la campagne manuelle en **Needs
   attention** au lieu de créer un DM en double.
+- Une campagne Calendar ne peut pas être activée sur une publication déjà
+  servie par une campagne manuelle active portant la même référence. OpenReply
+  refuse l'activation et renvoie vers la campagne active. Sinon chaque
+  commentaire recevrait deux messages privés, car le garde-fou anti-doublon
+  s'applique par campagne.
+- Une légende doit porter une seule référence. Deux références sur une même
+  publication rattachent deux campagnes à cette publication, et chaque
+  commentaire correspondant reçoit alors deux messages privés.
 
 Statuts :
 

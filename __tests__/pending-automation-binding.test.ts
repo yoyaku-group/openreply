@@ -25,6 +25,7 @@ vi.mock("@/lib/meta/oauth", () => ({ decryptToken: mockDecryptToken }));
 import {
   attachPendingNextReels,
   bindPendingAutomationsForMedia,
+  resetMediaMemo,
   selectBindingsForMedia,
 } from "@/lib/release-sync/attach-pending-automations";
 
@@ -53,6 +54,7 @@ function pendingAutomation(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetMediaMemo();
   process.env.ATTACH_NEXT_REEL_ENABLED = "true";
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -300,6 +302,68 @@ describe("bindPendingAutomationsForMedia (just-in-time)", () => {
 
     expect(bound).toBe(0);
     expect(mockPrisma.automation.findMany).not.toHaveBeenCalled();
+  });
+
+  it("fetches the media once per pending set and again when the set changes", async () => {
+    const pendingRow = (id: string, catnoTag: string) => ({
+      ...pendingAutomation({ id, catnoTag }),
+      instagramAccountId: "account_1",
+      instagramAccount: { accessToken: "encrypted" },
+    });
+    mockGetMediaById.mockResolvedValue(
+      media({ caption: "#ABC001 out now #ABC002 too" })
+    );
+
+    mockPrisma.automation.findMany.mockResolvedValue([
+      pendingRow("automation_abc001", "ABC001"),
+    ]);
+    await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+    await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+
+    expect(mockGetMediaById).toHaveBeenCalledTimes(1);
+
+    // Arming a second campaign changes the pending set, so the fetch happens
+    // again at once rather than waiting for the memo to expire.
+    mockPrisma.automation.findMany.mockResolvedValue([
+      pendingRow("automation_abc001", "ABC001"),
+      pendingRow("automation_abc002", "ABC002"),
+    ]);
+    await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+
+    expect(mockGetMediaById).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a media fetch that failed", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      {
+        ...pendingAutomation(),
+        instagramAccountId: "account_1",
+        instagramAccount: { accessToken: "encrypted" },
+      },
+    ]);
+    mockGetMediaById.mockRejectedValueOnce(new Error("rate limited"));
+    mockGetMediaById.mockResolvedValue(media());
+
+    await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+    const bound = await bindPendingAutomationsForMedia({
+      instagramAccountId: "ig_account",
+      mediaId: "media_1",
+    });
+
+    expect(mockGetMediaById).toHaveBeenCalledTimes(2);
+    expect(bound).toBe(1);
   });
 });
 

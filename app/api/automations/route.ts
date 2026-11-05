@@ -14,6 +14,7 @@ import { buildReportUrl, generateReportShareSlug } from "@/lib/reports/share";
 import { normalizeInboundDmKeywords } from "@/lib/automations/inbound-dm";
 import {
   catnoTagsEqual,
+  findActivePostCatalogueConflict,
   findPendingCatalogueConflict,
   findUnboundCalendarConflict,
   lockPendingAutomationAccount,
@@ -310,6 +311,19 @@ function calendarConflictResponse(conflict: PendingCatalogueConflict) {
       success: false,
       code: "CALENDAR_CAMPAIGN_CONFLICT",
       error: `Calendar is already planning this release as "${conflict.name}". Review that Calendar campaign instead of creating a second DM CTA.`,
+      conflict,
+      conflictUrl: `/campaigns/${conflict.id}`,
+    },
+    { status: 409 },
+  );
+}
+
+function calendarPostConflictResponse(conflict: PendingCatalogueConflict) {
+  return NextResponse.json(
+    {
+      success: false,
+      code: "CALENDAR_CAMPAIGN_CONFLICT",
+      error: `"${conflict.name}" is already active on this post for the same catalogue reference. Activating this Calendar campaign would send a second private message to every commenter. Pause the other campaign first.`,
       conflict,
       conflictUrl: `/campaigns/${conflict.id}`,
     },
@@ -756,7 +770,8 @@ export async function POST(request: NextRequest) {
       postUrl: isSpecificPost ? parsed.data.postUrl : null,
       pendingNextReel,
       matchAnyPost,
-      catnoTag,
+      // Inbound DM campaigns carry no comment scope, so no catalogue reference.
+      catnoTag: isInboundDm ? null : catnoTag,
       keywords: matchAnyWord ? [] : parsed.data.keywords,
       matchAnyWord,
       dmMessage: parsed.data.dmMessage,
@@ -1033,6 +1048,29 @@ export async function PATCH(request: NextRequest) {
       },
       { status: 409 },
     );
+  }
+
+  // The manual-conflict checks only run while a manual campaign still waits for
+  // its publication. Once it has bound, activating a Calendar campaign for the
+  // same reference on that same post would send a second DM per comment.
+  if (
+    existing.source === "CALENDAR" &&
+    parsed.data.isActive === true &&
+    existingCatnoTag &&
+    existing.postId
+  ) {
+    const postConflict = await findActivePostCatalogueConflict(
+      {
+        instagramAccountId: existing.instagramAccountId,
+        catnoTag: existingCatnoTag,
+        postId: existing.postId,
+        excludeAutomationId: existing.id,
+      },
+      prisma,
+    );
+    if (postConflict) {
+      return calendarPostConflictResponse(postConflict);
+    }
   }
 
   if (

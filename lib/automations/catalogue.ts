@@ -147,6 +147,37 @@ export async function findPendingCatalogueConflict(
 }
 
 /**
+ * A manual campaign that already bound to its publication keeps answering a
+ * comment with its own DM. DM idempotence is per automation, so activating a
+ * Calendar campaign for the same reference on the same post would send a
+ * second private message per comment. The unbound-Calendar checks above only
+ * run while the manual campaign still waits; this one covers the bound case.
+ */
+export async function findActivePostCatalogueConflict(
+  input: {
+    instagramAccountId: string;
+    catnoTag: string;
+    postId: string;
+    excludeAutomationId?: string;
+  },
+  client: AutomationClient,
+): Promise<PendingCatalogueConflict | null> {
+  return client.automation.findFirst({
+    where: {
+      instagramAccountId: input.instagramAccountId,
+      postId: input.postId,
+      isActive: true,
+      lifecycle: { not: "ARCHIVED" },
+      ...catnoTagWhere(input.catnoTag),
+      ...(input.excludeAutomationId
+        ? { id: { not: input.excludeAutomationId } }
+        : {}),
+    },
+    select: CONFLICT_SELECT,
+  });
+}
+
+/**
  * Calendar owns planning. A Calendar campaign with the same reference that has
  * not bound to a publication yet would otherwise create a second DM CTA once
  * the identically tagged post goes live. When a candidate media is supplied,
@@ -168,7 +199,9 @@ export async function findUnboundCalendarConflict(
       instagramAccountId: input.instagramAccountId,
       source: "CALENDAR",
       pendingNextReel: false,
-      lifecycle: { not: "ARCHIVED" },
+      // A paused Calendar campaign cannot send, so it must not keep a sendable
+      // manual campaign parked. Only an active Calendar row can duplicate a DM.
+      lifecycle: { notIn: ["ARCHIVED", "PAUSED"] },
       AND: [
         catnoTagWhere(input.catnoTag),
         input.mediaId

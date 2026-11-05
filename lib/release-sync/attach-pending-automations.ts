@@ -55,6 +55,53 @@ export function isAttachBinderEnabled(): boolean {
   return process.env.ATTACH_NEXT_REEL_ENABLED === "true";
 }
 
+const MEDIA_MEMO_TTL_MS = 5 * 60 * 1000;
+const MEDIA_MEMO_MAX_ENTRIES = 1000;
+
+/**
+ * Every comment on a post runs the JIT bind, and the Meta Graph call budget is
+ * shared with DM sends. The team keeps a campaign waiting most weeks, so the
+ * fetch would cost one call per comment on every post. Remember a successful
+ * lookup per account, media and exact pending set for a few minutes: arming a
+ * new campaign changes the set and therefore takes effect at once. Failures are
+ * never remembered, so a transient error is retried on the next comment.
+ */
+const mediaMemo = new Map<string, { media: InstagramMedia; expiresAt: number }>();
+
+function mediaMemoKey(
+  instagramAccountId: string,
+  mediaId: string,
+  pendingIds: string[],
+): string {
+  return [instagramAccountId, mediaId, ...pendingIds].join("\u0000");
+}
+
+function readMediaMemo(key: string): InstagramMedia | null {
+  const entry = mediaMemo.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    mediaMemo.delete(key);
+    return null;
+  }
+  return entry.media;
+}
+
+function writeMediaMemo(key: string, media: InstagramMedia) {
+  mediaMemo.delete(key);
+  mediaMemo.set(key, { media, expiresAt: Date.now() + MEDIA_MEMO_TTL_MS });
+  // Map iteration is insertion order, so the first key is the oldest entry.
+  while (mediaMemo.size > MEDIA_MEMO_MAX_ENTRIES) {
+    const oldest = mediaMemo.keys().next();
+    if (oldest.done) break;
+    mediaMemo.delete(oldest.value);
+  }
+}
+
+/** Test-only: drop every memoized media lookup. */
+export function resetMediaMemo() {
+  mediaMemo.clear();
+}
+
 /**
  * Pure: which of these pending campaigns may bind to this media. Every
  * automation is evaluated independently, so two campaigns armed on the same
@@ -182,19 +229,29 @@ export async function bindPendingAutomationsForMedia(input: {
   const accessToken = pending[0].instagramAccount?.accessToken;
   if (!accessToken) return 0;
 
-  let media: InstagramMedia;
-  try {
-    media = await getMediaById(decryptToken(accessToken), input.mediaId);
-  } catch (error) {
-    console.error(
-      "[attach-next-reel] jit_media_fetch_failed",
-      JSON.stringify({
-        accountId: input.instagramAccountId,
-        mediaId: input.mediaId,
-        error: error instanceof Error ? error.name : "unknown",
-      }),
-    );
-    return 0;
+  const pendingIds = pending.map((item) => item.id).sort();
+  const memoKey = mediaMemoKey(
+    input.instagramAccountId,
+    input.mediaId,
+    pendingIds,
+  );
+
+  let media = readMediaMemo(memoKey);
+  if (!media) {
+    try {
+      media = await getMediaById(decryptToken(accessToken), input.mediaId);
+    } catch (error) {
+      console.error(
+        "[attach-next-reel] jit_media_fetch_failed",
+        JSON.stringify({
+          accountId: input.instagramAccountId,
+          mediaId: input.mediaId,
+          error: error instanceof Error ? error.name : "unknown",
+        }),
+      );
+      return 0;
+    }
+    writeMediaMemo(memoKey, media);
   }
 
   let bound = 0;

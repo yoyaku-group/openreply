@@ -196,6 +196,35 @@ describe("POST /api/automations trigger modes", () => {
     );
   });
 
+  it("stores no catalogue reference on an inbound campaign", async () => {
+    const response = await POST(
+      request({
+        name: "MB059 DM keyword",
+        instagramAccountId: "account_1",
+        triggerType: "INBOUND_DM",
+        keywords: ["MB059"],
+        // A comment-scope reference on an inbound trigger is meaningless; the
+        // stored row must not carry it.
+        pendingNextReel: true,
+        catnoTag: "MB059",
+        trackedDestinationUrl: "https://yoyaku.io/release/mb059/",
+        dmMessage: "MB059 is available to pre-order.",
+        isActive: false,
+      }) as never
+    );
+
+    expect(response.status).toBe(201);
+    expect(mockPrisma.automation.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          triggerType: "INBOUND_DM",
+          catnoTag: null,
+          pendingNextReel: false,
+        }),
+      })
+    );
+  });
+
   it("rejects sentences and any-word matching for inbound campaigns", async () => {
     const response = await POST(
       request({
@@ -805,6 +834,44 @@ describe("PATCH /api/automations catalogue scope", () => {
       expect(response.status, JSON.stringify(change)).toBe(409);
       expect(payload.code).toBe("CALENDAR_BINDING_IMMUTABLE");
     }
+    expect(mockPrisma.automation.update).not.toHaveBeenCalled();
+  });
+
+  it("refuses to activate a Calendar campaign where a manual campaign is already bound", async () => {
+    mockPrisma.automation.findFirst
+      .mockResolvedValueOnce(calendarCampaign({ isActive: false, lifecycle: "READY" }))
+      .mockResolvedValueOnce({
+        id: "manual_abc001",
+        name: "Manual ABC001",
+        source: "MANUAL",
+        lifecycle: "ACTIVE",
+        isActive: true,
+      });
+
+    const response = await PATCH(
+      patchRequest("automation_existing", { isActive: true }) as never
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(payload.code).toBe("CALENDAR_CAMPAIGN_CONFLICT");
+    expect(payload.conflict.id).toBe("manual_abc001");
+    expect(payload.conflictUrl).toBe("/campaigns/manual_abc001");
+    expect(mockPrisma.automation.findFirst).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          instagramAccountId: "account_1",
+          postId: "media_1",
+          isActive: true,
+          lifecycle: { not: "ARCHIVED" },
+          id: { not: "automation_existing" },
+          OR: [
+            { catnoTag: { equals: "ABC001", mode: "insensitive" } },
+            { catnoTag: { equals: "#ABC001", mode: "insensitive" } },
+          ],
+        }),
+      })
+    );
     expect(mockPrisma.automation.update).not.toHaveBeenCalled();
   });
 
