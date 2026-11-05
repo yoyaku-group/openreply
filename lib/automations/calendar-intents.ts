@@ -94,7 +94,6 @@ export function calendarAutomationUpdateState(
   existing: {
     isActive: boolean;
     postId: string | null;
-    keywords: string[];
     destinationUrl: string | null;
     sourceRevision?: string | null;
     calendarScheduledAt?: Date | null;
@@ -105,11 +104,12 @@ export function calendarAutomationUpdateState(
   opts: { autoActivate?: boolean } = {}
 ) {
   const postId = intent.external_id || null;
+  // The CTA keyword only proves that the post wants a DM campaign; it is never
+  // a comment filter, so its value cannot make a campaign changed. Comparing it
+  // would deactivate an active row on a Calendar-side keyword rename.
   const materialChanged =
     (existing.isActive && !postId) ||
     existing.postId !== postId ||
-    existing.keywords.length !== 1 ||
-    existing.keywords[0] !== intent.cta_keyword ||
     existing.destinationUrl !== intent.destination_url ||
     existing.sourceRevision !== intent.source_revision ||
     (existing.calendarScheduledAt?.toISOString() ?? null) !==

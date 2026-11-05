@@ -12,7 +12,8 @@ import {
 const campaignSchema = z.object({
   postId: z.string().min(1),
   postUrl: z.string().optional().nullable(),
-  keywords: z.array(z.string().min(1).max(50)).min(1).max(10),
+  // An empty keyword column means any comment qualifies.
+  keywords: z.array(z.string().min(1).max(50)).max(10).default([]),
   dmMessage: z.string().min(1).max(1000),
   name: z.string().max(100).optional().nullable(),
   goal: z.string().max(120).optional().nullable(),
@@ -83,9 +84,14 @@ export async function POST(request: NextRequest) {
       campaign.trackedUrl && /^https?:\/\//i.test(campaign.trackedUrl)
         ? campaign.trackedUrl
         : null;
+    // An empty keyword column means any comment, so every imported row without
+    // a word lands on the same rule the builder now defaults to.
+    const matchAnyWord = campaign.keywords.length === 0;
     const name =
       (campaign.name ?? "").trim().slice(0, 100) ||
-      `Imported: ${campaign.keywords[0]}`;
+      (matchAnyWord
+        ? "Imported: any comment"
+        : `Imported: ${campaign.keywords[0]}`);
     const publicReply = (campaign.publicReplyMessage ?? "").trim();
 
     await prisma.automation.create({
@@ -94,7 +100,8 @@ export async function POST(request: NextRequest) {
         goal: (campaign.goal ?? "").trim().slice(0, 120) || null,
         postId: campaign.postId,
         postUrl: campaign.postUrl ?? null,
-        keywords: campaign.keywords,
+        keywords: matchAnyWord ? [] : campaign.keywords,
+        matchAnyWord,
         dmMessage: campaign.dmMessage.slice(0, 1000),
         publicReplyEnabled: Boolean(publicReply),
         publicReplyMessage: publicReply ? publicReply.slice(0, 1000) : null,

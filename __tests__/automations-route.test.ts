@@ -823,7 +823,6 @@ describe("PATCH /api/automations catalogue scope", () => {
       { triggerType: "INBOUND_DM" },
       { postId: "media_2" },
       { catnoTag: "ABC002" },
-      { keywords: ["BUY"] },
       { trackedDestinationUrl: "https://example.com/other" },
     ]) {
       mockPrisma.automation.findFirst.mockResolvedValueOnce(calendarCampaign());
@@ -835,6 +834,25 @@ describe("PATCH /api/automations catalogue scope", () => {
       expect(payload.code).toBe("CALENDAR_BINDING_IMMUTABLE");
     }
     expect(mockPrisma.automation.update).not.toHaveBeenCalled();
+  });
+
+  it("accepts an any-word matcher on a Calendar campaign", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValueOnce(
+      calendarCampaign({ matchAnyWord: false, keywords: [] })
+    );
+    const response = await PATCH(
+      patchRequest("automation_existing", {
+        matchAnyWord: true,
+        keywords: [],
+      }) as never
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.automation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ matchAnyWord: true }),
+      })
+    );
   });
 
   it("refuses to activate a Calendar campaign where a manual campaign is already bound", async () => {

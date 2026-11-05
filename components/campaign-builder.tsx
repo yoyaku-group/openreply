@@ -29,10 +29,15 @@ import {
   IMPORT_ACCOUNT_KEY,
   type ImportRow,
 } from "@/lib/import-queue";
+import {
+  defaultMatcher,
+  matcherFromKeywords,
+  nextMatcher,
+  type MatchMode,
+  type TriggerType,
+} from "@/lib/automations/match-defaults";
 
 type TriggerScope = "specific" | "any" | "next" | "catalogue";
-type MatchMode = "specific" | "any";
-type TriggerType = "COMMENT" | "INBOUND_DM";
 
 interface LoadedCampaign {
   id: string;
@@ -172,7 +177,9 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   // the campaign name using it (for the tooltip).
   const [usedPosts, setUsedPosts] = useState<Record<string, string>>({});
 
-  const [matchMode, setMatchMode] = useState<MatchMode>("specific");
+  const [matchMode, setMatchMode] = useState<MatchMode>(
+    () => defaultMatcher("COMMENT").matchMode
+  );
   const [keywordText, setKeywordText] = useState("");
 
   const [publicReplyEnabled, setPublicReplyEnabled] = useState(false);
@@ -381,8 +388,9 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
     setPostThumb(null);
     setPostCaption("");
     setCatnoTagInput("");
-    setMatchMode("specific");
-    setKeywordText((row.keywords ?? []).join(", "));
+    const matcher = matcherFromKeywords(row.keywords ?? []);
+    setMatchMode(matcher.matchMode);
+    setKeywordText(matcher.keywordText);
     setDmMessage(row.dmMessage ?? "");
     setPublicReplyEnabled(Boolean(row.publicReply));
     setPublicReplyMessages(row.publicReply ? [row.publicReply] : [""]);
@@ -792,7 +800,16 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         <Section title="Campaign trigger">
           <Radio
             checked={triggerType === "COMMENT"}
-            onSelect={() => setTriggerType("COMMENT")}
+            onSelect={() => {
+              setTriggerType("COMMENT");
+              const matcher = nextMatcher(
+                { matchMode, keywordText },
+                { kind: "triggerType", triggerType: "COMMENT", from: triggerType },
+                mode
+              );
+              setMatchMode(matcher.matchMode);
+              setKeywordText(matcher.keywordText);
+            }}
           >
             Comment on a post or reel
           </Radio>
@@ -800,6 +817,13 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             checked={triggerType === "INBOUND_DM"}
             onSelect={() => {
               setTriggerType("INBOUND_DM");
+              const matcher = nextMatcher(
+                { matchMode, keywordText },
+                { kind: "triggerType", triggerType: "INBOUND_DM", from: triggerType },
+                mode
+              );
+              setMatchMode(matcher.matchMode);
+              setKeywordText(matcher.keywordText);
               setPreviewTab("dm");
             }}
           >
@@ -840,15 +864,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
           </Radio>
           <Radio
             checked={triggerScope === "catalogue"}
-            onSelect={() => {
-              setTriggerScope("catalogue");
-              // The catalogue hashtag identifies the post. It is never the
-              // comment keyword, but LINK is the house default for releases.
-              if (mode === "new" && !keywordText.trim()) {
-                setMatchMode("specific");
-                setKeywordText("LINK");
-              }
-            }}
+            onSelect={() => setTriggerScope("catalogue")}
           >
             a future publication with a catalogue hashtag
           </Radio>
@@ -867,9 +883,9 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               />
               <p className="text-xs text-muted">
                 The hashtag printed on the release post (for example #ABC001).
-                It is not the keyword commenters type. A campaign waits for the
-                first feed post or reel published after you create this campaign whose
-                caption carries this exact hashtag.
+                A campaign waits for the first feed post or reel published after
+                you create this campaign whose caption carries this exact
+                hashtag.
               </p>
               {catalogueDisplay && (
                 <div className="flex flex-wrap items-center gap-2">
@@ -909,6 +925,12 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
 
         <Section title="And this comment has">
           <Radio
+            checked={matchMode === "any"}
+            onSelect={() => setMatchMode("any")}
+          >
+            any word
+          </Radio>
+          <Radio
             checked={matchMode === "specific"}
             onSelect={() => setMatchMode("specific")}
           >
@@ -924,18 +946,9 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               />
               <p className="text-xs text-muted">
                 Use commas to separate words.
-                {isCatalogueScope
-                  ? " This is the word commenters type, not the catalogue hashtag."
-                  : ""}
               </p>
             </div>
           )}
-          <Radio
-            checked={matchMode === "any"}
-            onSelect={() => setMatchMode("any")}
-          >
-            any word
-          </Radio>
           <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2.5">
             <span className="text-sm text-foreground">
               reply to their comments under the post

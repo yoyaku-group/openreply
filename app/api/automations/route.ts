@@ -993,7 +993,8 @@ export async function PATCH(request: NextRequest) {
 
   // Calendar campaigns keep their source binding. Pause and copy edits remain
   // available, but the manual builder may never re-arm, retarget or overwrite
-  // the Calendar-owned publication/keyword/link.
+  // the Calendar-owned publication/link. The comment matcher is not a binding:
+  // every comment campaign matches any comment, so a matcher edit is allowed.
   if (existing.source === "CALENDAR") {
     const existingPrimaryUrl =
       existing.trackedLinks?.[0]?.destinationUrl ?? null;
@@ -1002,12 +1003,6 @@ export async function PATCH(request: NextRequest) {
       parsed.data.trackedDestinationUrl === null
         ? existingPrimaryUrl
         : parsed.data.trackedDestinationUrl || null;
-    const keywordsChanged =
-      parsed.data.keywords !== undefined &&
-      (parsed.data.keywords.length !== existing.keywords.length ||
-        parsed.data.keywords.some(
-          (keyword, index) => keyword !== existing.keywords[index],
-        ));
     const bindingChanged =
       (parsed.data.triggerType !== undefined &&
         parsed.data.triggerType !== existing.triggerType) ||
@@ -1021,7 +1016,6 @@ export async function PATCH(request: NextRequest) {
         parsed.data.matchAnyPost !== existing.matchAnyPost) ||
       (requestedCatnoTag !== undefined &&
         !catnoTagsEqual(requestedCatnoTag, existingCatnoTagRaw)) ||
-      keywordsChanged ||
       requestedPrimaryUrl !== existingPrimaryUrl;
     if (bindingChanged) {
       return NextResponse.json(
@@ -1029,7 +1023,7 @@ export async function PATCH(request: NextRequest) {
           success: false,
           code: "CALENDAR_BINDING_IMMUTABLE",
           error:
-            "Calendar owns this campaign's publication, keyword and destination. Pause it or edit its copy in OpenReply; retargeting happens through the planning source.",
+            "Calendar owns this campaign's publication and destination. Pause it or edit its copy in OpenReply; retargeting happens through the planning source.",
         },
         { status: 409 },
       );
