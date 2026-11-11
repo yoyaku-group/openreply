@@ -26,6 +26,7 @@ describe("ctaFor", () => {
     expect(ctaFor("preorder")).toBe("Comment to pre-order!");
     expect(ctaFor("restock")).toBe("Comment to get the link!");
     expect(ctaFor("coming_soon")).toBe("Comment to get the link!");
+    expect(ctaFor("sold_out")).toBe("Comment to get the link!");
     expect(ctaFor("available")).toBe("Comment to get the link!");
     expect(CTA_BY_STATE.preorder).toBe("Comment to pre-order!");
   });

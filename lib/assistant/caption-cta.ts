@@ -9,6 +9,7 @@ import type { ProductState } from "@/lib/assistant/resolve-product";
 export const CTA_BY_STATE: Record<ProductState, string> = {
   preorder: "Comment to pre-order!",
   coming_soon: "Comment to get the link!",
+  sold_out: "Comment to get the link!",
   restock: "Comment to get the link!",
   available: "Comment to get the link!",
 };

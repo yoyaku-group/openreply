@@ -52,6 +52,30 @@ describe("generateCopy", () => {
     );
   });
 
+  it("never claims availability for coming-soon or sold-out products", () => {
+    for (const state of ["coming_soon", "sold_out"] as const) {
+      const result = generateCopy({ ...LM02_FACTS, state });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.provenance).toBe("standard");
+      // The shared shells all claim availability; these states get truthful
+      // openings instead.
+      expect(result.openingDm).not.toMatch(/out now|in the shop|back in stock|preorder/i);
+      if (state === "coming_soon") {
+        expect(result.openingDm).toBe(
+          "Nuron & Fugue, Likemind 02 is coming soon to the shop."
+        );
+      } else {
+        expect(result.openingDm).toBe(
+          "Nuron & Fugue, Likemind 02 is sold out for now."
+        );
+      }
+      expect(result.lint.ok).toBe(true);
+      expect(result.linkButton).toBe("LM-02");
+    }
+  });
+
   it("maps preorder to the preorder shells and keeps the SKU as catno", () => {
     const result = generateCopy({ ...LM02_FACTS, state: "preorder" });
 

@@ -16,18 +16,24 @@ call the same `POST`/`PATCH /api/automations` the builder uses.
 1. **Open the assistant** from the campaigns list (**Prepare from a product**)
    or from the builder's catalogue-hashtag block.
 2. **Give the product**: a product URL (`https://yoyaku.io/release/<slug>/` or
-   `/product/<slug>/`) or a bare SKU (for example `LM-02`). Only URLs on the
-   shop host are accepted. The assistant reads the public WooCommerce Store
-   API and the public `musicartist`/`musiclabel` taxonomies — no token, no
-   admin session. Results are memoized for 5 minutes.
+   `/product/<slug>/`; the `www.` variant of the shop host is accepted too) or
+   a bare SKU. The Store API matches the SKU **exactly as printed on the
+   shop, separators included** — `LM-02` matches, `LM02` does not. Only URLs
+   on the shop host are accepted. The assistant reads the public WooCommerce
+   Store API and the public `musicartist`/`musiclabel` taxonomies — no token,
+   no admin session. Results are memoized for 5 minutes.
 3. **The caption is optional.** A simple product works with no caption at all:
    the DM copy comes from the product description. Paste a caption only for
    special posts (a making-of reel, a narrative post) — the assistant checks
    it and completes it, it never rewrites it.
 4. **Review the facts**: SKU, catalogue hashtag, artists, label, state
-   (Pre-order / Coming soon / Back in stock / Available), thumbnail. Anything
-   the shop could not provide shows as an editable input — fill it in, the
-   copy refuses to invent values.
+   (Pre-order / Coming soon / Sold out / Back in stock / Available),
+   thumbnail. Anything the shop could not provide shows as an editable input —
+   fill it in, the copy refuses to invent values. A **Coming soon** or
+   **Sold out** product cannot be bought yet: the assistant produces drafts
+   only, "Validate for publication" is refused ("This product cannot be
+   bought yet: save as draft"), and the copy for those states never claims
+   availability.
 5. **Review the copy**: opening DM and button (two-step DM, on by default),
    link DM and link button, each editable with the Meta counters. Copy is
    marked **Standard copy** — it is poured into the hand-written YOYAKU shells
@@ -45,7 +51,10 @@ call the same `POST`/`PATCH /api/automations` the builder uses.
    campaign out of the queue, **Validate for publication** arms it. If a
    campaign already exists for the same reference on the account, the
    assistant links it and **Complete this campaign** updates it instead of
-   creating a second one.
+   creating a second one. Completing a **Calendar** campaign updates the copy
+   fields only — the publication and the destination stay Calendar-owned, and
+   the campaign keeps waiting for its Calendar-planned publication (arming
+   happens through Calendar's own Meta-proof path).
 
 ### Sources
 
@@ -85,7 +94,7 @@ no emoji, no dashes, no invented names, Meta limits (body 640, button 20).
 | Code | Where | Meaning |
 |---|---|---|
 | `PRODUCT_URL_INVALID` | Prepare | Not a shop URL or a usable SKU. |
-| `PRODUCT_NOT_FOUND` | Prepare | No product matches on the shop. |
+| `PRODUCT_NOT_FOUND` | Prepare | No product matches on the shop. Type the SKU exactly as printed (separators included) or paste the product URL. |
 | `SHOP_UNAVAILABLE` | Prepare | The shop did not answer; try again. |
 | `MISSING_FACTS` | Copy | The shop (or you) has not filled these facts; copy is not generated. |
 | `CATALOGUE_REF_CONFLICT` | Save / Validate | Another campaign already waits for the same hashtag and account. |
@@ -100,18 +109,25 @@ Conflict errors carry a link to the existing campaign.
 1. **Ouvrez l'assistant** depuis la liste des campagnes (**Prepare from a
    product**) ou depuis le bloc hashtag catalogue du builder.
 2. **Donnez le produit** : une URL produit (`https://yoyaku.io/release/<slug>/`
-   ou `/product/<slug>/`) ou un SKU nu (par exemple `LM-02`). Seules les URLs
-   du domaine de la boutique sont acceptées. L'assistant lit l'API publique
-   WooCommerce et les taxonomies publiques `musicartist`/`musiclabel` — sans
-   token. Les résultats sont memoizés 5 minutes.
+   ou `/product/<slug>/` ; la variante `www.` du domaine de la boutique est
+   acceptée aussi) ou un SKU nu. L'API Store compare le SKU **exactement tel
+   qu'imprimé sur la boutique, séparateurs compris** — `LM-02` correspond,
+   `LM02` non. Seules les URLs du domaine de la boutique sont acceptées.
+   L'assistant lit l'API publique WooCommerce et les taxonomies publiques
+   `musicartist`/`musiclabel` — sans token. Les résultats sont memoizés
+   5 minutes.
 3. **La légende est facultative.** Un produit simple fonctionne sans légende :
    le copy du DM vient de la description produit. Collez une légende seulement
    pour les posts spéciaux (un making-of, un post narratif) — l'assistant la
    vérifie et la complète, il ne la réécrit jamais.
 4. **Vérifiez les faits** : SKU, hashtag catalogue, artistes, label, état
-   (Pre-order / Coming soon / Back in stock / Available), vignette. Tout ce
-   que la boutique n'a pas fourni se montre en champ éditable — remplissez-le,
-   le copy refuse d'inventer des valeurs.
+   (Pre-order / Coming soon / Sold out / Back in stock / Available), vignette.
+   Tout ce que la boutique n'a pas fourni se montre en champ éditable —
+   remplissez-le, le copy refuse d'inventer des valeurs. Un produit **Coming
+   soon** ou **Sold out** ne s'achète pas encore : l'assistant ne produit que
+   des brouillons, "Validate for publication" est refusé (« This product
+   cannot be bought yet: save as draft »), et le copy de ces états ne
+   prétend jamais une disponibilité.
 5. **Vérifiez le copy** : DM d'ouverture et bouton (DM en deux temps, activé
    par défaut), DM du lien et bouton du lien, chacun éditable avec les
    compteurs Meta. Le copy est marqué **Standard copy** — il est versé dans
@@ -130,7 +146,11 @@ Conflict errors carry a link to the existing campaign.
    **Save draft** garde la campagne hors de la file, **Validate for
    publication** l'arme. Si une campagne existe déjà pour la même référence
    sur le compte, l'assistant la lie et **Complete this campaign** la met à
-   jour au lieu d'en créer une seconde.
+   jour au lieu d'en créer une seconde. Compléter une campagne **Calendar**
+   ne met à jour que les champs de copy — la publication et la destination
+   restent la propriété de Calendar, et la campagne continue d'attendre sa
+   publication planifiée (l'armement passe par le chemin de preuve Meta de
+   Calendar).
 
 ### Sources
 
@@ -172,7 +192,7 @@ faits uniquement, pas d'emoji, pas de tirets, pas de nom inventé, limites Meta
 | Code | Où | Signification |
 |---|---|---|
 | `PRODUCT_URL_INVALID` | Prepare | Ni URL boutique ni SKU exploitable. |
-| `PRODUCT_NOT_FOUND` | Prepare | Aucun produit correspondant sur la boutique. |
+| `PRODUCT_NOT_FOUND` | Prepare | Aucun produit correspondant sur la boutique. Tapez le SKU exactement tel qu'imprimé (séparateurs compris) ou collez l'URL produit. |
 | `SHOP_UNAVAILABLE` | Prepare | La boutique n'a pas répondu ; réessayez. |
 | `MISSING_FACTS` | Copy | Ces faits manquent ; le copy n'est pas généré. |
 | `CATALOGUE_REF_CONFLICT` | Save / Validate | Une autre campagne attend déjà le même hashtag et compte. |

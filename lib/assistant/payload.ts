@@ -84,3 +84,31 @@ export function buildAssistantPayload(input: AssistantPayloadInput) {
     isActive: input.isActive,
   };
 }
+
+/**
+ * The PATCH body for completing an existing CALENDAR campaign.
+ *
+ * Calendar owns the binding: `app/api/automations/route.ts` answers 409
+ * CALENDAR_BINDING_IMMUTABLE when a Calendar campaign's publication
+ * (`pendingNextReel`, `postId`/`postUrl`, `catnoTag`) or its destination URL
+ * changes, and refuses `isActive: true` until Meta publication proof. So
+ * completing a Calendar campaign from the assistant may touch the copy fields
+ * ONLY, and never the activation state — the campaign stays waiting for its
+ * Calendar-planned publication. Omitted fields stay unchanged.
+ */
+export function calendarCompletionPatch(
+  input: Pick<AssistantPayloadInput, "facts" | "copy" | "twoStep" | "name">,
+) {
+  const name = (input.name ?? defaultCampaignName(input.facts))
+    .trim()
+    .slice(0, 100);
+
+  return {
+    name,
+    dmMessage: input.copy.revealDm,
+    openingDmEnabled: input.twoStep,
+    openingDmMessage: input.twoStep ? input.copy.openingDm : null,
+    openingDmButtonLabel: input.twoStep ? input.copy.openingButton : null,
+    linkButtonLabel: input.copy.linkButton,
+  };
+}

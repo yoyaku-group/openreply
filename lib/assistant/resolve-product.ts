@@ -22,6 +22,7 @@ const DESCRIPTION_MAX_LENGTH = 1200;
 export type ProductState =
   | "preorder"
   | "coming_soon"
+  | "sold_out"
   | "restock"
   | "available";
 
@@ -156,8 +157,11 @@ function parseProductInput(
         message: "This is not a valid product URL.",
       };
     }
-    // Only the configured shop host is accepted; query and hash are ignored.
-    if (url.host.toLowerCase() !== base.host.toLowerCase()) {
+    // Only the configured shop host (and its www. variant) is accepted; query
+    // and hash are ignored.
+    const bareHost = (host: string) =>
+      host.toLowerCase().replace(/^www\./, "");
+    if (bareHost(url.host) !== bareHost(base.host)) {
       return {
         ok: false,
         code: "PRODUCT_URL_INVALID",
@@ -282,8 +286,16 @@ async function fetchJson<T>(
 }
 
 function readState(product: StoreApiProduct): ProductState {
+  // A backorder line is a live pre-order: buyable now.
   if (product.is_on_backorder === true) return "preorder";
-  if (product.is_purchasable === false) return "coming_soon";
+  if (product.is_purchasable === false) {
+    // Not buyable AND out of stock reads as sold out; not buyable with
+    // stock still reads as a release that has not opened yet.
+    return product.is_in_stock === false ? "sold_out" : "coming_soon";
+  }
+  // WooCommerce reports sold-out simple products as purchasable with an
+  // empty stock; the availability claim must never survive that state.
+  if (product.is_in_stock === false) return "sold_out";
   if (
     (product.categories ?? []).some(
       (category) => category.name?.trim().toLowerCase() === "back in stock",
@@ -292,6 +304,11 @@ function readState(product: StoreApiProduct): ProductState {
     return "restock";
   }
   return "available";
+}
+
+/** The states a campaign may NOT be armed for: nothing to buy yet. */
+export function isPurchasableState(state: ProductState): boolean {
+  return state !== "coming_soon" && state !== "sold_out";
 }
 
 async function resolveTaxonomy(
@@ -475,7 +492,8 @@ export async function resolveProduct(
       return {
         ok: false,
         code: "PRODUCT_NOT_FOUND",
-        message: "No product on the shop matches this URL or SKU.",
+        message:
+          "No product on the shop matches. Type the SKU exactly as printed on the shop, separators included (LM-02, not LM02), or paste the product URL.",
       };
     }
     return {

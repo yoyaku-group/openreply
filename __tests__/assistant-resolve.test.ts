@@ -199,6 +199,18 @@ describe("resolveProduct", () => {
     expect(calls).toEqual([]);
   });
 
+  it("accepts the www. variant of the shop host", async () => {
+    const { impl, calls } = fetchFromRoutes(lm02Routes());
+    const result = await resolveProduct(
+      "https://www.yoyaku.io/release/nuro-fugue-nuron-likemind-02-lm-02/",
+      { fetchImpl: impl }
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.facts.hashtag).toBe("#LM02");
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
   it("refuses URLs that are not release or product pages", async () => {
     const { impl } = fetchFromRoutes(lm02Routes());
     const result = await resolveProduct("https://yoyaku.io/blog/post-1/", {
@@ -231,6 +243,9 @@ describe("resolveProduct", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("PRODUCT_NOT_FOUND");
+    // The Store API matches the SKU byte for byte: the error tells the user
+    // to type the separators exactly as printed (LM-02, not LM02).
+    expect(result.message).toContain("LM-02, not LM02");
   });
 
   it("maps is_on_backorder to preorder and a non-purchasable product to coming_soon", async () => {
@@ -262,6 +277,66 @@ describe("resolveProduct", () => {
     const coming = await resolveProduct("CS-01", { fetchImpl: soon.impl });
     expect(coming.ok).toBe(true);
     if (coming.ok) expect(coming.facts.state).toBe("coming_soon");
+  });
+
+  it("marks a product that cannot be bought as sold_out, purchasable or not", async () => {
+    // WooCommerce reports a sold-out simple product as purchasable with an
+    // empty stock — the state must not read as available.
+    const soldOutPurchasable = fetchFromRoutes({
+      "/wp-json/wc/store/v1/products?sku=SO-01": [
+        {
+          ...LM02_STORE,
+          sku: "SO-01",
+          is_purchasable: true,
+          is_in_stock: false,
+          categories: [],
+        },
+      ],
+      "/wp-json/wp/v2/product?slug=nuro-fugue-nuron-likemind-02-lm-02&_fields=id,musicartist,musiclabel":
+        [],
+    });
+    const first = await resolveProduct("SO-01", { fetchImpl: soldOutPurchasable.impl });
+    expect(first.ok).toBe(true);
+    if (first.ok) expect(first.facts.state).toBe("sold_out");
+
+    clearAssistantProductCache();
+    const soldOutNotPurchasable = fetchFromRoutes({
+      "/wp-json/wc/store/v1/products?sku=SO-02": [
+        {
+          ...LM02_STORE,
+          sku: "SO-02",
+          is_purchasable: false,
+          is_in_stock: false,
+          categories: [],
+        },
+      ],
+      "/wp-json/wp/v2/product?slug=nuro-fugue-nuron-likemind-02-lm-02&_fields=id,musicartist,musiclabel":
+        [],
+    });
+    const second = await resolveProduct("SO-02", {
+      fetchImpl: soldOutNotPurchasable.impl,
+    });
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.facts.state).toBe("sold_out");
+
+    clearAssistantProductCache();
+    // Not purchasable but with stock still reads as a release not opened yet.
+    const comingSoon = fetchFromRoutes({
+      "/wp-json/wc/store/v1/products?sku=CS-02": [
+        {
+          ...LM02_STORE,
+          sku: "CS-02",
+          is_purchasable: false,
+          is_in_stock: true,
+          categories: [],
+        },
+      ],
+      "/wp-json/wp/v2/product?slug=nuro-fugue-nuron-likemind-02-lm-02&_fields=id,musicartist,musiclabel":
+        [],
+    });
+    const third = await resolveProduct("CS-02", { fetchImpl: comingSoon.impl });
+    expect(third.ok).toBe(true);
+    if (third.ok) expect(third.facts.state).toBe("coming_soon");
   });
 
   it("lists artist and label as missing when the taxonomy step fails", async () => {

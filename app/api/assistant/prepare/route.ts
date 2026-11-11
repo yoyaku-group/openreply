@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { resolveProduct } from "@/lib/assistant/resolve-product";
+import { resolveProduct, isPurchasableState } from "@/lib/assistant/resolve-product";
 import { composeCaption } from "@/lib/assistant/caption";
 import { ctaFor } from "@/lib/assistant/caption-cta";
 import { generateCopy } from "@/lib/assistant/generate-copy";
@@ -159,6 +159,9 @@ export async function POST(request: NextRequest) {
       caption,
       copy,
       lint: copy.ok ? copy.lint : null,
+      // The page blocks "Validate for publication" (drafts only) while this
+      // is false: a coming-soon or sold-out product cannot be bought yet.
+      checks: { purchasable: isPurchasableState(facts.state) },
       existingCampaign,
     },
   });

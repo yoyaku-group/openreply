@@ -189,6 +189,48 @@ describe("POST /api/assistant/prepare", () => {
     expect(params).toContain("account_1");
   });
 
+  it("flags a product that cannot be bought as not purchasable", async () => {
+    mockFetch.mockImplementation(async (input: string | URL | Request) => {
+      const href = input instanceof Request ? input.url : input.toString();
+      const path = href.replace(/^https?:\/\/[^/]+/, "");
+      if (
+        path ===
+        "/wp-json/wc/store/v1/products?sku=CS-01"
+      ) {
+        return jsonResponse([
+          {
+            ...LM02_STORE,
+            sku: "CS-01",
+            slug: "cs-01",
+            is_purchasable: false,
+            is_on_backorder: false,
+            is_in_stock: true,
+            categories: [],
+          },
+        ]);
+      }
+      if (path === "/wp-json/wp/v2/product?slug=cs-01&_fields=id,musicartist,musiclabel") {
+        return jsonResponse([{ id: 746990, musicartist: [28126], musiclabel: [42124] }]);
+      }
+      if (path === "/wp-json/wp/v2/musicartist?include=28126&per_page=100&_fields=id,name") {
+        return jsonResponse([{ id: 28126, name: "Nuron" }]);
+      }
+      if (path === "/wp-json/wp/v2/musiclabel?include=42124&per_page=100&_fields=id,name") {
+        return jsonResponse([{ id: 42124, name: "Blueprint ARchives" }]);
+      }
+      return jsonResponse([]);
+    });
+
+    const response = await POST(request({ product: "CS-01" }) as never);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.data.facts.state).toBe("coming_soon");
+    expect(payload.data.checks).toEqual({ purchasable: false });
+    // The copy for an unbuyable product never claims availability.
+    expect(payload.data.copy.openingDm).not.toMatch(/out now|back in stock/i);
+  });
+
   it("never creates or updates a campaign", async () => {
     await POST(request({ product: "LM-02" }) as never);
     expect(mockPrisma).not.toHaveProperty("automation");

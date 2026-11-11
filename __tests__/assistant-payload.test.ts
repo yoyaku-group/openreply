@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAssistantPayload,
+  calendarCompletionPatch,
   defaultCampaignName,
 } from "@/lib/assistant/payload";
 
@@ -106,8 +107,7 @@ describe("buildAssistantPayload", () => {
     }
   });
 
-  it("uses the editable name and truncates it to the API limit", () => {
-    const payload = buildAssistantPayload({
+  it("uses the editable name and truncates it to the API limit", () => {    const payload = buildAssistantPayload({
       facts: FACTS,
       copy: COPY,
       scope: "catalogue",
@@ -128,5 +128,46 @@ describe("buildAssistantPayload", () => {
     });
     expect(long.name.length).toBeLessThanOrEqual(100);
     expect(long.name).toBe(`LM-02 · ${"T".repeat(92)}`);
+  });
+});
+
+describe("calendarCompletionPatch", () => {
+  it("carries the copy fields only: no activation state, no binding, no destination", () => {
+    const patch = calendarCompletionPatch({
+      facts: FACTS,
+      copy: COPY,
+      twoStep: true,
+      name: "LM-02 · Likemind 02",
+    });
+
+    expect(patch).toEqual({
+      name: "LM-02 · Likemind 02",
+      dmMessage: "Here you go:",
+      openingDmEnabled: true,
+      openingDmMessage: "Nuron & Fugue, Likemind 02 is back in stock.",
+      openingDmButtonLabel: "Send the link",
+      linkButtonLabel: "LM-02",
+    });
+    // The keys the Calendar PATCH guard would refuse must not be present at
+    // all (omitted fields stay unchanged on the server).
+    expect(patch).not.toHaveProperty("isActive");
+    expect(patch).not.toHaveProperty("pendingNextReel");
+    expect(patch).not.toHaveProperty("catnoTag");
+    expect(patch).not.toHaveProperty("postId");
+    expect(patch).not.toHaveProperty("postUrl");
+    expect(patch).not.toHaveProperty("trackedDestinationUrl");
+    expect(patch).not.toHaveProperty("instagramAccountId");
+  });
+
+  it("clears the opening DM with the two-step toggle off", () => {
+    const patch = calendarCompletionPatch({
+      facts: FACTS,
+      copy: COPY,
+      twoStep: false,
+    });
+
+    expect(patch.openingDmEnabled).toBe(false);
+    expect(patch.openingDmMessage).toBeNull();
+    expect(patch.openingDmButtonLabel).toBeNull();
   });
 });

@@ -27,6 +27,7 @@ import { ctaFor } from "@/lib/assistant/caption-cta";
 import { generateCopy, releaseFactsFrom } from "@/lib/assistant/generate-copy";
 import {
   buildAssistantPayload,
+  calendarCompletionPatch,
   defaultCampaignName,
 } from "@/lib/assistant/payload";
 import type { ProductFacts } from "@/lib/assistant/resolve-product";
@@ -50,12 +51,14 @@ interface PrepareData {
   caption: ReturnType<typeof composeCaption>;
   copy: ReturnType<typeof generateCopy>;
   lint: unknown;
+  checks: { purchasable: boolean };
   existingCampaign: ExistingCampaign | null;
 }
 
 const STATE_LABELS: Record<ProductFacts["state"], string> = {
   preorder: "Pre-order",
   coming_soon: "Coming soon",
+  sold_out: "Sold out",
   restock: "Back in stock",
   available: "Available",
 };
@@ -423,9 +426,14 @@ export default function CampaignAssistantPage() {
       return setFinishError("The opening DM needs a message and a button label.");
     }
     // Validation is a hard gate: a caption that carries another reference
-    // sends two messages per commenter, and copy that fails the YOYAKU
-    // linter must not go live. Drafts are always allowed.
+    // sends two messages per commenter, copy that fails the YOYAKU linter
+    // must not go live, and a product with nothing to buy yet is draft-only.
     if (activeValue) {
+      if (notPurchasable) {
+        return setFinishError(
+          "This product cannot be bought yet: save as draft."
+        );
+      }
       const captionErrors =
         captionResult?.checks.filter((check) => check.level === "error") ?? [];
       if (captionErrors.length > 0) {
@@ -453,8 +461,19 @@ export default function CampaignAssistantPage() {
     // Completing an existing campaign with "Save draft" must not silently
     // pause it: the draft button saves the copy edits and leaves the live
     // activation state untouched (only "Validate for publication" arms it).
-    const body =
-      completeId && !activeValue ? { ...payload, isActive: undefined } : payload;
+    // A Calendar campaign goes further: its binding and destination are
+    // Calendar-owned and its activation waits for Meta proof, so the PATCH
+    // carries the copy fields only.
+    const body = calendarComplete
+      ? calendarCompletionPatch({
+          facts: effectiveFacts,
+          copy: { openingDm, openingButton, revealDm, linkButton },
+          twoStep,
+          name,
+        })
+      : completeId && !activeValue
+        ? { ...payload, isActive: undefined }
+        : payload;
 
     setSaving(true);
     try {
@@ -522,6 +541,15 @@ export default function CampaignAssistantPage() {
   const previewThumb = (when === "published" ? postThumb : null) ?? effectiveFacts?.imageUrl ?? null;
   const previewCaption = captionResult?.final ?? captionInput;
 
+  // Nothing to buy yet: drafts only, validation is refused.
+  const notPurchasable =
+    effectiveFacts?.state === "coming_soon" ||
+    effectiveFacts?.state === "sold_out";
+  // Completing a Calendar campaign touches the copy fields only — the API
+  // refuses binding and destination edits, and arming waits for Meta proof.
+  const calendarComplete =
+    completeId !== null && existingCampaign?.source === "CALENDAR";
+
   const missing = facts?.missing ?? [];
 
   return (
@@ -531,7 +559,7 @@ export default function CampaignAssistantPage() {
         <div className="grid gap-4 lg:grid-cols-2">
           <Field
             label="Product URL or SKU"
-            hint="A yoyaku.io release or product link, or the catalogue SKU (for example LM-02)."
+            hint="A yoyaku.io release or product link, or the SKU exactly as printed on the shop, separators included (LM-02, not LM02)."
           >
             <input
               value={productInput}
@@ -595,7 +623,9 @@ export default function CampaignAssistantPage() {
               </span>
               {completeId === existingCampaign.id ? (
                 <span className="text-xs text-muted">
-                  Finishing this campaign — saving updates it.
+                  {calendarComplete
+                    ? "Finishing this Calendar campaign — only the copy is updated, it stays waiting for its Calendar-planned publication."
+                    : "Finishing this campaign — saving updates it."}
                 </span>
               ) : (
                 <span className="flex items-center gap-2">
@@ -635,6 +665,11 @@ export default function CampaignAssistantPage() {
               <span className="rounded-full border border-border px-2.5 py-1 text-xs text-muted">
                 {STATE_LABELS[effectiveFacts.state]}
               </span>
+              {notPurchasable && (
+                <span className="rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-400">
+                  Cannot be bought yet — drafts only
+                </span>
+              )}
               {effectiveFacts.hashtag ? (
                 <code className="rounded bg-accent/10 px-2.5 py-1 text-xs font-semibold text-accent">
                   {effectiveFacts.hashtag}
@@ -862,23 +897,42 @@ export default function CampaignAssistantPage() {
                   >
                     {copied ? "Copied!" : "Copy final caption"}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => void submit(false)}
-                    disabled={saving}
-                    className="rounded bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
-                  >
-                    Save draft
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void submit(true)}
-                    disabled={saving}
-                    className="rounded border border-accent px-4 py-2 text-sm font-medium text-accent hover:bg-accent/5 disabled:opacity-50"
-                  >
-                    Validate for publication
-                  </button>
+                  {calendarComplete ? (
+                    <button
+                      type="button"
+                      onClick={() => void submit(false)}
+                      disabled={saving}
+                      className="rounded bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+                    >
+                      Save copy edits
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void submit(false)}
+                        disabled={saving}
+                        className="rounded bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+                      >
+                        Save draft
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void submit(true)}
+                        disabled={saving}
+                        className="rounded border border-accent px-4 py-2 text-sm font-medium text-accent hover:bg-accent/5 disabled:opacity-50"
+                      >
+                        Validate for publication
+                      </button>
+                    </>
+                  )}
                 </div>
+                {notPurchasable && (
+                  <p className="text-xs text-amber-400">
+                    This product cannot be bought yet. Save as a draft and
+                    prepare it again to validate once it is purchasable.
+                  </p>
+                )}
                 {finishError && (
                   <div role="alert" className="space-y-1 rounded border border-error/20 bg-error/10 p-3 text-sm text-error">
                     <p>{finishError}</p>
