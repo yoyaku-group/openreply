@@ -87,9 +87,20 @@ try {
       );
       printCandidates(candidates, "--apply");
       const takenBy = new Map();
+      // Canonical pending rows claim their reference FIRST: a separator row
+      // must never be rewritten onto a reference a canonical row already
+      // holds, or two pending campaigns would end up waiting on the same
+      // normalized reference. Only then do separator rows claim theirs, so
+      // among candidates the oldest wins and the rest are skipped.
       for (const row of pendingRows) {
         const normalized = normalizeCatnoTag(row.catnoTag ?? "");
-        if (!normalized) continue;
+        if (!normalized || row.catnoTag !== normalized) continue;
+        const key = `${row.instagramAccountId}\u0000${normalized}`;
+        if (!takenBy.has(key)) takenBy.set(key, row.id);
+      }
+      for (const row of pendingRows) {
+        const normalized = normalizeCatnoTag(row.catnoTag ?? "");
+        if (!normalized || row.catnoTag === normalized) continue;
         const key = `${row.instagramAccountId}\u0000${normalized}`;
         if (!takenBy.has(key)) takenBy.set(key, row.id);
       }
