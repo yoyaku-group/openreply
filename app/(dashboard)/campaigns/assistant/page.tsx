@@ -422,6 +422,21 @@ export default function CampaignAssistantPage() {
     if (twoStep && (!openingDm.trim() || !openingButton.trim())) {
       return setFinishError("The opening DM needs a message and a button label.");
     }
+    // Validation is a hard gate: a caption that carries another reference
+    // sends two messages per commenter, and copy that fails the YOYAKU
+    // linter must not go live. Drafts are always allowed.
+    if (activeValue) {
+      const captionErrors =
+        captionResult?.checks.filter((check) => check.level === "error") ?? [];
+      if (captionErrors.length > 0) {
+        return setFinishError(captionErrors.map((c) => c.message).join(" "));
+      }
+      if (liveLint && !liveLint.ok) {
+        return setFinishError(
+          "The copy fails the YOYAKU linter. Fix the flagged messages and buttons before validating."
+        );
+      }
+    }
 
     const payload = buildAssistantPayload({
       facts: effectiveFacts,

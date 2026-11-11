@@ -221,15 +221,19 @@ const NAMED_ENTITIES: Record<string, string> = {
 
 /** Decode numeric (`&#8217;`) and common named HTML entities. */
 function decodeEntities(text: string): string {
+  // Out-of-range code points decode to nothing; String.fromCodePoint would
+  // throw a RangeError above 0x10FFFF and fail the whole product read.
+  const safeChar = (code: number) =>
+    Number.isFinite(code) && code >= 0 && code <= 0x10ffff
+      ? String.fromCodePoint(code)
+      : "";
   return text
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => {
-      const code = Number.parseInt(hex, 16);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : "";
-    })
-    .replace(/&#(\d{1,7});/g, (_, dec: string) => {
-      const code = Number.parseInt(dec, 10);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : "";
-    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) =>
+      safeChar(Number.parseInt(hex, 16)),
+    )
+    .replace(/&#(\d{1,7});/g, (_, dec: string) =>
+      safeChar(Number.parseInt(dec, 10)),
+    )
     .replace(/&([a-z]+);/gi, (entity, name: string) =>
       NAMED_ENTITIES[name.toLowerCase()] ?? entity,
     );

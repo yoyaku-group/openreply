@@ -132,6 +132,16 @@ describe("resolveProduct", () => {
     expect(long.length).toBeLessThanOrEqual(1200);
   });
 
+  it("decodes out-of-range entities to nothing instead of throwing", () => {
+    // &#9999999; is above 0x10FFFF: String.fromCodePoint would throw a
+    // RangeError and fail the whole product read.
+    expect(() => cleanProductDescription("<p>Limit &#9999999; here</p>")).not.toThrow();
+    expect(cleanProductDescription("<p>Limit &#9999999; here</p>")).toBe(
+      "Limit here"
+    );
+    expect(cleanProductDescription("&#8217;")).toBe("’");
+  });
+
   it("accepts a bare SKU and queries the store API by sku", async () => {
     const { impl, calls } = fetchFromRoutes(lm02Routes());
     const result = await resolveProduct("LM-02", { fetchImpl: impl });
