@@ -413,6 +413,31 @@ describe("resolveProduct", () => {
     expect(result.code).toBe("SHOP_UNAVAILABLE");
   });
 
+  it("refuses a comma in a bare SKU", async () => {
+    const { impl, calls } = fetchFromRoutes(lm02Routes());
+    const result = await resolveProduct("LM-02,XX-01", { fetchImpl: impl });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("PRODUCT_URL_INVALID");
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses the first store row when it is not the requested product", async () => {
+    // If a plugin change made the store filter a no-op, the first row of the
+    // whole catalogue must not become the campaign.
+    const { impl } = fetchFromRoutes({
+      "/wp-json/wc/store/v1/products?sku=LM-02": [
+        { ...LM02_STORE, sku: "OTHER-01", slug: "other-release" },
+      ],
+    });
+    const result = await resolveProduct("LM-02", { fetchImpl: impl });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("PRODUCT_NOT_FOUND");
+  });
+
   it("memoizes a resolved product for repeated inputs", async () => {
     const { impl, calls } = fetchFromRoutes(lm02Routes());
     const first = await resolveProduct(LM02_URL, { fetchImpl: impl });

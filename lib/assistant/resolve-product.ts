@@ -186,8 +186,9 @@ function parseProductInput(
     return { ok: true, parsed: { kind: "slug", slug } };
   }
 
-  // Everything else is a bare SKU.
-  if (/\s/.test(trimmed) || trimmed.length > 100) {
+  // Everything else is a bare SKU. Commas are refused: the Store API reads
+  // `sku` as a comma-separated list, so "LM-02,XX-01" would not be one SKU.
+  if (/[\s,]/.test(trimmed) || trimmed.length > 100) {
     return {
       ok: false,
       code: "PRODUCT_URL_INVALID",
@@ -404,7 +405,7 @@ async function resolveTaxonomy(
 async function resolveProductFacts(
   base: URL,
   query: string,
-  fallbackSku: string,
+  expected: { slug?: string; sku?: string },
   fetchImpl: typeof fetch,
 ): Promise<ProductFacts> {
   const products = await fetchJson<StoreApiProduct[]>(
@@ -415,9 +416,21 @@ async function resolveProductFacts(
   if (!product) {
     throw new ProductNotFoundError("No product matched this URL or SKU.");
   }
+  // The first row must BE the requested product: if a plugin change ever
+  // made the store filter a no-op, this stops a different release from
+  // receiving the campaign and its DM link.
+  const matchesQuery = expected.slug
+    ? product.slug?.trim() === expected.slug
+    : (product.sku?.trim().toUpperCase() ?? "") ===
+      (expected.sku ?? "").toUpperCase();
+  if (!matchesQuery) {
+    throw new ProductNotFoundError(
+      "No product matched this URL or SKU.",
+    );
+  }
 
   const slug = product.slug?.trim() || "";
-  const sku = product.sku?.trim() || fallbackSku;
+  const sku = product.sku?.trim() || expected.sku || "";
   const { artists, label, missing } = slug
     ? await resolveTaxonomy(base, slug, fetchImpl)
     : { artists: [], label: null, missing: ["artist", "label"] };
@@ -478,7 +491,9 @@ export async function resolveProduct(
       parsed.parsed.kind === "slug"
         ? `slug=${encodeURIComponent(parsed.parsed.slug)}`
         : `sku=${encodeURIComponent(parsed.parsed.sku)}`,
-      parsed.parsed.kind === "sku" ? parsed.parsed.sku : "",
+      parsed.parsed.kind === "slug"
+        ? { slug: parsed.parsed.slug }
+        : { sku: parsed.parsed.sku },
       fetchImpl,
     );
     memo.set(memoKey, { facts, at: now() });
