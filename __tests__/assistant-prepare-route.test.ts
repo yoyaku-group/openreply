@@ -44,11 +44,11 @@ const LM02_ROUTES: Record<string, unknown> = {
   "/wp-json/wc/store/v1/products?sku=LM-02": [LM02_STORE],
   "/wp-json/wp/v2/product?slug=nuro-fugue-nuron-likemind-02-lm-02&_fields=id,musicartist,musiclabel":
     [{ id: 746990, musicartist: [28126, 28180], musiclabel: [42124] }],
-  "/wp-json/wp/v2/musicartist?include=28126,28180&_fields=id,name": [
+  "/wp-json/wp/v2/musicartist?include=28126,28180&per_page=100&_fields=id,name": [
     { id: 28180, name: "Fugue" },
     { id: 28126, name: "Nuron" },
   ],
-  "/wp-json/wp/v2/musiclabel?include=42124&_fields=id,name": [
+  "/wp-json/wp/v2/musiclabel?include=42124&per_page=100&_fields=id,name": [
     { id: 42124, name: "Blueprint ARchives" },
   ],
 };
@@ -124,6 +124,21 @@ describe("POST /api/assistant/prepare", () => {
   it("returns 400 PRODUCT_URL_INVALID for a URL outside the shop host", async () => {
     const response = await POST(
       request({ product: "https://evil.example/release/abc001/" }) as never
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.code).toBe("PRODUCT_URL_INVALID");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a malformed JSON body instead of a 500", async () => {
+    const response = await POST(
+      new NextRequest("http://localhost/api/assistant/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "not json",
+      }) as never
     );
     const payload = await response.json();
 

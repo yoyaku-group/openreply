@@ -96,6 +96,22 @@ interface MemoEntry {
 
 const memo = new Map<string, MemoEntry>();
 
+/** The memo holds successes only; cap it so a worker cannot grow it forever. */
+const MEMO_MAX_ENTRIES = 200;
+
+function pruneMemo(nowMs: number): void {
+  for (const [key, entry] of memo) {
+    if (nowMs - entry.at >= MEMO_TTL_MS) memo.delete(key);
+  }
+  // Still oversized (a burst of distinct products inside the TTL): drop the
+  // oldest entries; Map iterates in insertion order.
+  while (memo.size > MEMO_MAX_ENTRIES) {
+    const oldest = memo.keys().next().value;
+    if (oldest === undefined) break;
+    memo.delete(oldest);
+  }
+}
+
 /** Clears the resolver memo (tests and long-lived workers). */
 export function clearAssistantProductCache(): void {
   memo.clear();
@@ -279,7 +295,7 @@ async function resolveTaxonomy(
   slug: string,
   fetchImpl: typeof fetch,
 ): Promise<{ artists: string[]; label: string | null; missing: string[] }> {
-  const missing: string[] = [];
+  const missing = new Set<string>();
   try {
     const rows = await fetchJson<ProductTermRow[]>(
       `${base.origin}/wp-json/wp/v2/product?slug=${encodeURIComponent(slug)}&_fields=id,musicartist,musiclabel`,
@@ -296,13 +312,14 @@ async function resolveTaxonomy(
     const [artistTerms, labelTerms] = await Promise.allSettled([
       artistIds.length
         ? fetchJson<TermRow[]>(
-            `${base.origin}/wp-json/wp/v2/musicartist?include=${artistIds.join(",")}&_fields=id,name`,
+            // per_page: compilations can carry more artists than the default 10.
+            `${base.origin}/wp-json/wp/v2/musicartist?include=${artistIds.join(",")}&per_page=100&_fields=id,name`,
             fetchImpl,
           )
         : Promise.resolve<TermRow[]>([]),
       labelIds.length
         ? fetchJson<TermRow[]>(
-            `${base.origin}/wp-json/wp/v2/musiclabel?include=${labelIds.join(",")}&_fields=id,name`,
+            `${base.origin}/wp-json/wp/v2/musiclabel?include=${labelIds.join(",")}&per_page=100&_fields=id,name`,
             fetchImpl,
           )
         : Promise.resolve<TermRow[]>([]),
@@ -310,8 +327,8 @@ async function resolveTaxonomy(
 
     // An empty term list is a missing fact, not an empty fact: the copy step
     // refuses to fill it in.
-    if (artistIds.length === 0) missing.push("artist");
-    if (labelIds.length === 0) missing.push("label");
+    if (artistIds.length === 0) missing.add("artist");
+    if (labelIds.length === 0) missing.add("label");
 
     // Artist order follows step 2's id list, not the term endpoint's order.
     const artists: string[] = [];
@@ -324,8 +341,11 @@ async function resolveTaxonomy(
         if (name) artists.push(name);
       }
     } else {
-      missing.push("artist");
+      missing.add("artist");
     }
+    // Resolved-but-empty (private term, blank name, id mismatch) is missing
+    // too, otherwise the copy step would see a complete empty artist list.
+    if (artists.length === 0) missing.add("artist");
 
     let label: string | null = null;
     if (labelTerms.status === "fulfilled") {
@@ -340,11 +360,14 @@ async function resolveTaxonomy(
         }
       }
     }
-    if (!label) missing.push("label");
+    if (!label) missing.add("label");
 
-    return { artists, label, missing };
-  } catch {
+    return { artists, label, missing: [...missing] };
+  } catch (error) {
     // A failed taxonomy read degrades the facts; it never fails the product.
+    // The cause is logged: a silent taxonomy regression would drain artist and
+    // label out of every prepared campaign without a trace.
+    console.error("[assistant] product taxonomy read failed", slug, error);
     return { artists: [], label: null, missing: ["artist", "label"] };
   }
 }
@@ -430,8 +453,12 @@ export async function resolveProduct(
       fetchImpl,
     );
     memo.set(memoKey, { facts, at: now() });
+    if (memo.size > MEMO_MAX_ENTRIES) pruneMemo(now());
     return { ok: true, facts };
   } catch (error) {
+    // Transport failures are not memoized (a transient outage should retry on
+    // the next click); the cause is logged before the stable error code.
+    console.error("[assistant] product read failed", memoKey, error);
     if (error instanceof ProductNotFoundError) {
       return {
         ok: false,

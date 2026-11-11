@@ -81,6 +81,21 @@ describe("composeCaption", () => {
     expect(result.final).toBe(`${caption}\n${CTA}`);
   });
 
+  it("warns instead of erroring when the product has no reference to compare", () => {
+    const result = composeCaption({
+      caption: "Two releases this week.\n#ABC001",
+      facts: facts({ catnoTag: null, hashtag: null, missing: ["catalogue_ref"] }),
+      cta: CTA,
+    });
+
+    const unresolved = result.checks.find(
+      (c) => c.code === "REFERENCE_UNRESOLVED"
+    );
+    expect(unresolved?.level).toBe("warn");
+    expect(result.checks.some((c) => c.code === "OTHER_REFERENCE")).toBe(false);
+    expect(result.additions).toEqual([CTA]);
+  });
+
   it("recognises the CTA case-insensitively on any line", () => {
     const caption = "Back in stock.\ncomment to get the link!";
     const result = composeCaption({ caption, facts: facts(), cta: CTA });

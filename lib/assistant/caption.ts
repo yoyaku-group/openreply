@@ -75,7 +75,20 @@ export function composeCaption(input: ComposeCaptionInput): ComposeCaptionResult
 
   if (caption) {
     const refs = extractCaptionCatnoTags(caption);
-    if (refs.length === 0) {
+    if (!facts.catnoTag) {
+      // The product has no catalogue reference to compare against (the SKU is
+      // not a valid reference): the caption's own references are neither
+      // right nor wrong, so this stays a warning, not an error.
+      if (refs.length > 0) {
+        checks.push({
+          level: "warn",
+          code: "REFERENCE_UNRESOLVED",
+          message: `The SKU is not a catalogue reference, so the caption's ${refs
+            .map((ref) => `#${ref}`)
+            .join(" ")} cannot be matched.`,
+        });
+      }
+    } else if (refs.length === 0) {
       if (!alreadyPublished && facts.hashtag) {
         checks.push({
           level: "warn",
@@ -84,7 +97,7 @@ export function composeCaption(input: ComposeCaptionInput): ComposeCaptionResult
         });
         additions.push(facts.hashtag);
       }
-    } else if (!refs.includes(facts.catnoTag ?? "")) {
+    } else if (!refs.includes(facts.catnoTag)) {
       checks.push({
         level: "error",
         code: "OTHER_REFERENCE",

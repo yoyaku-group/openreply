@@ -63,7 +63,17 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const body = await request.json();
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    // An empty or malformed body is a client error, not a 500.
+    return prepareErrorResponse(
+      "PRODUCT_URL_INVALID",
+      "Invalid JSON body.",
+      400,
+    );
+  }
   const parsed = prepareSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(

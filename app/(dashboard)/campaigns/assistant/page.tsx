@@ -435,13 +435,19 @@ export default function CampaignAssistantPage() {
       name,
     });
 
+    // Completing an existing campaign with "Save draft" must not silently
+    // pause it: the draft button saves the copy edits and leaves the live
+    // activation state untouched (only "Validate for publication" arms it).
+    const body =
+      completeId && !activeValue ? { ...payload, isActive: undefined } : payload;
+
     setSaving(true);
     try {
       const res = completeId
         ? await fetch(`/api/automations?id=${completeId}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify(body),
           })
         : await fetch("/api/automations", {
             method: "POST",
@@ -522,7 +528,15 @@ export default function CampaignAssistantPage() {
           <AccountSelect
             accounts={accounts}
             value={selectedAccountId}
-            onChange={setSelectedAccountId}
+            onChange={(value) => {
+              if (value === selectedAccountId) return;
+              setSelectedAccountId(value);
+              // The existing-campaign lookup was scoped to the account of the
+              // last Prepare; a different account invalidates the banner and
+              // the completion target.
+              setExistingCampaign(null);
+              setCompleteId(null);
+            }}
             includeAll={false}
           />
         </div>

@@ -77,9 +77,10 @@ const lm02Routes = (overrides: RouteTable = {}): RouteTable => ({
   "/wp-json/wc/store/v1/products?sku=LM-02": [LM02_STORE],
   "/wp-json/wp/v2/product?slug=nuro-fugue-nuron-likemind-02-lm-02&_fields=id,musicartist,musiclabel":
     LM02_PRODUCT_TERMS,
-  "/wp-json/wp/v2/musicartist?include=28126,28180&_fields=id,name":
+  "/wp-json/wp/v2/musicartist?include=28126,28180&per_page=100&_fields=id,name":
     LM02_ARTISTS,
-  "/wp-json/wp/v2/musiclabel?include=42124&_fields=id,name": LM02_LABEL,
+  "/wp-json/wp/v2/musiclabel?include=42124&per_page=100&_fields=id,name":
+    LM02_LABEL,
   ...overrides,
 });
 
@@ -242,6 +243,36 @@ describe("resolveProduct", () => {
     expect(result.facts.artists).toEqual([]);
     expect(result.facts.label).toBeNull();
     expect(result.facts.missing).toEqual(["artist", "label"]);
+  });
+
+  it("lists each missing fact once when term ids are empty, and adds artist when terms resolve empty", async () => {
+    // labelIds [] must not list "label" twice; a fulfilled but empty artist
+    // term fetch must still count artist as missing.
+    const { impl } = fetchFromRoutes({
+      "/wp-json/wc/store/v1/products?sku=LM-02": [LM02_STORE],
+      "/wp-json/wp/v2/product?slug=nuro-fugue-nuron-likemind-02-lm-02&_fields=id,musicartist,musiclabel":
+        [{ id: 746990, musicartist: [], musiclabel: [] }],
+    });
+    const result = await resolveProduct("LM-02", { fetchImpl: impl });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.facts.missing).toEqual(["artist", "label"]);
+    expect(result.facts.artists).toEqual([]);
+    expect(result.facts.label).toBeNull();
+  });
+
+  it("caps the term lookup at 100 entries per page", async () => {
+    const { impl, calls } = fetchFromRoutes(lm02Routes());
+    await resolveProduct(LM02_URL, { fetchImpl: impl });
+
+    expect(
+      calls.some((c) =>
+        c.includes(
+          "/wp-json/wp/v2/musicartist?include=28126,28180&per_page=100&_fields=id,name"
+        )
+      )
+    ).toBe(true);
   });
 
   it("lists catalogue_ref as missing when the SKU is not a valid reference", async () => {

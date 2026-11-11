@@ -70,6 +70,7 @@ is fixed or the campaign binds to a published post.
 | `REFERENCE_PRESENT` | ok | The caption carries the product reference. |
 | `REFERENCE_MISSING` | warn | The hashtag is added below the caption. |
 | `OTHER_REFERENCE` | error | The caption carries another reference. Two references send two messages. |
+| `REFERENCE_UNRESOLVED` | warn | The SKU is not a catalogue reference, so the caption's references cannot be matched. |
 | `CTA_PRESENT` / `CTA_MISSING` | ok / warn | The call to action per state (`Comment to pre-order!` for a pre-order, otherwise `Comment to get the link!`). |
 | `PRICE_IN_CAPTION` | warn | A price in the caption (prices change; the DM carries the link). |
 | `URL_IN_CAPTION` | warn | A URL in the caption (the DM link is tracked, a caption link is not). |
@@ -155,6 +156,7 @@ ce n'est pas corrigé ou que la campagne n'est pas liée à un post publié.
 | `REFERENCE_PRESENT` | ok | La légende porte la référence du produit. |
 | `REFERENCE_MISSING` | warn | Le hashtag est ajouté sous la légende. |
 | `OTHER_REFERENCE` | error | La légende porte une autre référence. Deux références envoient deux messages. |
+| `REFERENCE_UNRESOLVED` | warn | Le SKU n'est pas une référence catalogue ; les références de la légende ne peuvent pas être comparées. |
 | `CTA_PRESENT` / `CTA_MISSING` | ok / warn | L'appel à l'action selon l'état (`Comment to pre-order!` pour un précommande, sinon `Comment to get the link!`). |
 | `PRICE_IN_CAPTION` | warn | Un prix dans la légende (les prix changent ; le DM porte le lien). |
 | `URL_IN_CAPTION` | warn | Une URL dans la légende (le lien du DM est tracké, pas celui d'une légende). |
