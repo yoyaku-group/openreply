@@ -335,10 +335,15 @@ async function resolveTaxonomy(
     if (labelIds.length === 0) missing.add("label");
 
     // Artist order follows step 2's id list, not the term endpoint's order.
+    // WP stores term names HTML-encoded ("A &amp; B"); they are decoded here
+    // so the DM copy and the campaign name never carry entities.
     const artists: string[] = [];
     if (artistTerms.status === "fulfilled") {
       const names = new Map(
-        artistTerms.value.map((term) => [term.id, term.name ?? ""]),
+        artistTerms.value.map((term) => [
+          term.id,
+          decodeEntities(term.name ?? ""),
+        ]),
       );
       for (const id of artistIds) {
         const name = names.get(id)?.trim();
@@ -354,7 +359,10 @@ async function resolveTaxonomy(
     let label: string | null = null;
     if (labelTerms.status === "fulfilled") {
       const names = new Map(
-        labelTerms.value.map((term) => [term.id, term.name ?? ""]),
+        labelTerms.value.map((term) => [
+          term.id,
+          decodeEntities(term.name ?? ""),
+        ]),
       );
       for (const id of labelIds) {
         const name = names.get(id)?.trim();
@@ -407,7 +415,7 @@ async function resolveProductFacts(
     sku,
     catnoTag,
     hashtag: catnoTag ? `#${catnoTag}` : null,
-    title: product.name?.trim() || "",
+    title: decodeEntities(product.name ?? "").replace(/\s+/g, " ").trim(),
     artists,
     label,
     permalink: product.permalink?.trim() || "",

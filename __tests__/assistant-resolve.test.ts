@@ -142,6 +142,31 @@ describe("resolveProduct", () => {
     expect(cleanProductDescription("&#8217;")).toBe("’");
   });
 
+  it("entity-decodes the title, artist and label names", async () => {
+    const { impl } = fetchFromRoutes({
+      "/wp-json/wc/store/v1/products?sku=LM-02": [
+        { ...LM02_STORE, name: "Likemind &#8217;02" },
+      ],
+      "/wp-json/wp/v2/product?slug=nuro-fugue-nuron-likemind-02-lm-02&_fields=id,musicartist,musiclabel":
+        LM02_PRODUCT_TERMS,
+      "/wp-json/wp/v2/musicartist?include=28126,28180&per_page=100&_fields=id,name":
+        [
+          { id: 28180, name: "Fugue &amp; Friends" },
+          { id: 28126, name: "Nuron" },
+        ],
+      "/wp-json/wp/v2/musiclabel?include=42124&per_page=100&_fields=id,name": [
+        { id: 42124, name: "Blueprint &#038; ARchives" },
+      ],
+    });
+    const result = await resolveProduct("LM-02", { fetchImpl: impl });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.facts.title).toBe("Likemind ’02");
+    expect(result.facts.artists).toEqual(["Nuron", "Fugue & Friends"]);
+    expect(result.facts.label).toBe("Blueprint & ARchives");
+  });
+
   it("accepts a bare SKU and queries the store API by sku", async () => {
     const { impl, calls } = fetchFromRoutes(lm02Routes());
     const result = await resolveProduct("LM-02", { fetchImpl: impl });
