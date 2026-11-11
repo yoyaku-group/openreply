@@ -10,6 +10,7 @@ import { prisma } from "@/lib/db/client";
 import { calculateCtr, normalizeTopKeywords } from "@/lib/tracking/analytics";
 import { buildTrackedUrl } from "@/lib/tracking/message";
 import { generateTrackedLinkSlug } from "@/lib/tracking/server";
+import { withDmUtm } from "@/lib/tracking/utm";
 import { buildReportUrl, generateReportShareSlug } from "@/lib/reports/share";
 import { normalizeInboundDmKeywords } from "@/lib/automations/inbound-dm";
 import {
@@ -721,6 +722,10 @@ export async function POST(request: NextRequest) {
     secondaryButtonLabel,
   } = parsed.data;
 
+  // Tracked-link destinations carry DM UTM tags (automation playbook rule 4):
+  // the lower-case catalogue reference when there is one, otherwise the name.
+  const dmUtmCampaign = catnoTag ?? parsed.data.name;
+
   // The primary link's button title comes from `linkButtonLabel`; the second
   // link stores its own button title in the tracked link's `label` field.
   const linkCreates: {
@@ -734,7 +739,7 @@ export async function POST(request: NextRequest) {
       workspaceId,
       slug: generateTrackedLinkSlug(),
       label: "Primary campaign link",
-      destinationUrl: trackedDestinationUrl,
+      destinationUrl: withDmUtm(trackedDestinationUrl, dmUtmCampaign),
     });
   }
   if (secondaryDestinationUrl) {
@@ -742,7 +747,7 @@ export async function POST(request: NextRequest) {
       workspaceId,
       slug: generateTrackedLinkSlug(),
       label: secondaryButtonLabel?.trim() || "Open link",
-      destinationUrl: secondaryDestinationUrl,
+      destinationUrl: withDmUtm(secondaryDestinationUrl, dmUtmCampaign),
     });
   }
 
@@ -1428,6 +1433,10 @@ export async function PATCH(request: NextRequest) {
     });
   }
 
+  // Tracked-link destinations carry DM UTM tags: the lower-case catalogue
+  // reference when there is one, otherwise the campaign name.
+  const dmUtmCampaign = effectiveCatnoTag ?? parsed.data.name ?? existing.name;
+
   // Update, create, or clear the campaign's primary tracked link when a
   // destination URL was supplied. `undefined` means "leave it alone".
   if (trackedDestinationUrl !== undefined && trackedDestinationUrl !== null) {
@@ -1443,7 +1452,7 @@ export async function PATCH(request: NextRequest) {
     } else if (primaryLink) {
       await prisma.trackedLink.update({
         where: { id: primaryLink.id },
-        data: { destinationUrl: trackedDestinationUrl },
+        data: { destinationUrl: withDmUtm(trackedDestinationUrl, dmUtmCampaign) },
       });
     } else {
       await prisma.trackedLink.create({
@@ -1452,7 +1461,7 @@ export async function PATCH(request: NextRequest) {
           automationId,
           slug: generateTrackedLinkSlug(),
           label: "Primary campaign link",
-          destinationUrl: trackedDestinationUrl,
+          destinationUrl: withDmUtm(trackedDestinationUrl, dmUtmCampaign),
         },
       });
     }
@@ -1480,7 +1489,7 @@ export async function PATCH(request: NextRequest) {
       await prisma.trackedLink.update({
         where: { id: secondaryLink.id },
         data: {
-          destinationUrl: secondaryDestinationUrl,
+          destinationUrl: withDmUtm(secondaryDestinationUrl, dmUtmCampaign),
           label: secondaryLabel,
         },
       });
@@ -1491,7 +1500,7 @@ export async function PATCH(request: NextRequest) {
           automationId,
           slug: generateTrackedLinkSlug(),
           label: secondaryLabel,
-          destinationUrl: secondaryDestinationUrl,
+          destinationUrl: withDmUtm(secondaryDestinationUrl, dmUtmCampaign),
         },
       });
     }

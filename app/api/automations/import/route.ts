@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/client";
 import { getWorkspaceInstagramAccount } from "@/lib/instagram-accounts";
 import { generateReportShareSlug } from "@/lib/reports/share";
 import { generateTrackedLinkSlug } from "@/lib/tracking/server";
+import { withDmUtm } from "@/lib/tracking/utm";
 import {
   canManageCampaigns,
   getCurrentWorkspaceContext,
@@ -117,7 +118,9 @@ export async function POST(request: NextRequest) {
                   workspaceId: context.workspaceId,
                   slug: generateTrackedLinkSlug(),
                   label: "Primary campaign link",
-                  destinationUrl: validTrackedUrl,
+                  // Imported rows carry no catalogue reference, so the UTM
+                  // campaign is a slug of the row name.
+                  destinationUrl: withDmUtm(validTrackedUrl, name),
                 },
               },
             }
