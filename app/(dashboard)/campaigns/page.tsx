@@ -347,6 +347,12 @@ export default function CampaignsPage() {
             />
           )}
           <Link
+            href="/campaigns/assistant"
+            className="px-4 py-2 rounded border border-border text-sm font-medium text-muted hover:text-foreground"
+          >
+            Prepare from a product
+          </Link>
+          <Link
             href="/campaigns/import"
             className="px-4 py-2 rounded border border-border text-sm font-medium text-muted hover:text-foreground"
           >
