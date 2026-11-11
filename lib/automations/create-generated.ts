@@ -28,20 +28,33 @@ export interface GeneratedCampaignInput {
  * unusable (the release-sync cron records the skip outcome itself). The
  * ReleaseSyncEvent row keeps the raw SKU: a SKU is a shop identifier, the
  * campaign carries only its normalized catalogue form.
+ *
+ * A non-null SKU that normalizes to nothing ("", "---", whitespace) or fails
+ * `parseCatnoTag` skips the campaign: storing null would silently turn a
+ * release campaign into a generic next-post campaign and bind it to the
+ * first unrelated publication. Only an explicit null (instore events) keeps
+ * the generic behaviour.
  */
 export async function createGeneratedCampaign(input: GeneratedCampaignInput) {
   const { copy, workspaceId } = input;
 
-  const catnoTag = normalizeCatnoTag(input.catnoTag);
-  if (catnoTag) {
-    const parsed = parseCatnoTag(catnoTag);
-    if (!parsed.ok) {
+  let catnoTag: string | null = null;
+  if (input.catnoTag !== null) {
+    const normalized = normalizeCatnoTag(input.catnoTag);
+    const parsed = normalized ? parseCatnoTag(normalized) : null;
+    if (!parsed || !parsed.ok) {
       console.warn(
         "[create-generated] skip_invalid_catalogue_reference",
-        JSON.stringify({ sku: input.catnoTag, reason: parsed.message }),
+        JSON.stringify({
+          sku: input.catnoTag,
+          reason:
+            parsed?.message ??
+            "the SKU does not normalize into a catalogue reference",
+        }),
       );
       return null;
     }
+    catnoTag = parsed.value;
   }
 
   // The tracked link's utm_campaign: the lower-case reference when there is

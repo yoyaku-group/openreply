@@ -38,16 +38,9 @@ const NEEDS_NORMALIZATION =
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await client.connect();
 
-try {
-  const { rows: candidates } = await client.query(
-    `SELECT id, "catnoTag", "pendingNextReel", "isActive", "instagramAccountId"
-     FROM "Automation"
-     WHERE ${NEEDS_NORMALIZATION}
-     ORDER BY "createdAt", id`
-  );
-
-  console.log(`COUNT ${candidates.length} row(s) store a non-canonical catnoTag (${APPLY ? "--apply" : "dry-run"})`);
-  for (const row of candidates) {
+function printCandidates(rows, mode) {
+  console.log(`COUNT ${rows.length} row(s) store a non-canonical catnoTag (${mode})`);
+  for (const row of rows) {
     console.log(
       [
         row.id,
@@ -59,15 +52,26 @@ try {
       ].join(", ")
     );
   }
+}
 
+try {
   if (!APPLY) {
+    const { rows: candidates } = await client.query(
+      `SELECT id, "catnoTag", "pendingNextReel", "isActive", "instagramAccountId"
+       FROM "Automation"
+       WHERE ${NEEDS_NORMALIZATION}
+       ORDER BY "createdAt", id`
+    );
+    printCandidates(candidates, "dry-run");
     console.log("Dry-run: nothing was written. Re-run with --apply to normalize pending rows.");
   } else {
     await client.query("BEGIN");
     try {
       // Every pending row registers its normalized reference, canonical rows
       // included: a candidate must not merge into an already-canonical
-      // waiting campaign of the same account either.
+      // waiting campaign of the same account either. The candidate list is
+      // read inside the same transaction, after these locks, so the reported
+      // COUNT and the rewritten set come from one snapshot.
       const { rows: pendingRows } = await client.query(
         `SELECT id, "catnoTag", "instagramAccountId"
          FROM "Automation"
@@ -75,6 +79,13 @@ try {
          ORDER BY "createdAt", id
          FOR UPDATE`
       );
+      const { rows: candidates } = await client.query(
+        `SELECT id, "catnoTag", "pendingNextReel", "isActive", "instagramAccountId"
+         FROM "Automation"
+         WHERE ${NEEDS_NORMALIZATION}
+         ORDER BY "createdAt", id`
+      );
+      printCandidates(candidates, "--apply");
       const takenBy = new Map();
       for (const row of pendingRows) {
         const normalized = normalizeCatnoTag(row.catnoTag ?? "");
