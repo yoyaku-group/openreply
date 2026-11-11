@@ -1434,8 +1434,14 @@ export async function PATCH(request: NextRequest) {
   }
 
   // Tracked-link destinations carry DM UTM tags: the lower-case catalogue
-  // reference when there is one, otherwise the campaign name.
+  // reference when there is one, otherwise the campaign name. Calendar-owned
+  // campaigns are exempt: the calendar intent sync compares the stored
+  // destinationUrl against the intent to detect material changes, so a UTM'd
+  // rewrite would deactivate an active campaign on the next sync (and
+  // flip-flop as the sync writes the raw URL back). Their destination is
+  // stored exactly as submitted.
   const dmUtmCampaign = effectiveCatnoTag ?? parsed.data.name ?? existing.name;
+  const applyDmUtm = existing.source !== "CALENDAR";
 
   // Update, create, or clear the campaign's primary tracked link when a
   // destination URL was supplied. `undefined` means "leave it alone".
@@ -1452,7 +1458,11 @@ export async function PATCH(request: NextRequest) {
     } else if (primaryLink) {
       await prisma.trackedLink.update({
         where: { id: primaryLink.id },
-        data: { destinationUrl: withDmUtm(trackedDestinationUrl, dmUtmCampaign) },
+        data: {
+          destinationUrl: applyDmUtm
+            ? withDmUtm(trackedDestinationUrl, dmUtmCampaign)
+            : trackedDestinationUrl,
+        },
       });
     } else {
       await prisma.trackedLink.create({
@@ -1461,7 +1471,9 @@ export async function PATCH(request: NextRequest) {
           automationId,
           slug: generateTrackedLinkSlug(),
           label: "Primary campaign link",
-          destinationUrl: withDmUtm(trackedDestinationUrl, dmUtmCampaign),
+          destinationUrl: applyDmUtm
+            ? withDmUtm(trackedDestinationUrl, dmUtmCampaign)
+            : trackedDestinationUrl,
         },
       });
     }
@@ -1489,7 +1501,9 @@ export async function PATCH(request: NextRequest) {
       await prisma.trackedLink.update({
         where: { id: secondaryLink.id },
         data: {
-          destinationUrl: withDmUtm(secondaryDestinationUrl, dmUtmCampaign),
+          destinationUrl: applyDmUtm
+            ? withDmUtm(secondaryDestinationUrl, dmUtmCampaign)
+            : secondaryDestinationUrl,
           label: secondaryLabel,
         },
       });
@@ -1500,7 +1514,9 @@ export async function PATCH(request: NextRequest) {
           automationId,
           slug: generateTrackedLinkSlug(),
           label: secondaryLabel,
-          destinationUrl: withDmUtm(secondaryDestinationUrl, dmUtmCampaign),
+          destinationUrl: applyDmUtm
+            ? withDmUtm(secondaryDestinationUrl, dmUtmCampaign)
+            : secondaryDestinationUrl,
         },
       });
     }

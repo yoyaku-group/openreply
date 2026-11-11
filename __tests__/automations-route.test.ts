@@ -874,6 +874,33 @@ describe("PATCH /api/automations catalogue scope", () => {
     expect(mockPrisma.automation.update).not.toHaveBeenCalled();
   });
 
+  it("writes a Calendar campaign's destination without UTM parameters", async () => {
+    // Calendar owns the destination: sync-calendar-intents compares the
+    // stored URL against the intent, so a UTM'd rewrite would deactivate the
+    // campaign on the next sync. A copy edit resubmitting the unchanged URL
+    // must store it byte for byte.
+    mockPrisma.automation.findFirst.mockResolvedValueOnce(calendarCampaign());
+    mockPrisma.trackedLink.findFirst.mockResolvedValueOnce({ id: "link_1" });
+
+    const response = await PATCH(
+      patchRequest("automation_existing", {
+        trackedDestinationUrl: "https://yoyaku.io/release/abc001/",
+      }) as never
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.trackedLink.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "link_1" },
+        data: expect.objectContaining({
+          destinationUrl: "https://yoyaku.io/release/abc001/",
+        }),
+      })
+    );
+    const updateData = mockPrisma.trackedLink.update.mock.calls[0][0].data;
+    expect(updateData.destinationUrl).not.toContain("utm_");
+  });
+
   it("accepts an any-word matcher on a Calendar campaign", async () => {
     mockPrisma.automation.findFirst.mockResolvedValueOnce(
       calendarCampaign({ matchAnyWord: false, keywords: [] })
