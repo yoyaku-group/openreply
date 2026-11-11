@@ -23,7 +23,9 @@ by SQL, by CSV import or from a cron.
 3. **Copy rules** (enforced for generated copy by `lib/copy/copy-linter.ts`,
    voice in `lib/copy/yoyaku-patterns.ts`): facts only, no emoji, no em/en
    dash, no price, no mention of AI or automation, no invented name. Meta
-   limits: body 640 characters, button title 20, at most 3 buttons.
+   limits: body 640 characters, button title 20, at most 3 buttons. The same
+   rules gate AI-written copy (one repair attempt, standard copy on failure) —
+   see `docs/campaign-assistant.md`, section "AI copy".
 4. **Links are tracked** (`TrackedLink`, served as `/r/<slug>`) and carry UTM:
    `utm_source=instagram&utm_medium=dm&utm_campaign=<campaign-slug>`.
    The parameters are applied by `lib/tracking/utm.ts` (`withDmUtm`) wherever

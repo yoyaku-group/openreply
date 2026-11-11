@@ -1,0 +1,30 @@
+[Unit]
+Description=OpenReply copywriter host worker (subscription cascade transport)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yoyaku-bot
+Group=yoyaku-bot
+ExecStart=/usr/bin/python3 /opt/openreply/deploy/copywriter/worker.py
+Restart=on-failure
+RestartSec=10
+EnvironmentFile=/etc/openreply/copywriter.env
+
+# Cascade credentials use the same mechanism as the host's other cascade
+# units. The LoadCredential= lines below are a placeholder: copy them at
+# install from an existing cascade unit, and keep
+# Environment=CLAUDE_CASCADE_CRED_DIR=%d exactly as the other units set it.
+# LoadCredential=<name>:/etc/<same path as the existing cascade units>
+# LoadCredential=<name>:/etc/<same path as the existing cascade units>
+Environment=CLAUDE_CASCADE_CRED_DIR=%d
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+StateDirectory=openreply-copywriter
+
+[Install]
+WantedBy=multi-user.target
