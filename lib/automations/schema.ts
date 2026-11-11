@@ -13,8 +13,10 @@ export const triggerTypeSchema = z.enum(["COMMENT", "INBOUND_DM"]);
 /**
  * `catnoTag` is the Instagram hashtag that identifies a future publication
  * (e.g. `#ABC001`). Exterior whitespace and one optional leading `#` are
- * accepted; the stored value is canonical upper-case without the `#`. Invalid
- * internal punctuation is rejected rather than silently removed.
+ * accepted, and separators are accepted too: `LM-02`, `lm02`, `#LM_02` and
+ * `LM 02` all store as the canonical upper-case `LM02`, because Instagram
+ * ends a hashtag at a dash so only the separator-free form can bind. A
+ * reference must carry at least one digit (`#LM`, `#VINYL` are refused).
  */
 export const catnoTagSchema = z.preprocess(
   (value) => {

@@ -10,6 +10,7 @@
  */
 
 import type { CampaignFacts } from "@/lib/copy/release-facts";
+import { captionHasCatnoTag } from "@/lib/automations/catalogue";
 
 export interface ShopProduct {
   sku: string;
@@ -106,8 +107,10 @@ export function deriveInstoreEvents(sessions: ShopInstoreSession[]): DerivedEven
 }
 
 /**
- * #TO001 in a caption, case-insensitive, not followed by more catno chars.
- * Underscores are catno characters too: #ABC001 must not match #ABC001_EXTRA.
+ * Whole-token equality on the normalized reference (`captionHasCatnoTag`):
+ * `#LM-02`, `#lm02`, `#LM_02` and `#LM02` all match the stored tag `LM02`
+ * (and its legacy `LM-02` form), while `#LM02X` does not match `LM02`. A
+ * reference without a digit is never valid, so a bare `#LM` matches nothing.
  */
 export function captionMatchesCatno(
   caption: string | undefined,
@@ -115,9 +118,6 @@ export function captionMatchesCatno(
 ): boolean {
   if (!caption) return false;
   // Callers normally pass the canonical bare token, but legacy Calendar rows
-  // have stored a leading `#`; accept either form.
-  const token = catno.trim().replace(/^#/, "");
-  if (!token) return false;
-  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`#${escaped}(?![A-Za-z0-9_])`, "i").test(caption);
+  // have stored a leading `#`; `captionHasCatnoTag` normalizes either form.
+  return captionHasCatnoTag(caption, catno);
 }

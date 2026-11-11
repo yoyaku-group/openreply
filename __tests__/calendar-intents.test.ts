@@ -145,6 +145,41 @@ describe("calendar intent contract", () => {
   });
 });
 
+it("keeps an active campaign active only while the destination is unchanged", () => {
+  const published = normalizeCalendarIntent({
+    ...base,
+    external_id: "media-123",
+    published_url: "https://www.instagram.com/p/example/",
+  })!;
+  const existing = {
+    sourceRevision: base.source_revision,
+    calendarScheduledAt: new Date(base.scheduled_at),
+    calendarStatus: base.status,
+    calendarAutomationStatus: base.automation_status,
+    isActive: true,
+    postId: "media-123",
+  };
+  expect(
+    calendarAutomationUpdateState(
+      { ...existing, destinationUrl: base.destination_url },
+      published,
+    )
+  ).toEqual({ isActive: true, lifecycle: "ACTIVE", materialChanged: false });
+  // The stored destination must equal the intent's URL byte for byte: any
+  // other writer that rewrites it (for example a UTM pass) makes the next
+  // sync deactivate the campaign and flip the URL back. Writers outside the
+  // sync must never touch a Calendar destination.
+  expect(
+    calendarAutomationUpdateState(
+      {
+        ...existing,
+        destinationUrl: `${base.destination_url}?utm_source=instagram&utm_medium=dm`,
+      },
+      published,
+    )
+  ).toEqual({ isActive: false, lifecycle: "READY", materialChanged: true });
+});
+
 // Lifecycle regression: a cancellation used to keep a bound active campaign live.
 it("suspends an unchanged media binding when the source cancels delivery", () => {
   const intent = normalizeCalendarIntent({ ...base, external_id: "media-123",

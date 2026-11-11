@@ -226,7 +226,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   const catalogueTag = parsedCatalogueTag?.ok
     ? parsedCatalogueTag.value
     : null;
-  const catalogueDisplay = catalogueTag ? `#${catalogueTag}` : null;
+  const catalogueDisplay = catalogueTag ? displayCatnoTag(catalogueTag) : null;
   const isCatalogueScope =
     triggerType === "COMMENT" && triggerScope === "catalogue";
   const status = campaignStatus({
@@ -881,6 +881,10 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 maxLength={51}
                 className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
               />
+              <p className="text-xs text-muted">
+                Instagram cuts a hashtag at a dash, so LM-02 is published as
+                #LM02.
+              </p>
               <p className="text-xs text-muted">
                 The hashtag printed on the release post (for example #ABC001).
                 A campaign waits for the first feed post or reel published after
