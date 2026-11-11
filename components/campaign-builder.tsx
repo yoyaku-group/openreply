@@ -917,6 +917,16 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               {parsedCatalogueTag && !parsedCatalogueTag.ok && (
                 <p className="text-xs text-error">{parsedCatalogueTag.message}</p>
               )}
+              <p className="text-xs text-muted">
+                Starting from a shop product?{" "}
+                <Link
+                  href="/campaigns/assistant"
+                  className="underline hover:text-foreground"
+                >
+                  Prepare the campaign from a product
+                </Link>{" "}
+                and it fills the copy, the link and this hashtag for you.
+              </p>
               {!trackedDestinationUrl.trim() && (
                 <p className="text-xs text-amber-400">
                   A destination link is required for this scope, even when you
