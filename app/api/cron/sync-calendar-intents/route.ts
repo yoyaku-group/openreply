@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { generateReportShareSlug } from "@/lib/reports/share";
 import { generateTrackedLinkSlug } from "@/lib/tracking/server";
+import { normalizeCatnoTag } from "@/lib/automations/catalogue";
 import {
   calendarAutomationUpdateState, calendarCampaignName, calendarRetirementSchema,
   normalizeCalendarIntent, parseCalendarWorkspaceIds,
@@ -85,7 +86,10 @@ export async function GET(request: NextRequest) {
         // comment filter: every Calendar campaign matches any comment.
         const content = {
           name: calendarCampaignName(intent), postId, postUrl: intent.published_url || null,
-          pendingNextReel: false, catnoTag: intent.release_skus[0] || null,
+          // The intent carries raw release SKUs; the campaign stores their
+          // canonical catalogue form (`LM-02` -> `LM02`). The campaign NAME
+          // keeps the raw SKU so it stays findable by its catalogue number.
+          pendingNextReel: false, catnoTag: normalizeCatnoTag(intent.release_skus[0]),
           keywords: [], matchAnyWord: true, ...provenance,
         };
         if (existing) {

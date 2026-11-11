@@ -26,6 +26,10 @@ by SQL, by CSV import or from a cron.
    limits: body 640 characters, button title 20, at most 3 buttons.
 4. **Links are tracked** (`TrackedLink`, served as `/r/<slug>`) and carry UTM:
    `utm_source=instagram&utm_medium=dm&utm_campaign=<campaign-slug>`.
+   The parameters are applied by `lib/tracking/utm.ts` (`withDmUtm`) wherever
+   a `TrackedLink` destination is created; the campaign slug is the lower-case
+   normalized `catnoTag` when the campaign has one, otherwise a slug of the
+   automation name. Parameters the destination URL already sets are kept.
 5. **No follow gate** unless the goal is followers. `requireFollow` adds a step
    and loses people when the goal is an email or a sale.
 6. **Barcelona (BCN): double text, English then Spanish, on every message and
@@ -70,10 +74,15 @@ A keyword used in a caption must also be listed in yoyaku-marketing
   a Calendar intent carrying a CTA keyword creates a campaign with
   `matchAnyWord = true` and `keywords = []`, and the keyword value is never
   compared, so a Calendar-side rename does not deactivate an active campaign.
-- **Binding is by hashtag.** The attach cron binds a pending campaign only to
-  the first feed or reels media whose caption contains `#<catnoTag>`; no exact
-  match fails closed. So the caption must carry `#<catno>`, and the campaign
-  must exist before the post is published.
+- **Binding is by whole-token equality on the normalized reference.** The
+  attach binder extracts the `#hashtag` tokens from the caption, normalizes
+  them (`LM-02`, `#LM_02`, `lm02` and `LM02` all normalize to `LM02`) and
+  binds on exact equality with the campaign's `catnoTag`; `#LM02X` does not
+  match `LM02`, and a reference without a digit is never valid, so `#LM`
+  matches nothing. No exact match fails closed. So the caption must carry the
+  stored separator-free hashtag `#<catno>` (write `#LM02`, never `#LM-02` —
+  Instagram ends a hashtag at a dash), and the campaign must exist before the
+  post is published.
 - **Post already published without the hashtag:** bind it by hand under the
   same guard the binder uses:
   `UPDATE "Automation" SET "postId"='<media id>', "postUrl"='<permalink>', "pendingNextReel"=false WHERE id='<id>' AND "pendingNextReel"=true;`

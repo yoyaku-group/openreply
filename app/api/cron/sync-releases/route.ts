@@ -158,6 +158,19 @@ export async function GET(request: NextRequest) {
       instagramAccountId: account.id,
       isActive: process.env.RELEASE_SYNC_AUTO_ACTIVATE === "true",
     });
+    if (!automation) {
+      // The shop SKU does not normalize into a usable catalogue reference
+      // (no digit, or outside the length bounds); the campaign would never
+      // bind to a caption hashtag, so it is not created.
+      await recordOutcome(
+        event,
+        "invalid_catalogue_reference",
+        "the SKU does not normalize into a catalogue reference (at least 3 characters and one digit)",
+        null
+      );
+      rejected += 1;
+      continue;
+    }
 
     await recordOutcome(event, "created", null, automation.id);
     created += 1;

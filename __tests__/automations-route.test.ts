@@ -11,6 +11,7 @@ const {
   mockPrisma: {
     $transaction: vi.fn(),
     $executeRaw: vi.fn(),
+    $queryRaw: vi.fn(),
     workspace: { findUnique: vi.fn() },
     instagramAccount: { findFirst: vi.fn() },
     automation: {
@@ -133,6 +134,9 @@ beforeEach(() => {
     ...data,
   }));
   mockPrisma.$executeRaw.mockResolvedValue(0);
+  // Catalogue conflict checks run as normalized-SQL queries; no conflicts by
+  // default, individual tests override per call.
+  mockPrisma.$queryRaw.mockResolvedValue([]);
   mockPrisma.$transaction.mockImplementation(
     async (callback: (tx: typeof mockPrisma) => Promise<unknown>) =>
       callback(mockPrisma)
@@ -536,14 +540,48 @@ describe("POST /api/automations catalogue scope", () => {
     const createArgs = mockPrisma.automation.create.mock.calls[0][0];
     expect(createArgs.data.trackedLinks.create).toEqual([
       expect.objectContaining({
-        destinationUrl: "https://yoyaku.io/release/abc001/",
+        destinationUrl:
+          "https://yoyaku.io/release/abc001/?utm_source=instagram&utm_medium=dm&utm_campaign=abc001",
       }),
     ]);
   });
 
-  it("rejects invalid internal punctuation instead of silently removing it", async () => {
+  it("stores a separator reference in canonical form and tags its link", async () => {
     const response = await POST(
-      request(cataloguePayload({ catnoTag: "ABC-001" })) as never
+      request(cataloguePayload({ catnoTag: "LM-02", name: "LM02 release" })) as never
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(payload.data.catnoTag).toBe("LM02");
+    expect(mockPrisma.automation.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          catnoTag: "LM02",
+          pendingNextReel: true,
+        }),
+      })
+    );
+    const createArgs = mockPrisma.automation.create.mock.calls[0][0];
+    expect(createArgs.data.trackedLinks.create[0].destinationUrl).toBe(
+      "https://yoyaku.io/release/abc001/?utm_source=instagram&utm_medium=dm&utm_campaign=lm02",
+    );
+  });
+
+  it("rejects characters outside the accepted reference set", async () => {
+    const response = await POST(
+      request(cataloguePayload({ catnoTag: "#LM.02" })) as never
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.details.fieldErrors.catnoTag).toBeDefined();
+    expect(mockPrisma.automation.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a reference without a digit", async () => {
+    const response = await POST(
+      request(cataloguePayload({ catnoTag: "#VINYL" })) as never
     );
     const payload = await response.json();
 
@@ -575,13 +613,15 @@ describe("POST /api/automations catalogue scope", () => {
   });
 
   it("rejects a normalized duplicate including when both are drafts", async () => {
-    mockPrisma.automation.findFirst.mockResolvedValueOnce({
-      id: "draft_abc001",
-      name: "ABC001 draft",
-      source: "MANUAL",
-      lifecycle: "ACTIVE",
-      isActive: false,
-    });
+    mockPrisma.$queryRaw.mockResolvedValueOnce([
+      {
+        id: "draft_abc001",
+        name: "ABC001 draft",
+        source: "MANUAL",
+        lifecycle: "ACTIVE",
+        isActive: false,
+      },
+    ]);
 
     const response = await POST(
       request(cataloguePayload({ catnoTag: "#abc001" })) as never
@@ -592,32 +632,31 @@ describe("POST /api/automations catalogue scope", () => {
     expect(payload.code).toBe("CATALOGUE_REF_CONFLICT");
     expect(payload.conflict).toMatchObject({ id: "draft_abc001" });
     expect(payload.conflictUrl).toBe("/campaigns/draft_abc001");
-    expect(mockPrisma.automation.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          instagramAccountId: "account_1",
-          pendingNextReel: true,
-          lifecycle: { not: "ARCHIVED" },
-          OR: [
-            { catnoTag: { equals: "ABC001", mode: "insensitive" } },
-            { catnoTag: { equals: "#ABC001", mode: "insensitive" } },
-          ],
-        }),
-      })
+    // The conflict query compares the canonical form of the STORED value, so
+    // legacy rows holding separators conflict with the canonical request.
+    const [template, ...params] = mockPrisma.$queryRaw.mock.calls[0];
+    const sql = template.join("?");
+    expect(sql).toContain(
+      `upper(regexp_replace("catnoTag", '[^A-Za-z0-9]', '', 'g')) = ?`
     );
+    expect(sql).toContain(`"pendingNextReel" = true`);
+    expect(params).toContain("ABC001");
+    expect(params).toContain("account_1");
     expect(mockPrisma.automation.create).not.toHaveBeenCalled();
   });
 
   it("rejects a Calendar campaign that is still unbound for the same reference", async () => {
-    mockPrisma.automation.findFirst
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
-        id: "calendar_abc001",
-        name: "Calendar ABC001",
-        source: "CALENDAR",
-        lifecycle: "READY",
-        isActive: false,
-      });
+    mockPrisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "calendar_abc001",
+          name: "Calendar ABC001",
+          source: "CALENDAR",
+          lifecycle: "READY",
+          isActive: false,
+        },
+      ]);
 
     const response = await POST(request(cataloguePayload()) as never);
     const payload = await response.json();
@@ -763,15 +802,14 @@ describe("PATCH /api/automations catalogue scope", () => {
         }),
       })
     );
-    const selfExcluding = mockPrisma.automation.findFirst.mock.calls.find(
-      ([args]) => args.where?.id?.not === "automation_existing"
-    );
-    expect(selfExcluding).toBeDefined();
-    expect(selfExcluding?.[0].where).toMatchObject({
-      instagramAccountId: "account_1",
-      pendingNextReel: true,
-      lifecycle: { not: "ARCHIVED" },
-    });
+    const [template, ...params] = mockPrisma.$queryRaw.mock.calls[0];
+    const sql = template.join("?");
+    expect(sql).toContain(`"pendingNextReel" = true`);
+    expect(sql).toContain(`"lifecycle" <> 'ARCHIVED'`);
+    expect(params).toContain("account_1");
+    expect(params).toContain("ABC001");
+    // The edited campaign itself is excluded from its own conflict check.
+    expect(params).toContain("automation_existing");
   });
 
   it("keeps a bound catalogue campaign's tag on ordinary edits", async () => {
@@ -856,15 +894,18 @@ describe("PATCH /api/automations catalogue scope", () => {
   });
 
   it("refuses to activate a Calendar campaign where a manual campaign is already bound", async () => {
-    mockPrisma.automation.findFirst
-      .mockResolvedValueOnce(calendarCampaign({ isActive: false, lifecycle: "READY" }))
-      .mockResolvedValueOnce({
+    mockPrisma.automation.findFirst.mockResolvedValueOnce(
+      calendarCampaign({ isActive: false, lifecycle: "READY" })
+    );
+    mockPrisma.$queryRaw.mockResolvedValueOnce([
+      {
         id: "manual_abc001",
         name: "Manual ABC001",
         source: "MANUAL",
         lifecycle: "ACTIVE",
         isActive: true,
-      });
+      },
+    ]);
 
     const response = await PATCH(
       patchRequest("automation_existing", { isActive: true }) as never
@@ -875,21 +916,13 @@ describe("PATCH /api/automations catalogue scope", () => {
     expect(payload.code).toBe("CALENDAR_CAMPAIGN_CONFLICT");
     expect(payload.conflict.id).toBe("manual_abc001");
     expect(payload.conflictUrl).toBe("/campaigns/manual_abc001");
-    expect(mockPrisma.automation.findFirst).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          instagramAccountId: "account_1",
-          postId: "media_1",
-          isActive: true,
-          lifecycle: { not: "ARCHIVED" },
-          id: { not: "automation_existing" },
-          OR: [
-            { catnoTag: { equals: "ABC001", mode: "insensitive" } },
-            { catnoTag: { equals: "#ABC001", mode: "insensitive" } },
-          ],
-        }),
-      })
-    );
+    const [template, ...params] = mockPrisma.$queryRaw.mock.calls[0];
+    const sql = template.join("?");
+    expect(sql).toContain(`"postId" = ?`);
+    expect(sql).toContain(`"isActive" = true`);
+    expect(params).toContain("media_1");
+    expect(params).toContain("ABC001");
+    expect(params).toContain("automation_existing");
     expect(mockPrisma.automation.update).not.toHaveBeenCalled();
   });
 

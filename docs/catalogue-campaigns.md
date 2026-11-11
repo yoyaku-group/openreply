@@ -14,10 +14,13 @@ owner. OpenReply only attaches and sends the DM.
 
 1. **Create a campaign** in OpenReply, choose `Comment on a post or reel` then
    `A future publication with a catalogue hashtag`.
-2. **Enter the catalogue hashtag** printed on the release, for example
-   `#ABC001`. The leading `#` is optional and the stored form is upper-case.
-   This hashtag identifies the future post. It says nothing about the comment
-   matcher, which stays on `any word`.
+2. **Enter the catalogue reference** printed on the release, for example
+   `#ABC001`. The leading `#` is optional, separators are accepted and stored
+   without them (`LM-02`, `lm 02` and `#LM_02` all store as `LM02`), and a
+   reference needs at least one digit. Instagram ends a hashtag at a dash, so
+   `LM-02` is published as `#LM02` — the separator-free hashtag is what goes
+   in the caption. This reference identifies the future post. It says nothing
+   about the comment matcher, which stays on `any word`.
 3. **Add a destination link.** It is required for this scope, even when saving
    a draft.
 4. **Save draft** keeps the campaign out of the queue. **Validate for
@@ -33,6 +36,11 @@ Rules:
   included. A different catalogue reference can wait alongside it. Once the
   first campaign binds to its publication, a new one may be prepared for a
   later release.
+- References are stored without separators (`LM-02` stores as `LM02`), so the
+  caption must carry the stored hashtag `#LM02`. The binder compares whole
+  tokens on the normalized reference: `#LM-02`, `#lm02` and `#LM_02` in a
+  caption all count as `#LM02`, while `#LM02X` does not. A reference must
+  carry at least one digit — `#LM` and `#VINYL` are refused.
 - A draft never sends. A paused campaign stops sending immediately. A paused
   Calendar campaign does not reserve the reference and does not park a manual
   campaign.
@@ -77,10 +85,14 @@ Readiness errors:
 
 1. **Créez une campagne** dans OpenReply, choisissez `Comment on a post or reel`
    puis `a future publication with a catalogue hashtag` (publication à venir par référence).
-2. **Saisissez le hashtag catalogue** imprimé sur la sortie, par exemple
-   `#ABC001`. Le `#` initial est facultatif et la forme stockée est en
-   majuscules. Ce hashtag identifie la future publication. Il ne change rien au
-   filtre de commentaire, qui reste sur `any word`.
+2. **Saisissez la référence catalogue** imprimée sur la sortie, par exemple
+   `#ABC001`. Le `#` initial est facultatif, les séparateurs sont acceptés et
+   stockés sans eux (`LM-02`, `lm 02` et `#LM_02` sont tous stockés `LM02`),
+   et une référence doit contenir au moins un chiffre. Instagram coupe un
+   hashtag au tiret, donc `LM-02` est publié `#LM02` — c'est le hashtag sans
+   séparateur qui va dans la légende. Cette référence identifie la future
+   publication. Elle ne change rien au filtre de commentaire, qui reste sur
+   `any word`.
 3. **Ajoutez un lien de destination.** Il est obligatoire pour ce mode, même
    pour un brouillon.
 4. **Save draft** enregistre le brouillon sans autoriser l'envoi. **Validate
@@ -96,6 +108,11 @@ Règles :
   brouillons compris. Une autre référence catalogue peut attendre en parallèle.
   Une fois la première campagne attachée à sa publication, une nouvelle peut
   être préparée pour une sortie ultérieure.
+- Les références sont stockées sans séparateurs (`LM-02` est stocké `LM02`),
+  donc la légende doit porter le hashtag stocké `#LM02`. Le binder compare des
+  tokens entiers sur la référence normalisée : `#LM-02`, `#lm02` et `#LM_02`
+  dans une légende valent tous `#LM02`, mais `#LM02X` non. Une référence doit
+  contenir au moins un chiffre — `#LM` et `#VINYL` sont refusés.
 - Un brouillon n'envoie jamais. Une campagne en pause s'arrête immédiatement.
   Une campagne Calendar en pause ne réserve pas la référence et ne bloque pas
   une campagne manuelle.

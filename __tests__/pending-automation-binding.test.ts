@@ -4,6 +4,7 @@ import type { InstagramMedia } from "@/lib/meta/client";
 const { mockPrisma, mockGetMediaById, mockGetUserMedia, mockDecryptToken } =
   vi.hoisted(() => ({
     mockPrisma: {
+      $queryRaw: vi.fn(),
       automation: {
         findMany: vi.fn(),
         findFirst: vi.fn(),
@@ -60,6 +61,8 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   mockDecryptToken.mockReturnValue("decrypted_token");
   mockPrisma.automation.findFirst.mockResolvedValue(null);
+  // Catalogue calendar-conflict checks run as normalized-SQL queries.
+  mockPrisma.$queryRaw.mockResolvedValue([]);
   mockPrisma.automation.updateMany.mockResolvedValue({ count: 1 });
 });
 
@@ -257,13 +260,15 @@ describe("bindPendingAutomationsForMedia (just-in-time)", () => {
         instagramAccount: { accessToken: "encrypted" },
       },
     ]);
-    mockPrisma.automation.findFirst.mockResolvedValue({
-      id: "calendar_1",
-      name: "Calendar ABC001",
-      source: "CALENDAR",
-      lifecycle: "READY",
-      isActive: false,
-    });
+    mockPrisma.$queryRaw.mockResolvedValueOnce([
+      {
+        id: "calendar_1",
+        name: "Calendar ABC001",
+        source: "CALENDAR",
+        lifecycle: "READY",
+        isActive: false,
+      },
+    ]);
     mockGetMediaById.mockResolvedValue(media({ caption: "#ABC001 out now" }));
 
     const bound = await bindPendingAutomationsForMedia({
@@ -272,15 +277,15 @@ describe("bindPendingAutomationsForMedia (just-in-time)", () => {
     });
 
     expect(bound).toBe(0);
-    expect(mockPrisma.automation.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          source: "CALENDAR",
-          pendingNextReel: false,
-          id: { not: "automation_1" },
-        }),
-      })
-    );
+    // The calendar-conflict query matches the campaign's normalized
+    // reference, its own row is excluded, and the candidate media counts.
+    const [template, ...params] = mockPrisma.$queryRaw.mock.calls[0];
+    const sql = template.join("?");
+    expect(sql).toContain(`"source" = 'CALENDAR'`);
+    expect(sql).toContain(`"pendingNextReel" = false`);
+    expect(params).toContain("ABC001");
+    expect(params).toContain("media_1");
+    expect(params).toContain("automation_1");
     expect(mockPrisma.automation.updateMany).toHaveBeenCalledTimes(1);
     expect(mockPrisma.automation.updateMany).toHaveBeenCalledWith({
       where: {
@@ -308,14 +313,10 @@ describe("bindPendingAutomationsForMedia (just-in-time)", () => {
     });
 
     // A paused Calendar campaign cannot send, so it must not park a sendable
-    // manual campaign.
-    expect(mockPrisma.automation.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          source: "CALENDAR",
-          lifecycle: { notIn: ["ARCHIVED", "PAUSED"] },
-        }),
-      })
+    // manual campaign: the conflict query excludes PAUSED (and ARCHIVED) rows.
+    const [template] = mockPrisma.$queryRaw.mock.calls[0];
+    expect(template.join("?")).toContain(
+      `"lifecycle" NOT IN ('ARCHIVED', 'PAUSED')`
     );
     expect(mockPrisma.automation.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({

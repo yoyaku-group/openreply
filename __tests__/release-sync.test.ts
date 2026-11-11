@@ -105,6 +105,32 @@ describe("caption catno matching", () => {
     expect(captionMatchesCatno("Out now #TO001", "#to001")).toBe(true);
   });
 
+  it("matches separator caption forms against the normalized reference", () => {
+    // Instagram ends a hashtag at a dash, so a published `#LM-02` is really
+    // `#LM`; the binder therefore accepts the whole token `#LM-02` as LM02.
+    expect(captionMatchesCatno("Out now #LM-02", "LM02")).toBe(true);
+    expect(captionMatchesCatno("Out now #lm02", "LM02")).toBe(true);
+    expect(captionMatchesCatno("Out now #LM02", "LM02")).toBe(true);
+    expect(captionMatchesCatno("Out now #LM_02", "LM02")).toBe(true);
+    // The legacy stored form matches the same captions.
+    expect(captionMatchesCatno("Out now #LM-02", "LM-02")).toBe(true);
+    expect(captionMatchesCatno("Out now #LM02", "LM-02")).toBe(true);
+  });
+
+  it("does not match a partial or extended token", () => {
+    expect(captionMatchesCatno("#LM02X out now", "LM02")).toBe(false);
+    expect(captionMatchesCatno("#LM is not a reference", "LM02")).toBe(false);
+    // A tag without a digit is never valid and matches nothing.
+    expect(captionMatchesCatno("#LM is not a reference", "LM")).toBe(false);
+  });
+
+  it("matches each reference a caption carries", () => {
+    const caption = "Two drops: #LM-02 and #BPA001";
+    expect(captionMatchesCatno(caption, "LM02")).toBe(true);
+    expect(captionMatchesCatno(caption, "BPA001")).toBe(true);
+    expect(captionMatchesCatno(caption, "TO009")).toBe(false);
+  });
+
   it("treats underscore as part of the hashtag boundary", () => {
     expect(captionMatchesCatno("#ABC001_EXTRA", "ABC001")).toBe(false);
     expect(captionMatchesCatno("#ABC001 EXTRA", "ABC001")).toBe(true);

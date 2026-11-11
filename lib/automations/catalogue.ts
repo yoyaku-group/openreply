@@ -4,14 +4,35 @@ import type { Prisma } from "@/app/generated/prisma/client";
  * Catalogue-reference helpers shared by the campaign API, the schema and the
  * attach binder. A catalogue tag is the hashtag printed on a release
  * (`#ABC001`), not the comment keyword that triggers the DM.
+ *
+ * The canonical stored form keeps only `[A-Z0-9]`: `LM-02`, `lm02`, `#LM_02`
+ * and `lm 02` all store as `LM02`. Separators are accepted on input because
+ * real catalogue numbers carry them, but they must never reach a caption —
+ * Instagram ends a hashtag at a dash, so the published hashtag is `#LM02`.
  */
 
 export const CATNO_TAG_MAX_LENGTH = 50;
-const CATNO_TOKEN = /^[A-Za-z0-9_]+$/;
+
+/** Input charset: letters, digits, separators and one optional leading #. */
+const CATNO_INPUT = /^[A-Za-z0-9_ -]+$/;
+
+/** A caption hashtag: # then at least one Instagram hashtag character. */
+const CAPTION_CATNO_TOKEN = /#([A-Za-z0-9][A-Za-z0-9_-]*)/g;
 
 export type CatnoParseResult =
   | { ok: true; value: string }
   | { ok: false; message: string };
+
+/** Canonical stored form: no leading #, trimmed, upper-case, `[A-Z0-9]` only. */
+export function normalizeCatnoTag(
+  value: string | null | undefined,
+): string | null {
+  if (value == null) return null;
+  // One optional leading # is input sugar, not part of the reference.
+  const token = value.trim().replace(/^#/, "");
+  const normalized = token.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return normalized || null;
+}
 
 export function parseCatnoTag(value: string): CatnoParseResult {
   const trimmed = value.trim();
@@ -19,29 +40,64 @@ export function parseCatnoTag(value: string): CatnoParseResult {
   if (!token) {
     return { ok: false, message: "Enter a catalogue hashtag, for example #ABC001" };
   }
-  if (token.length > CATNO_TAG_MAX_LENGTH) {
-    return {
-      ok: false,
-      message: `Catalogue hashtags are at most ${CATNO_TAG_MAX_LENGTH} characters`,
-    };
-  }
-  if (!CATNO_TOKEN.test(token)) {
+  if (!CATNO_INPUT.test(token)) {
     return {
       ok: false,
       message:
-        "Catalogue hashtags may only contain ASCII letters, digits and underscores (one optional leading #)",
+        "Catalogue references may only contain letters, digits, dashes, underscores and spaces (one optional leading #)",
     };
   }
-  return { ok: true, value: token.toUpperCase() };
+  const normalized = normalizeCatnoTag(token);
+  if (!normalized) {
+    return { ok: false, message: "Enter a catalogue hashtag, for example #ABC001" };
+  }
+  if (normalized.length < 3) {
+    return {
+      ok: false,
+      message: "A catalogue reference needs at least 3 characters, for example #ABC001",
+    };
+  }
+  if (normalized.length > CATNO_TAG_MAX_LENGTH) {
+    return {
+      ok: false,
+      message: `Catalogue references are at most ${CATNO_TAG_MAX_LENGTH} characters`,
+    };
+  }
+  if (!/\d/.test(normalized)) {
+    return {
+      ok: false,
+      message: "A catalogue reference needs at least one digit, for example #ABC001",
+    };
+  }
+  return { ok: true, value: normalized };
 }
 
-/** Canonical stored form: no leading #, trimmed, upper-case. */
-export function normalizeCatnoTag(
-  value: string | null | undefined,
-): string | null {
-  if (value == null) return null;
-  const parsed = parseCatnoTag(value);
-  return parsed.ok ? parsed.value : null;
+/**
+ * Every catalogue reference a caption carries, in canonical form and in
+ * order of first appearance. Tokens that fail `parseCatnoTag` (too short,
+ * no digit, over-long) are not references and are dropped.
+ */
+export function extractCaptionCatnoTags(caption: string): string[] {
+  const found: string[] = [];
+  for (const match of caption.matchAll(CAPTION_CATNO_TOKEN)) {
+    const parsed = parseCatnoTag(match[1]);
+    if (parsed.ok && !found.includes(parsed.value)) {
+      found.push(parsed.value);
+    }
+  }
+  return found;
+}
+
+/**
+ * Whole-token equality: true only when the caption carries the exact
+ * reference. `#LM-02`, `#lm02`, `#LM_02` and `#LM02` all match the tag
+ * `LM02`; `#LM02X` does not; a tag without a digit is never a reference
+ * and never matches.
+ */
+export function captionHasCatnoTag(caption: string, tag: string): boolean {
+  const normalized = normalizeCatnoTag(tag);
+  if (!normalized) return false;
+  return extractCaptionCatnoTags(caption).includes(normalized);
 }
 
 /** Display form used by the UI and status vocabulary. */
@@ -51,10 +107,11 @@ export function displayCatnoTag(value: string | null | undefined): string | null
 }
 
 /**
- * Compare references for immutability checks. Canonical forms compare
- * case-insensitively; legacy values that the new strict input would reject
- * (for example punctuation already stored on a bound campaign) still compare
- * exactly so ordinary edits can preserve them without resubmitting them.
+ * Compare references for immutability checks. Canonical forms compare on the
+ * normalized value, so legacy rows that still hold a separator form
+ * (`LM-02`) compare equal to their canonical form (`LM02`). Values that
+ * normalize to nothing (for example pure punctuation) compare exactly so
+ * ordinary edits can preserve them without resubmitting them.
  */
 export function catnoTagsEqual(
   left: string | null | undefined,
@@ -68,8 +125,6 @@ export function catnoTagsEqual(
   }
   return left.trim() === right.trim();
 }
-
-type AutomationClient = Pick<Prisma.TransactionClient, "automation">;
 
 /**
  * Serialize pending-campaign writes per Instagram account. Generic next-post
@@ -96,28 +151,7 @@ export interface PendingCatalogueConflict {
   isActive: boolean;
 }
 
-const CONFLICT_SELECT = {
-  id: true,
-  name: true,
-  source: true,
-  lifecycle: true,
-  isActive: true,
-} satisfies Prisma.AutomationSelect;
-
-/**
- * Match the canonical stored form and the legacy `#ABC001` form, regardless of
- * case. Calendar rows are written by a different source that has historically
- * kept the leading `#`; equality on the bare token alone would miss them.
- */
-function catnoTagWhere(catnoTag: string): Prisma.AutomationWhereInput {
-  const token = normalizeCatnoTag(catnoTag) ?? catnoTag;
-  return {
-    OR: [
-      { catnoTag: { equals: token, mode: "insensitive" } },
-      { catnoTag: { equals: `#${token}`, mode: "insensitive" } },
-    ],
-  };
-}
+type RawQueryClient = Pick<Prisma.TransactionClient, "$queryRaw">;
 
 /**
  * One waiting campaign per normalized catalogue reference and account,
@@ -130,20 +164,21 @@ export async function findPendingCatalogueConflict(
     catnoTag: string;
     excludeAutomationId?: string;
   },
-  client: AutomationClient,
+  client: RawQueryClient,
 ): Promise<PendingCatalogueConflict | null> {
-  return client.automation.findFirst({
-    where: {
-      instagramAccountId: input.instagramAccountId,
-      pendingNextReel: true,
-      lifecycle: { not: "ARCHIVED" },
-      ...catnoTagWhere(input.catnoTag),
-      ...(input.excludeAutomationId
-        ? { id: { not: input.excludeAutomationId } }
-        : {}),
-    },
-    select: CONFLICT_SELECT,
-  });
+  const token = normalizeCatnoTag(input.catnoTag);
+  if (!token) return null;
+  const rows = await client.$queryRaw<PendingCatalogueConflict[]>`
+    SELECT "id", "name", "source", "lifecycle", "isActive"
+    FROM "Automation"
+    WHERE "instagramAccountId" = ${input.instagramAccountId}
+      AND upper(regexp_replace("catnoTag", '[^A-Za-z0-9]', '', 'g')) = ${token}
+      AND "pendingNextReel" = true
+      AND "lifecycle" <> 'ARCHIVED'
+      AND "id" <> COALESCE(${input.excludeAutomationId ?? null}, '')
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
 }
 
 /**
@@ -160,21 +195,22 @@ export async function findActivePostCatalogueConflict(
     postId: string;
     excludeAutomationId?: string;
   },
-  client: AutomationClient,
+  client: RawQueryClient,
 ): Promise<PendingCatalogueConflict | null> {
-  return client.automation.findFirst({
-    where: {
-      instagramAccountId: input.instagramAccountId,
-      postId: input.postId,
-      isActive: true,
-      lifecycle: { not: "ARCHIVED" },
-      ...catnoTagWhere(input.catnoTag),
-      ...(input.excludeAutomationId
-        ? { id: { not: input.excludeAutomationId } }
-        : {}),
-    },
-    select: CONFLICT_SELECT,
-  });
+  const token = normalizeCatnoTag(input.catnoTag);
+  if (!token) return null;
+  const rows = await client.$queryRaw<PendingCatalogueConflict[]>`
+    SELECT "id", "name", "source", "lifecycle", "isActive"
+    FROM "Automation"
+    WHERE "instagramAccountId" = ${input.instagramAccountId}
+      AND upper(regexp_replace("catnoTag", '[^A-Za-z0-9]', '', 'g')) = ${token}
+      AND "postId" = ${input.postId}
+      AND "isActive" = true
+      AND "lifecycle" <> 'ARCHIVED'
+      AND "id" <> COALESCE(${input.excludeAutomationId ?? null}, '')
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
 }
 
 /**
@@ -192,26 +228,24 @@ export async function findUnboundCalendarConflict(
     mediaId?: string | null;
     excludeAutomationId?: string;
   },
-  client: AutomationClient,
+  client: RawQueryClient,
 ): Promise<PendingCatalogueConflict | null> {
-  return client.automation.findFirst({
-    where: {
-      instagramAccountId: input.instagramAccountId,
-      source: "CALENDAR",
-      pendingNextReel: false,
-      // A paused Calendar campaign cannot send, so it must not keep a sendable
-      // manual campaign parked. Only an active Calendar row can duplicate a DM.
-      lifecycle: { notIn: ["ARCHIVED", "PAUSED"] },
-      AND: [
-        catnoTagWhere(input.catnoTag),
-        input.mediaId
-          ? { OR: [{ postId: null }, { postId: input.mediaId }] }
-          : { postId: null },
-      ],
-      ...(input.excludeAutomationId
-        ? { id: { not: input.excludeAutomationId } }
-        : {}),
-    },
-    select: CONFLICT_SELECT,
-  });
+  const token = normalizeCatnoTag(input.catnoTag);
+  if (!token) return null;
+  // COALESCE collapses the two shapes of the publication predicate: with a
+  // candidate media, an unbound Calendar row (postId IS NULL) or one bound to
+  // that exact media both conflict; without one, only the unbound row does.
+  const rows = await client.$queryRaw<PendingCatalogueConflict[]>`
+    SELECT "id", "name", "source", "lifecycle", "isActive"
+    FROM "Automation"
+    WHERE "instagramAccountId" = ${input.instagramAccountId}
+      AND upper(regexp_replace("catnoTag", '[^A-Za-z0-9]', '', 'g')) = ${token}
+      AND "source" = 'CALENDAR'
+      AND "pendingNextReel" = false
+      AND "lifecycle" NOT IN ('ARCHIVED', 'PAUSED')
+      AND ("postId" IS NULL OR "postId" = COALESCE(${input.mediaId ?? null}, ''))
+      AND "id" <> COALESCE(${input.excludeAutomationId ?? null}, '')
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
 }

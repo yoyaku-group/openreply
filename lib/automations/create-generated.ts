@@ -9,7 +9,9 @@
 
 import { prisma } from "@/lib/db/client";
 import { generateTrackedLinkSlug } from "@/lib/tracking/server";
+import { withDmUtm } from "@/lib/tracking/utm";
 import { generateReportShareSlug } from "@/lib/reports/share";
+import { normalizeCatnoTag, parseCatnoTag } from "@/lib/automations/catalogue";
 import type { CampaignCopy } from "@/lib/copy/yoyaku-patterns";
 
 export interface GeneratedCampaignInput {
@@ -21,15 +23,37 @@ export interface GeneratedCampaignInput {
   isActive: boolean;
 }
 
+/**
+ * Returns the created automation, or null when the catalogue reference is
+ * unusable (the release-sync cron records the skip outcome itself). The
+ * ReleaseSyncEvent row keeps the raw SKU: a SKU is a shop identifier, the
+ * campaign carries only its normalized catalogue form.
+ */
 export async function createGeneratedCampaign(input: GeneratedCampaignInput) {
   const { copy, workspaceId } = input;
+
+  const catnoTag = normalizeCatnoTag(input.catnoTag);
+  if (catnoTag) {
+    const parsed = parseCatnoTag(catnoTag);
+    if (!parsed.ok) {
+      console.warn(
+        "[create-generated] skip_invalid_catalogue_reference",
+        JSON.stringify({ sku: input.catnoTag, reason: parsed.message }),
+      );
+      return null;
+    }
+  }
+
+  // The tracked link's utm_campaign: the lower-case reference when there is
+  // one, otherwise a slug of the campaign name (withDmUtm slugifies it).
+  const dmUtmCampaign = catnoTag ?? copy.name;
 
   const linkCreates = [
     {
       workspaceId,
       slug: generateTrackedLinkSlug(),
       label: "Primary campaign link",
-      destinationUrl: copy.trackedDestinationUrl,
+      destinationUrl: withDmUtm(copy.trackedDestinationUrl, dmUtmCampaign),
     },
   ];
   if (copy.secondaryDestinationUrl) {
@@ -37,7 +61,7 @@ export async function createGeneratedCampaign(input: GeneratedCampaignInput) {
       workspaceId,
       slug: generateTrackedLinkSlug(),
       label: copy.secondaryButtonLabel ?? "Open link",
-      destinationUrl: copy.secondaryDestinationUrl,
+      destinationUrl: withDmUtm(copy.secondaryDestinationUrl, dmUtmCampaign),
     });
   }
 
@@ -48,7 +72,7 @@ export async function createGeneratedCampaign(input: GeneratedCampaignInput) {
       postId: null,
       postUrl: null,
       pendingNextReel: true,
-      catnoTag: input.catnoTag,
+      catnoTag,
       matchAnyPost: false,
       keywords: [],
       matchAnyWord: true,
