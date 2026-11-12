@@ -368,7 +368,7 @@ describe("metrics", () => {
     expect(sql).toContain("PERCENTILE_CONT(0.5)");
     // A repaired generation is ONE generation and never a fallback.
     expect(sql).toContain('COUNT(*) FILTER (WHERE g."attempt" = 1)');
-    expect(sql).toContain(`g."failureCode" <> 'LINT_REPAIR_QUEUED'`);
+    expect(sql).toContain(`g."failureCode" IS DISTINCT FROM 'LINT_REPAIR_QUEUED'`);
     expect(workspaceId).toBe("workspace_1");
     expect((since as Date).getTime()).toBe(
       new Date("2026-08-14T10:00:00Z").getTime()
@@ -515,12 +515,14 @@ describe("trialVerdict (activation gate)", () => {
         return Promise.resolve(trialRows);
       }
       if (arg.where.trialBodyHash) {
-        // The run-lookup is filtered by body hash AND model.
+        // The run-lookup is filtered by body hash AND model and counts
+        // ROOT rows only (repair rows carry sourceGenerationId).
         return Promise.resolve(
           trialRows.filter(
             (row) =>
               row.trialBodyHash === arg.where!.trialBodyHash &&
-              row.modelOverride === arg.where!.modelOverride
+              row.modelOverride === arg.where!.modelOverride &&
+              !row.sourceGenerationId
           )
         );
       }
@@ -654,6 +656,61 @@ describe("trialVerdict (activation gate)", () => {
     );
     const verdict = await trialVerdict("workspace_1", ["t1", "t2"]);
     expect(verdict).toMatchObject({ ready: true, trialPass: 0, baselinePass: 1, gateOk: false });
+  });
+
+  it("gate compares draft and baseline over the SAME inputs", async () => {
+    // t1 failed where the active version passed; t2 passed but has NO
+    // baseline. Counting the draft over all items would let t2's pass ride
+    // over t1's failure — the comparison must stay on the baseline set.
+    setupTrials(
+      [
+        recentRow({ id: "t1", isTrial: true, status: "FAILED", input: INPUT_A }),
+        recentRow({ id: "t2", isTrial: true, status: "DONE", input: { facts: { sku: "C" }, caption: "" } }),
+      ],
+      [recentRow({ id: "p1", status: "DONE", input: INPUT_A })]
+    );
+    const verdict = await trialVerdict("workspace_1", ["t1", "t2"]);
+    expect(verdict).toMatchObject({
+      ready: true,
+      trialPass: 1,
+      baselinePass: 1,
+      baselinesFound: 1,
+      gateOk: false,
+    });
+  });
+
+  it("the run lookup ignores repair rows, so a repaired run can still activate", async () => {
+    // t1 needed a repair: the repair row carries the same hash but is not
+    // part of the 5-root run the page submitted.
+    setupTrials(
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "DONE"),
+        recentRow({
+          id: "t1_repair",
+          isTrial: true,
+          status: "DONE",
+          attempt: 2,
+          sourceGenerationId: "t1",
+          modelOverride: "haiku",
+          trialBodyHash: sha256("b {{state}}"),
+          input: INPUT_A,
+        }),
+      ],
+      [recentRow({ id: "p1", status: "DONE", input: INPUT_A })]
+    );
+    await activateDraft({
+      workspaceId: "workspace_1",
+      body: "b {{state}}",
+      model: "haiku",
+      reason: "repaired run passes",
+      authorEmail: "o@x",
+      trialIds: ["t1", "t2"],
+    });
+    expect(mockTx.copywriterPrompt.create).toHaveBeenCalledTimes(1);
+    const data = mockTx.copywriterPrompt.create.mock.calls[0][0].data;
+    expect(data.isActive).toBe(true);
+    expect(data.reason).not.toContain("override");
   });
 
   it("refuses activation without any trial or override", async () => {

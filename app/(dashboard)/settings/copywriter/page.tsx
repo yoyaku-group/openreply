@@ -471,10 +471,7 @@ export default function CopywriterLabPage() {
     setDraftModel((active?.model as "haiku" | "sonnet") ?? "haiku");
     setDraftReason("");
     setEditing(true);
-    setTrialIds(null);
-    setTrialItems([]);
-    setVerdict(null);
-    setOverride(false);
+    resetTrial();
   }
 
   function startTrial() {

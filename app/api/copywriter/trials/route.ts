@@ -1,8 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { CopywriterError } from "@/lib/copywriter/service";
 import { labError, labJson, authorEmailFor, requireLabReader, requireLabWriter } from "@/lib/copywriter/lab-http";
-import { createTrialRun, getTrialResults, trialVerdict } from "@/lib/copywriter/lab";
+import { createTrialRun, getTrialResults, verdictFromItems } from "@/lib/copywriter/lab";
 
 // Trial results are polled while the worker runs; never cache.
 export const dynamic = "force-dynamic";
@@ -55,13 +54,10 @@ export async function GET(request: NextRequest) {
     if (ids.length === 0) {
       return labJson({ success: false, error: "INVALID_TRIAL_IDS" }, 400);
     }
-    const [results, verdict] = await Promise.all([
-      getTrialResults(guard.context.workspaceId, ids),
-      trialVerdict(guard.context.workspaceId, ids).catch((error) => {
-        if (error instanceof CopywriterError && error.code === "NOT_FOUND") return null;
-        throw error;
-      }),
-    ]);
+    // One fetch feeds both the rows and the gate verdict: trialVerdict
+    // would re-run the same bounded queries on every poll.
+    const results = await getTrialResults(guard.context.workspaceId, ids);
+    const verdict = results.length > 0 ? verdictFromItems(results) : null;
     return labJson({ success: true, data: { results, verdict } });
   } catch (error) {
     return labError(error);

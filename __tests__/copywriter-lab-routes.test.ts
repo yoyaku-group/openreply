@@ -16,7 +16,7 @@ const { labMocks, accessMocks, labAccessMocks, dbMocks } = vi.hoisted(() => ({
     getRecentGenerations: vi.fn(),
     createTrialRun: vi.fn(),
     getTrialResults: vi.fn(),
-    trialVerdict: vi.fn(),
+    verdictFromItems: vi.fn(),
   },
   accessMocks: {
     getCurrentWorkspaceContext: vi.fn(),
@@ -84,8 +84,8 @@ beforeEach(() => {
   });
   labMocks.getLabMetrics.mockResolvedValue([]);
   labMocks.getRecentGenerations.mockResolvedValue([]);
-  labMocks.getTrialResults.mockResolvedValue([]);
-  labMocks.trialVerdict.mockResolvedValue({ ready: true, trialPass: 5, baselinePass: 4, gateOk: true });
+  labMocks.getTrialResults.mockResolvedValue([{ id: "t1" }]);
+  labMocks.verdictFromItems.mockReturnValue({ ready: true, trialPass: 5, baselinePass: 4, baselinesFound: 5, gateOk: true });
   labMocks.createTrialRun.mockResolvedValue({ ids: ["t1", "t2"] });
   labMocks.createPromptVersion.mockResolvedValue({ id: "p2", version: 2 });
   labMocks.revertToPrompt.mockResolvedValue({ id: "p3", version: 3 });
@@ -249,7 +249,10 @@ describe("write routes (owner only)", () => {
     const payload = await response.json();
     expect(response.status).toBe(200);
     expect(payload.data.verdict.gateOk).toBe(true);
-    expect(labMocks.trialVerdict).toHaveBeenCalledWith("workspace_1", ["t1", "t2"]);
+    // The verdict is computed from the rows already fetched, not a second
+    // round of queries.
+    expect(labMocks.getTrialResults).toHaveBeenCalledWith("workspace_1", ["t1", "t2"]);
+    expect(labMocks.verdictFromItems).toHaveBeenCalledWith([{ id: "t1" }]);
   });
 
   it("trials GET without ids is a stable 400", async () => {

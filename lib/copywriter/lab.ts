@@ -328,7 +328,7 @@ export async function getLabMetrics(
       COUNT(*) FILTER (WHERE g."attempt" = 1)::int AS "generations",
       COUNT(*) FILTER (WHERE g."attempt" = 1 AND g."status" = 'DONE')::int AS "lintPassFirstAttempt",
       COUNT(*) FILTER (WHERE g."attempt" > 1)::int AS "repairs",
-      COUNT(*) FILTER (WHERE g."status" = 'FAILED' AND g."failureCode" <> 'LINT_REPAIR_QUEUED')::int AS "fallbacks",
+      COUNT(*) FILTER (WHERE g."status" = 'FAILED' AND g."failureCode" IS DISTINCT FROM 'LINT_REPAIR_QUEUED')::int AS "fallbacks",
       COUNT(*) FILTER (WHERE g."editDistance" = 0)::int AS "acceptedWithoutEdit",
       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY g."editDistance") AS "medianEditDistance",
       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY g."latencyMs") AS "medianLatency",
@@ -778,33 +778,41 @@ export interface TrialVerdict {
 }
 
 /**
- * The activation gate: the draft's lint pass on the trial inputs must be at
- * least as good as the active version's pass on the same inputs — and there
- * must BE an active-version outcome to compare with. A freshly activated
- * version with no production rows yet gives no baseline: the gate refuses
- * rather than passing for free (the override records that decision).
+ * The activation gate: over the trial inputs that HAVE an active-version
+ * baseline, the draft's lint pass must be at least as good as the active
+ * version's — and there must BE such a baseline to compare with. A freshly
+ * activated version with no production rows yet gives no baseline: the gate
+ * refuses rather than passing for free (the override records that decision).
  */
-export async function trialVerdict(
-  workspaceId: string,
-  ids: string[]
-): Promise<TrialVerdict> {
-  const items = await getTrialResults(workspaceId, ids);
+export function verdictFromItems(items: TrialItemStatus[]): TrialVerdict {
   if (items.length === 0) {
     throw new CopywriterError("NOT_FOUND", 404);
   }
   const finished = items.every((item) => item.status === "DONE" || item.status === "FAILED");
+  // The comparison set: inputs where the active version actually produced
+  // an outcome. Counting the draft's passes over a wider set than the
+  // baseline's would let a mostly-failed draft ride one lucky input.
+  const comparable = items.filter((item) => item.baseline !== null);
   const trialPass = items.filter((item) => item.lintOk).length;
-  const baselinePass = items.filter(
+  const comparablePass = comparable.filter((item) => item.lintOk).length;
+  const baselinePass = comparable.filter(
     (item) => item.baseline && item.baseline.status === "DONE"
   ).length;
-  const baselinesFound = items.filter((item) => item.baseline !== null).length;
   return {
     ready: finished,
     trialPass,
     baselinePass,
-    baselinesFound,
-    gateOk: finished && baselinesFound > 0 && trialPass >= baselinePass,
+    baselinesFound: comparable.length,
+    gateOk:
+      finished && comparable.length > 0 && comparablePass >= baselinePass,
   };
+}
+
+export async function trialVerdict(
+  workspaceId: string,
+  ids: string[]
+): Promise<TrialVerdict> {
+  return verdictFromItems(await getTrialResults(workspaceId, ids));
 }
 
 /* ------------------------------- activation ------------------------------- */
@@ -837,25 +845,40 @@ export async function activateDraft(input: ActivateDraftInput) {
     if (!input.trialIds?.length) {
       throw new CopywriterError("ACTIVATION_GATE_FAILED", 409);
     }
-    // The trial ids must cover the WHOLE run of this exact draft (same body
-    // hash, same model, recent): a cherry-picked subset of passing ids can
-    // never satisfy the gate for a run that mostly failed.
+    // The trial ids must cover the WHOLE most recent run of this exact
+    // draft (same body hash, same model): a cherry-picked subset of passing
+    // ids can never satisfy the gate for a run that mostly failed. Only
+    // ROOT rows count — repair rows belong to their root's outcome, and
+    // counting them would make every repaired run "6 rows" and impossible
+    // to cover with the 5-id cap.
     const runWindow = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const runRows = await prisma.copyGeneration.findMany({
+    const runRoots = await prisma.copyGeneration.findMany({
       where: {
         workspaceId: input.workspaceId,
         isTrial: true,
         trialBodyHash: bodyHash,
         modelOverride: input.model,
+        sourceGenerationId: null,
         createdAt: { gte: runWindow },
       },
-      select: { id: true },
+      select: { id: true, createdAt: true },
+      orderBy: { createdAt: "desc" },
     });
+    if (runRoots.length === 0) {
+      throw new CopywriterError("ACTIVATION_GATE_FAILED", 409);
+    }
+    // The newest run is the one batch whose roots sit within 5 minutes of
+    // the most recent root (a run's 5 inserts share one transaction; a
+    // re-test of the same body hours later starts a new batch).
+    const newestAt = runRoots[0].createdAt.getTime();
+    const runIds = runRoots
+      .filter((row) => newestAt - row.createdAt.getTime() <= 5 * 60 * 1000)
+      .map((row) => row.id);
     const submitted = new Set(input.trialIds);
     const coversRun =
-      runRows.length > 0 &&
       submitted.size === input.trialIds.length &&
-      runRows.every((row) => submitted.has(row.id));
+      runIds.every((id) => submitted.has(id)) &&
+      input.trialIds.length === runIds.length;
     if (!coversRun) {
       throw new CopywriterError("ACTIVATION_GATE_FAILED", 409);
     }
