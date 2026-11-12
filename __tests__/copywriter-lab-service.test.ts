@@ -366,6 +366,9 @@ describe("metrics", () => {
     expect(sql).toContain('g."isTrial" = false');
     expect(sql).toContain('g."createdAt" >= ?');
     expect(sql).toContain("PERCENTILE_CONT(0.5)");
+    // A repaired generation is ONE generation and never a fallback.
+    expect(sql).toContain('COUNT(*) FILTER (WHERE g."attempt" = 1)');
+    expect(sql).toContain(`g."failureCode" <> 'LINT_REPAIR_QUEUED'`);
     expect(workspaceId).toBe("workspace_1");
     expect((since as Date).getTime()).toBe(
       new Date("2026-08-14T10:00:00Z").getTime()
@@ -501,10 +504,25 @@ describe("trialVerdict (activation gate)", () => {
     tailRows: Array<Record<string, unknown>>
   ) {
     mockPrisma.copyGeneration.findMany.mockImplementation((arg: {
-      where: { id?: { in?: string[] }; isTrial?: boolean };
+      where: {
+        id?: { in?: string[] };
+        isTrial?: boolean;
+        trialBodyHash?: string;
+        modelOverride?: string;
+      };
     }) => {
       if (arg.where.id?.in) {
         return Promise.resolve(trialRows);
+      }
+      if (arg.where.trialBodyHash) {
+        // The run-lookup is filtered by body hash AND model.
+        return Promise.resolve(
+          trialRows.filter(
+            (row) =>
+              row.trialBodyHash === arg.where!.trialBodyHash &&
+              row.modelOverride === arg.where!.modelOverride
+          )
+        );
       }
       return Promise.resolve(tailRows);
     });
@@ -539,7 +557,67 @@ describe("trialVerdict (activation gate)", () => {
       ]
     );
     const verdict = await trialVerdict("workspace_1", ["t1", "t2"]);
-    expect(verdict).toEqual({ ready: true, trialPass: 1, baselinePass: 1, gateOk: true });
+    expect(verdict).toEqual({
+      ready: true,
+      trialPass: 1,
+      baselinePass: 1,
+      baselinesFound: 2,
+      gateOk: true,
+    });
+  });
+
+  it("gate refuses when the active version has no baseline rows yet", async () => {
+    // A freshly activated version: trials run, but nothing to compare with.
+    setupTrials(
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "DONE"),
+      ],
+      []
+    );
+    const verdict = await trialVerdict("workspace_1", ["t1", "t2"]);
+    expect(verdict).toMatchObject({
+      ready: true,
+      trialPass: 2,
+      baselinePass: 0,
+      baselinesFound: 0,
+      gateOk: false,
+    });
+    await expect(
+      activateDraft({
+        workspaceId: "workspace_1",
+        body: "b {{state}}",
+        model: "haiku",
+        reason: "no baseline yet",
+        authorEmail: "o@x",
+        trialIds: ["t1", "t2"],
+      })
+    ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
+    expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a cherry-picked subset of the run's trial ids", async () => {
+    // The full run lost 2 of 3; submitting only the passing id must not
+    // satisfy the gate.
+    setupTrials(
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "FAILED"),
+        boundTrial("t3", "b {{state}}", "haiku", { facts: { sku: "C" }, caption: "" }, "FAILED"),
+      ],
+      [recentRow({ id: "p1", status: "DONE", input: INPUT_A })]
+    );
+    await expect(
+      activateDraft({
+        workspaceId: "workspace_1",
+        body: "b {{state}}",
+        model: "haiku",
+        reason: "only the passing one",
+        authorEmail: "o@x",
+        trialIds: ["t1"],
+      })
+    ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
+    expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
   });
 
   it("baseline follows the repair link like the trial side", async () => {

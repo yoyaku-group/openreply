@@ -310,8 +310,12 @@ export function labMetricsFromRows(rows: LabMetricRow[]): LabVersionMetrics[] {
 
 /**
  * One bounded aggregate query per workspace: last 90 days, production rows
- * only (trials excluded), grouped by prompt version. Tier mix rides along as
- * a correlated aggregate so the whole read stays a single GROUP BY.
+ * only (trials excluded), grouped by prompt version. A repaired generation
+ * is TWO rows (the failed attempt + the repair): `generations` counts only
+ * attempt-1 rows so one generation stays one generation, and `fallbacks`
+ * excludes the LINT_REPAIR_QUEUED marker — a repaired generation never fell
+ * back to the standard copy. Tier mix rides along as a correlated aggregate
+ * so the whole read stays a single GROUP BY.
  */
 export async function getLabMetrics(
   workspaceId: string,
@@ -321,10 +325,10 @@ export async function getLabMetrics(
   const rows = await prisma.$queryRaw<LabMetricRow[]>`
     SELECT
       g."promptVersion" AS "promptVersion",
-      COUNT(*)::int AS "generations",
+      COUNT(*) FILTER (WHERE g."attempt" = 1)::int AS "generations",
       COUNT(*) FILTER (WHERE g."attempt" = 1 AND g."status" = 'DONE')::int AS "lintPassFirstAttempt",
       COUNT(*) FILTER (WHERE g."attempt" > 1)::int AS "repairs",
-      COUNT(*) FILTER (WHERE g."status" = 'FAILED')::int AS "fallbacks",
+      COUNT(*) FILTER (WHERE g."status" = 'FAILED' AND g."failureCode" <> 'LINT_REPAIR_QUEUED')::int AS "fallbacks",
       COUNT(*) FILTER (WHERE g."editDistance" = 0)::int AS "acceptedWithoutEdit",
       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY g."editDistance") AS "medianEditDistance",
       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY g."latencyMs") AS "medianLatency",
@@ -768,12 +772,17 @@ export interface TrialVerdict {
   ready: boolean;
   trialPass: number;
   baselinePass: number;
+  /** Inputs that actually had an active-version baseline to compare with. */
+  baselinesFound: number;
   gateOk: boolean;
 }
 
 /**
  * The activation gate: the draft's lint pass on the trial inputs must be at
- * least as good as the active version's pass on the same inputs.
+ * least as good as the active version's pass on the same inputs — and there
+ * must BE an active-version outcome to compare with. A freshly activated
+ * version with no production rows yet gives no baseline: the gate refuses
+ * rather than passing for free (the override records that decision).
  */
 export async function trialVerdict(
   workspaceId: string,
@@ -788,11 +797,13 @@ export async function trialVerdict(
   const baselinePass = items.filter(
     (item) => item.baseline && item.baseline.status === "DONE"
   ).length;
+  const baselinesFound = items.filter((item) => item.baseline !== null).length;
   return {
     ready: finished,
     trialPass,
     baselinePass,
-    gateOk: finished && trialPass >= baselinePass,
+    baselinesFound,
+    gateOk: finished && baselinesFound > 0 && trialPass >= baselinePass,
   };
 }
 
@@ -826,22 +837,26 @@ export async function activateDraft(input: ActivateDraftInput) {
     if (!input.trialIds?.length) {
       throw new CopywriterError("ACTIVATION_GATE_FAILED", 409);
     }
-    const trials = await prisma.copyGeneration.findMany({
+    // The trial ids must cover the WHOLE run of this exact draft (same body
+    // hash, same model, recent): a cherry-picked subset of passing ids can
+    // never satisfy the gate for a run that mostly failed.
+    const runWindow = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const runRows = await prisma.copyGeneration.findMany({
       where: {
         workspaceId: input.workspaceId,
-        id: { in: input.trialIds },
         isTrial: true,
+        trialBodyHash: bodyHash,
+        modelOverride: input.model,
+        createdAt: { gte: runWindow },
       },
-      select: { trialBodyHash: true, modelOverride: true },
+      select: { id: true },
     });
-    const bound =
-      trials.length > 0 &&
-      trials.every(
-        (trial) =>
-          trial.trialBodyHash === bodyHash &&
-          trial.modelOverride === input.model
-      );
-    if (!bound) {
+    const submitted = new Set(input.trialIds);
+    const coversRun =
+      runRows.length > 0 &&
+      submitted.size === input.trialIds.length &&
+      runRows.every((row) => submitted.has(row.id));
+    if (!coversRun) {
       throw new CopywriterError("ACTIVATION_GATE_FAILED", 409);
     }
     const verdict = await trialVerdict(input.workspaceId, input.trialIds);
