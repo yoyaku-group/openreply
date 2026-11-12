@@ -4,6 +4,7 @@ import { resolveProduct, isPurchasableState } from "@/lib/assistant/resolve-prod
 import { composeCaption } from "@/lib/assistant/caption";
 import { ctaFor } from "@/lib/assistant/caption-cta";
 import { generateCopy } from "@/lib/assistant/generate-copy";
+import { enqueueGeneration, storedCopyFromCampaignCopy } from "@/lib/copywriter/service";
 import {
   findPendingCatalogueConflict,
   findUnboundCalendarConflict,
@@ -122,6 +123,20 @@ export async function POST(request: NextRequest) {
   });
   const copy = generateCopy(facts, parsed.data.caption);
 
+  // The AI copywriter queue (default off). Only buyable products are
+  // enqueueable: for coming_soon and sold_out the truthful standard copy and
+  // its draft-only gate stay. The response never waits on the queue — the
+  // page polls the status route.
+  const generationId =
+    copy.ok && isPurchasableState(facts.state)
+      ? await enqueueGeneration({
+          workspaceId: context.workspaceId,
+          facts,
+          caption: parsed.data.caption ?? null,
+          standardCopy: storedCopyFromCampaignCopy(copy.copy),
+        })
+      : null;
+
   // A campaign already prepared for this reference on this account: a waiting
   // catalogue campaign or draft (the ref-conflict query), or an unbound
   // Calendar / release-sync campaign. Same normalized comparison the save
@@ -163,6 +178,7 @@ export async function POST(request: NextRequest) {
       // is false: a coming-soon or sold-out product cannot be bought yet.
       checks: { purchasable: isPurchasableState(facts.state) },
       existingCampaign,
+      generationId,
     },
   });
 }

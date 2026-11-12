@@ -54,3 +54,50 @@ The Instagram SAV bridge is documented in
 [`docs/sav-bridge.md`](../docs/sav-bridge.md). Start the engine with
 `accountKeys: ["yoyaku_fr"]` for the first canary; this leaves
 `yoyakurecordstore` rows unclaimed until the canary is expanded deliberately.
+
+## Copywriter host worker (AI copy)
+
+The app queues `CopyGeneration` rows; this host worker transports them to the
+subscription cascade. Install (the app container itself never runs the
+cascade):
+
+1. Create `/etc/openreply/copywriter.env`, mode `0600`:
+
+   ```
+   OPENREPLY_INTERNAL_URL=http://127.0.0.1:3048
+   COPYWRITER_BRIDGE_TOKEN=<one 32-byte token, same value as the app's .env>
+   COPYWRITER_WORKDIR=/var/lib/openreply-copywriter
+   ```
+
+   Generate the token with `openssl rand -base64 32`. `COPYWRITER_WORKDIR`
+   is created by `StateDirectory=openreply-copywriter` at unit start; the
+   cascade must never share it with another job.
+
+2. Copy the `LoadCredential=` lines from an existing cascade unit into
+   `deploy/systemd/openreply-copywriter.service` (they ship as a commented
+   placeholder), then:
+
+   ```bash
+   systemctl daemon-reload
+   systemctl enable --now openreply-copywriter.service
+   ```
+
+3. Health check (requires `COPYWRITER_BRIDGE_TOKEN` in the environment of the
+   calling shell, or read it from the env file):
+
+   ```bash
+   curl -sS -H "Authorization: Bearer $COPYWRITER_BRIDGE_TOKEN" \
+     http://127.0.0.1:3048/api/internal/copywriter/health
+   ```
+
+   `pending` / `claimed` / `done` / `failed` are the queue counts, and the
+   active prompt version per workspace should show `1` after the first
+   prepared campaign.
+
+4. Kill switch: `systemctl stop openreply-copywriter`. The queue simply
+   stops draining; campaigns keep their standard copy. The other switch is
+   `COPYWRITER_ENABLED=false` in the app's `.env` (no new rows are queued;
+   restart the app to apply).
+
+Purge: the `purge-copywriter` cron route (already in `deploy/cron.sh`)
+deletes generation rows older than 90 days.

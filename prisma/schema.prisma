@@ -85,6 +85,8 @@ model Workspace {
   webhookEvents     WebhookEvent[]
   operationalEvents OperationalEvent[]
   savTransportItems SavTransportItem[]
+  copywriterPrompts CopywriterPrompt[]
+  copyGenerations   CopyGeneration[]
 
   @@index([ownerId])
 }
@@ -626,4 +628,92 @@ model ReleaseProductState {
   lastStatus String
   seenAt     DateTime @default(now())
   updatedAt  DateTime @updatedAt
+}
+
+/// The prompt text the AI copywriter renders. Append-only per workspace: a
+/// new version is a new row, never an update of `body`. At most one active
+/// row per workspace — enforced in the service inside a transaction plus a
+/// partial unique index (WHERE "isActive") that the schema DSL cannot
+/// express, living in migration 20261112090000_copywriter.
+model CopywriterPrompt {
+  id          String   @id @default(cuid())
+  workspaceId String
+  version     Int
+  body        String   @db.Text
+  /// Cascade model alias passed to the host worker (`haiku` by default).
+  model       String   @default("haiku")
+  isActive    Boolean
+  /// Who authored the version; the v1 seed names the system, later versions
+  /// name the dashboard editor.
+  authorEmail String
+  reason      String
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  generations CopyGeneration[]
+
+  @@unique([workspaceId, version])
+  @@index([workspaceId, isActive])
+}
+
+/// One AI copy generation: the app renders the prompt and queues it, the host
+/// worker claims it, calls the subscription cascade, and posts raw JSON back.
+/// The AI never blocks a campaign — every failure path keeps `standardCopy`,
+/// which is also the guard the release-sync applier compares against.
+model CopyGeneration {
+  id             String              @id @default(cuid())
+  workspaceId    String
+  /// Set by the release sync (applied by the DONE guard) or on save from the
+  /// assistant; plain string on purpose, like ReleaseSyncEvent.automationId.
+  automationId   String?
+  /// Set on a repair attempt: the generation it repairs. The status route
+  /// follows this link — matching by prompt/workspace would cross products.
+  sourceGenerationId String?
+  promptId       String
+  promptVersion  Int
+  /// Product facts plus the caption truncated to 1,200 characters. Public
+  /// shop data only — never tokens or personal data.
+  input          Json
+  renderedPrompt String  @db.Text
+  attempt        Int                 @default(1)
+  /// Times this row was leased (including expired-lease re-claims). A row
+  /// that keeps losing its worker is failed instead of retried forever.
+  claimAttempts  Int                 @default(0)
+  /// Release-sync rows only: the DONE result auto-applies to the campaign.
+  /// Assistant rows never auto-apply — a save that records automationId must
+  /// not re-arm the applier over the copy the team just validated.
+  autoApply      Boolean             @default(false)
+  status         CopyGenerationState @default(PENDING)
+  leaseOwner     String?
+  leaseExpiresAt DateTime?
+  rawOutput      String? @db.Text
+  output         Json?
+  lintErrors     Json?
+  tier           String?
+  latencyMs      Int?
+  failureCode    String?
+  standardCopy   Json
+  /// When the AI copy was applied to the release-sync campaign.
+  appliedAt      DateTime?
+  /// The copy the team actually validated, recorded on save from the
+  /// assistant. Feeds lot S4.
+  finalCopy      Json?
+  editDistance   Int?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  workspace Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  prompt    CopywriterPrompt @relation(fields: [promptId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([automationId])
+  @@index([sourceGenerationId])
+}
+
+enum CopyGenerationState {
+  PENDING
+  CLAIMED
+  DONE
+  FAILED
 }

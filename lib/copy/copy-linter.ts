@@ -95,7 +95,27 @@ function collectFactWords(nouns: string[]): Set<string> {
   return words;
 }
 
-function findInventedNouns(text: string, nouns: string[]): string[] {
+/**
+ * Words a free-text source (product description, post caption) legitimately
+ * contributes. A proper noun that appears verbatim in the source is allowed
+ * by the invented-noun rule: "Discogs" in the LM-02 caption is a real name
+ * the team wrote, not an invention of the copy step.
+ */
+export function sourceWordsFrom(sourceText: string | null | undefined): Set<string> {
+  const words = new Set<string>();
+  if (!sourceText) return words;
+  for (const word of sourceText.split(/[^A-Za-z0-9'&-]+/)) {
+    const lower = word.toLowerCase();
+    if (lower) words.add(lower);
+  }
+  return words;
+}
+
+function findInventedNouns(
+  text: string,
+  nouns: string[],
+  sourceWords: Set<string> = new Set()
+): string[] {
   const factWords = collectFactWords(nouns);
   const invented: string[] = [];
 
@@ -106,13 +126,18 @@ function findInventedNouns(text: string, nouns: string[]): string[] {
     if (factWords.has(lower)) continue;
     // All-caps tokens that are substrings of a fact (catno fragments) pass.
     if (nouns.some((noun) => noun.toLowerCase().includes(lower))) continue;
+    if (sourceWords.has(lower)) continue;
     invented.push(word);
   }
 
   return invented;
 }
 
-export function lintText(text: string, nouns: string[]): LintViolation[] {
+export function lintText(
+  text: string,
+  nouns: string[],
+  sourceWords: Set<string> = new Set()
+): LintViolation[] {
   const violations: LintViolation[] = [];
   const add = (rule: string, detail: string) => violations.push({ rule, detail });
 
@@ -138,7 +163,7 @@ export function lintText(text: string, nouns: string[]): LintViolation[] {
   const exclamations = (text.match(/!/g) ?? []).length;
   if (exclamations > 1) add("exclamation-overload", `${exclamations} exclamation marks`);
 
-  const inventedNouns = findInventedNouns(text, nouns);
+  const inventedNouns = findInventedNouns(text, nouns, sourceWords);
   if (inventedNouns.length > 0) {
     add(
       "invented-noun",
@@ -149,19 +174,101 @@ export function lintText(text: string, nouns: string[]): LintViolation[] {
   return violations;
 }
 
+/**
+ * A price in DM copy: currency sign or code next to digits. Prices change and
+ * the DM carries the tracked link, never a number (playbook copy rules).
+ */
+const PRICE_PATTERN =
+  /(?:[$€£¥]\s*\d)|(?:\d\s*[$€£¥])|(?:\b(?:EUR|USD|GBP|CHF)\s*\d)|(?:\d\s*(?:EUR|USD|GBP|CHF)\b)/i;
+
+/** The AI must never reveal (or mention) the machinery behind the copy. */
+const AI_MENTION_PATTERNS: readonly RegExp[] = [
+  /\bai\b/i,
+  /\ba\.i\.\b/i,
+  /artificial intelligence/i,
+  /\bchat ?bots?\b/i,
+  /\bbots?\b/i,
+  /\bautomated\b/i,
+  /\bautomation\b/i,
+];
+
+const URL_PATTERN = /(?:https?:\/\/|www\.)\S+/i;
+
+/**
+ * Extra gate for AI-written copy, on top of `lintCampaignCopy`: the prompt
+ * forbids prices, URLs and any mention of AI, bots or automation, and the
+ * check runs whatever the source text contains — a price that appears in the
+ * caption is still refused.
+ */
+export function lintGeneratedCopy(
+  copy: CampaignCopy,
+  facts: CampaignFacts,
+  options?: LintCampaignCopyOptions
+): LintResult {
+  const result = lintCampaignCopy(copy, facts, options);
+  const violations = [...result.violations];
+
+  // Buttons are model output too: a 20-character button can still carry a
+  // price or say "AI picks". Every user-visible field is checked.
+  const fields: readonly (readonly [string, string])[] = [
+    ["openingDmMessage", copy.openingDmMessage],
+    ["dmMessage", copy.dmMessage],
+    ["openingDmButtonLabel", copy.openingDmButtonLabel],
+    ["linkButtonLabel", copy.linkButtonLabel],
+  ];
+  for (const [field, value] of fields) {
+    if (PRICE_PATTERN.test(value)) {
+      violations.push({
+        rule: "no-price",
+        detail: `${field}: prices are never quoted in a DM`,
+      });
+    }
+    if (URL_PATTERN.test(value)) {
+      violations.push({
+        rule: "no-url",
+        detail: `${field}: the system attaches the link, the text carries none`,
+      });
+    }
+    for (const pattern of AI_MENTION_PATTERNS) {
+      const hit = value.match(pattern);
+      if (hit) {
+        violations.push({
+          rule: "no-ai-mention",
+          detail: `${field}: "${hit[0]}" mentions the machinery`,
+        });
+      }
+    }
+  }
+
+  return { ok: violations.length === 0, violations };
+}
+
+export interface LintCampaignCopyOptions {
+  /**
+   * Free text the copy legitimately draws from (the product description, the
+   * post caption). A proper noun that appears verbatim in it is allowed.
+   * Only relaxes the invented-noun rule: prices, emoji, dashes, AI mentions
+   * and length limits stay forbidden whatever the source. Absent (the
+   * default) keeps the exact previous behaviour for existing callers.
+   */
+  sourceText?: string | null;
+}
+
 /** Lint every user-visible field of a campaign against its fact block. */
 export function lintCampaignCopy(
   copy: CampaignCopy,
-  facts: CampaignFacts
+  facts: CampaignFacts,
+  options?: LintCampaignCopyOptions
 ): LintResult {
   const nouns = factNouns(facts);
+  const sourceWords = sourceWordsFrom(options?.sourceText);
   const violations: LintViolation[] = [];
 
   for (const [field, value] of [
     ["openingDmMessage", copy.openingDmMessage],
     ["dmMessage", copy.dmMessage],
   ] as const) {
-    for (const violation of lintText(value, nouns)) {
+    for (const violation of lintText(value, nouns, sourceWords)) {
       violations.push({ ...violation, detail: `${field}: ${violation.detail}` });
     }
     if (value.length > META_BODY_LIMIT) {

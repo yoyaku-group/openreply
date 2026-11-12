@@ -10,6 +10,14 @@ import { buildCampaignCopy } from "@/lib/copy/yoyaku-patterns";
 import { lintCampaignCopy } from "@/lib/copy/copy-linter";
 import { missingFacts } from "@/lib/copy/release-facts";
 import { createGeneratedCampaign } from "@/lib/automations/create-generated";
+import {
+  enqueueGeneration,
+  storedCopyFromCampaignCopy,
+} from "@/lib/copywriter/service";
+import {
+  isPurchasableState,
+  resolveProduct,
+} from "@/lib/assistant/resolve-product";
 
 /**
  * Release-to-campaign sync.
@@ -22,6 +30,11 @@ import { createGeneratedCampaign } from "@/lib/automations/create-generated";
  * MAX_CAMPAIGNS_PER_RUN cap, structural idempotence via the
  * (sku, eventType) unique in ReleaseSyncEvent, and the copy linter as a
  * hard gate — rejected copy never becomes a campaign.
+ *
+ * Each created release campaign also queues an AI copy generation (when
+ * COPYWRITER_ENABLED=true). When the generation passes schema and linter,
+ * its copy is applied to the campaign only while the campaign is still
+ * inactive and untouched; the campaign is never activated by the AI.
  */
 
 const MAX_CAMPAIGNS_PER_RUN = 5;
@@ -41,6 +54,41 @@ async function recordOutcome(
       automationId,
     },
   });
+}
+
+/**
+ * Queue an AI copy generation for the freshly created campaign. The resolved
+ * shop product carries the description and the state the prompt needs; when
+ * the shop does not answer or the state is unbuyable, no generation is
+ * queued and the standard copy stays. The AI never blocks the sync.
+ */
+async function maybeEnqueueAiCopy(
+  event: DerivedEvent,
+  automation: NonNullable<Awaited<ReturnType<typeof createGeneratedCampaign>>>,
+  standardCopy: ReturnType<typeof buildCampaignCopy>,
+  workspaceId: string
+) {
+  if (event.facts.eventType === "instore_published") return;
+  try {
+    const resolved = await resolveProduct(event.sku);
+    if (!resolved.ok || !isPurchasableState(resolved.facts.state)) return;
+    await enqueueGeneration({
+      workspaceId,
+      automationId: automation.id,
+      // The DONE result may replace the untouched inactive campaign's copy.
+      autoApply: true,
+      facts: resolved.facts,
+      standardCopy: storedCopyFromCampaignCopy(standardCopy),
+    });
+  } catch (error) {
+    // Belt and braces: the sync already created the campaign and recorded
+    // the outcome. A queue or shop hiccup must not abort the remaining
+    // events or fail the cron run.
+    console.error(
+      "[sync-releases] AI copy enqueue failed; standard copy stays",
+      error
+    );
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -173,6 +221,7 @@ export async function GET(request: NextRequest) {
     }
 
     await recordOutcome(event, "created", null, automation.id);
+    await maybeEnqueueAiCopy(event, automation, copy, account.workspaceId);
     created += 1;
   }
 

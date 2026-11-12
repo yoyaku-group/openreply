@@ -8,7 +8,12 @@
  * One screen: give a product (URL or SKU), optionally paste the post caption,
  * review, validate. Copy comes from the product description via the
  * deterministic `generateCopy` step (`lib/assistant/generate-copy.ts`,
- * provenance "standard"); a later lot swaps that function for an LLM one.
+ * provenance "standard"). The AI copywriter (lot S3) upgrades it in the
+ * background: the standard copy is shown at once with a "Writing a better
+ * version…" badge, the page polls the generation status for up to 25 s, and
+ * the AI version replaces the texts only while the user has not edited them
+ * (otherwise an explicit "Use it" decides). On failure or timeout the
+ * standard copy stays.
  *
  * Saving and validating go through the normal campaign API — this screen
  * never invents a second write path.
@@ -53,7 +58,22 @@ interface PrepareData {
   lint: unknown;
   checks: { purchasable: boolean };
   existingCampaign: ExistingCampaign | null;
+  generationId: string | null;
 }
+
+interface AiCopyTexts {
+  openingDm: string;
+  openingButton: string;
+  revealDm: string;
+  linkButton: string;
+}
+
+type AiStatus =
+  | "idle" // no generation for this product (disabled or unbuyable state)
+  | "pending" // queued, host worker working
+  | "ready" // DONE arrived, not applied yet (the user edited the texts)
+  | "ready_applied" // DONE and in the fields
+  | "failed"; // FAILED or poll timeout: standard copy stays
 
 const STATE_LABELS: Record<ProductFacts["state"], string> = {
   preorder: "Pre-order",
@@ -190,6 +210,10 @@ function Field({
 const inputClass =
   "w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none";
 
+// Polling cadence for the AI copy status (lot S3): every 1.5 s, give up at 25 s.
+const AI_POLL_INTERVAL_MS = 1500;
+const AI_POLL_MAX_MS = 25000;
+
 export default function CampaignAssistantPage() {
   const router = useRouter();
 
@@ -221,6 +245,23 @@ export default function CampaignAssistantPage() {
   const [openingButton, setOpeningButton] = useState("");
   const [revealDm, setRevealDm] = useState("");
   const [linkButton, setLinkButton] = useState("");
+
+  // AI copy generation (lot S3). The standard copy is shown at once; the AI
+  // version, when it arrives, replaces it only while the user has not edited
+  // the texts — otherwise an explicit "Use it" decides.
+  const [generationId, setGenerationId] = useState<string | null>(null);
+  // The dedupe window can hand back the SAME generation id on a Regenerate;
+  // the poll effect is keyed on this nonce too, so a repeated id still
+  // restarts polling instead of leaving the badge stuck on "pending".
+  const [pollNonce, setPollNonce] = useState(0);
+  const [aiStatus, setAiStatus] = useState<AiStatus>("idle");
+  const [aiCopy, setAiCopy] = useState<AiCopyTexts | null>(null);
+  const [aiPromptVersion, setAiPromptVersion] = useState<number | null>(null);
+  const [copyEdited, setCopyEdited] = useState(false);
+  // The standard-copy seed the applied AI text was pinned to. A facts edit
+  // after prepare changes the seed: the AI text names the OLD facts, so it
+  // must not silently come back over the corrected standard copy.
+  const [aiPinnedSeed, setAiPinnedSeed] = useState<string | null>(null);
 
   const [completeId, setCompleteId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -332,9 +373,95 @@ export default function CampaignAssistantPage() {
     setOpeningButton(generated.openingButton);
     setRevealDm(generated.revealDm);
     setLinkButton(generated.linkButton);
+    // An automatic fill resets the edited flag: the AI swap may proceed again.
+    setCopyEdited(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedKey]);
+
+  // The AI version replaces the texts in the fields only while the user has
+  // not edited them; otherwise it waits behind the explicit "Use it" button.
+  // It applies once against the facts it was generated from: when the facts
+  // change afterwards (artist/label/tag corrections), the standard copy
+  // reseeds with the corrected names and the stale AI text is dropped — the
+  // badge returns to "Standard copy" and Regenerate can queue a fresh one.
+  useEffect(() => {
+    if (!aiCopy) return;
+    if (aiStatus !== "ready" && aiStatus !== "ready_applied") return;
+    if (copyEdited) return;
+    if (aiPinnedSeed !== null && aiPinnedSeed !== seedKey) {
+      setAiCopy(null);
+      setAiStatus("idle");
+      return;
+    }
+    setOpeningDm(aiCopy.openingDm);
+    setOpeningButton(aiCopy.openingButton);
+    setRevealDm(aiCopy.revealDm);
+    setLinkButton(aiCopy.linkButton);
+    setAiPinnedSeed(seedKey);
+    setAiStatus("ready_applied");
+  }, [aiCopy, aiStatus, copyEdited, seedKey, aiPinnedSeed]);
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  // Poll the generation status while the host worker works. The standard
+  // copy is already on screen; polling only upgrades it (or gives up).
+  useEffect(() => {
+    if (!generationId) return;
+    let cancelled = false;
+    const startedAt = Date.now();
+    async function poll() {
+      while (!cancelled && Date.now() - startedAt < AI_POLL_MAX_MS) {
+        try {
+          const res = await fetch(`/api/assistant/generations/${generationId}`, {
+            cache: "no-store",
+          });
+          const payload = await res.json();
+          if (cancelled) return;
+          if (payload.success) {
+            const status = payload.data as {
+              status: string;
+              copy?: AiCopyTexts;
+              promptVersion?: number;
+            };
+            if (typeof status.promptVersion === "number") {
+              setAiPromptVersion(status.promptVersion);
+            }
+            if (status.status === "DONE" && status.copy) {
+              setAiCopy(status.copy);
+              setAiStatus("ready");
+              return;
+            }
+            if (status.status === "FAILED") {
+              setAiStatus("failed");
+              return;
+            }
+          }
+        } catch {
+          // A transient poll error is not a failure of the generation.
+        }
+        await new Promise((resolve) => setTimeout(resolve, AI_POLL_INTERVAL_MS));
+      }
+      if (!cancelled) {
+        setAiStatus((prev) => (prev === "pending" ? "failed" : prev));
+      }
+    }
+    void poll();
+    return () => {
+      cancelled = true;
+    };
+  }, [generationId, pollNonce]);
+
+  function applyAiCopy() {
+    if (!aiCopy) return;
+    setOpeningDm(aiCopy.openingDm);
+    setOpeningButton(aiCopy.openingButton);
+    setRevealDm(aiCopy.revealDm);
+    setLinkButton(aiCopy.linkButton);
+    setCopyEdited(false);
+    // An explicit Use it is the user's call even after a facts edit; pin it
+    // so the swap effect does not undo the click.
+    setAiPinnedSeed(seedKey);
+    setAiStatus("ready_applied");
+  }
 
   const liveLint = useMemo(() => {
     if (!effectiveFacts) return null;
@@ -353,6 +480,19 @@ export default function CampaignAssistantPage() {
       releaseFactsFrom(effectiveFacts)
     );
   }, [effectiveFacts, name, openingDm, openingButton, revealDm, linkButton]);
+
+  // Pin the standard-copy seed of the facts the SERVER generated from (the
+  // response carries them). The AI text may only replace copy rendered from
+  // these same facts — a later correction changes the seed and the stale AI
+  // text is dropped instead of silently restoring old names.
+  function pinSeedFromFacts(facts: ProductFacts, captionText: string) {
+    const seedGenerated = generateCopy(facts, captionText);
+    setAiPinnedSeed(
+      seedGenerated.ok
+        ? `${seedGenerated.openingDm}\n${seedGenerated.openingButton}\n${seedGenerated.revealDm}\n${seedGenerated.linkButton}`
+        : ""
+    );
+  }
 
   async function prepare() {
     setPrepareError(null);
@@ -385,6 +525,13 @@ export default function CampaignAssistantPage() {
       setArtistsOverride(null);
       setLabelOverride(null);
       setTagOverride(null);
+      setGenerationId(prepared.generationId ?? null);
+      setAiCopy(null);
+      setAiPromptVersion(null);
+      setCopyEdited(false);
+      pinSeedFromFacts(prepared.facts, captionInput);
+      setPollNonce((n) => n + 1);
+      setAiStatus(prepared.generationId ? "pending" : "idle");
       setName(
         defaultCampaignName({
           sku: prepared.facts.sku,
@@ -396,6 +543,51 @@ export default function CampaignAssistantPage() {
       setPostUrl(null);
       setPostThumb(null);
     } catch {
+      setPrepareError("The product could not be read from the shop.");
+    } finally {
+      setPreparing(false);
+    }
+  }
+
+  // Re-queue a generation WITHOUT the full prepare reset: the user's fact
+  // corrections, campaign name, when-scope and copy edits all stay. The new
+  // generation is pinned to the server's resolved facts; if those differ
+  // from the corrected facts, the stale-seed guard drops its copy on arrival.
+  async function regenerate() {
+    setPrepareError(null);
+    if (!productInput.trim()) {
+      setPrepareError("Enter a product URL or a SKU.");
+      return;
+    }
+    setPreparing(true);
+    try {
+      const res = await fetch("/api/assistant/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product: productInput.trim(),
+          caption: captionInput.trim() || undefined,
+          instagramAccountId: selectedAccountId || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setAiStatus("failed");
+        setPrepareError(data.error ?? "The product could not be read from the shop.");
+        return;
+      }
+      const prepared = data.data as PrepareData;
+      setGenerationId(prepared.generationId ?? null);
+      setAiCopy(null);
+      setAiPromptVersion(null);
+      // copyEdited is deliberately kept: a user who hand-edited the texts
+      // and asks for a Regenerate still gets the result behind "Use it" —
+      // their written copy is never silently overwritten.
+      pinSeedFromFacts(prepared.facts, captionInput);
+      setPollNonce((n) => n + 1);
+      setAiStatus(prepared.generationId ? "pending" : "idle");
+    } catch {
+      setAiStatus("failed");
       setPrepareError("The product could not be read from the shop.");
     } finally {
       setPreparing(false);
@@ -490,6 +682,26 @@ export default function CampaignAssistantPage() {
           });
       const data = await res.json();
       if (data.success) {
+        // Fire-and-forget provenance record (lot S4 feed): what the team
+        // validated, how far it drifted from the model output, and the
+        // campaign it landed on. Never blocks the save.
+        const savedAutomationId =
+          typeof data.data?.id === "string" ? data.data.id : completeId;
+        if (generationId && savedAutomationId) {
+          void fetch(`/api/assistant/generations/${generationId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              automationId: savedAutomationId,
+              finalCopy: {
+                openingDm: body.openingDmMessage ?? null,
+                openingButton: body.openingDmButtonLabel ?? null,
+                revealDm: body.dmMessage,
+                linkButton: body.linkButtonLabel,
+              },
+            }),
+          }).catch(() => {});
+        }
         // refresh() busts the router cache so the list reflects the save.
         router.push("/campaigns");
         router.refresh();
@@ -808,9 +1020,48 @@ export default function CampaignAssistantPage() {
                     className={inputClass}
                   />
                 </Field>
-                <span className="inline-flex w-fit rounded-full bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
-                  {generated?.ok ? "Standard copy" : "Copy blocked"}
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  {(aiStatus === "idle" || aiStatus === "failed" || !generated?.ok) && (
+                    <span className="inline-flex w-fit rounded-full bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
+                      {generated?.ok ? "Standard copy" : "Copy blocked"}
+                    </span>
+                  )}
+                  {aiStatus === "pending" && generated?.ok && (
+                    <span className="inline-flex w-fit animate-pulse rounded-full bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
+                      Writing a better version…
+                    </span>
+                  )}
+                  {aiStatus === "ready" && (
+                    <span className="inline-flex w-fit items-center gap-2 rounded-full bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
+                      AI version ready
+                      <button
+                        type="button"
+                        onClick={applyAiCopy}
+                        className="rounded bg-accent px-2 py-0.5 font-medium text-white hover:bg-accent-hover"
+                      >
+                        Use it
+                      </button>
+                    </span>
+                  )}
+                  {aiStatus === "ready_applied" && (
+                    <span className="inline-flex w-fit rounded-full bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
+                      AI · v{aiPromptVersion ?? "?"}
+                    </span>
+                  )}
+                  {effectiveFacts &&
+                    generated?.ok &&
+                    effectiveFacts.state !== "coming_soon" &&
+                    effectiveFacts.state !== "sold_out" && (
+                      <button
+                        type="button"
+                        onClick={() => void regenerate()}
+                        disabled={preparing || aiStatus === "pending"}
+                        className="rounded border border-border px-2.5 py-1 text-xs font-medium text-muted hover:text-foreground disabled:opacity-50"
+                      >
+                        Regenerate AI copy
+                      </button>
+                    )}
+                </div>
                 {generated && !generated.ok && (
                   <p className="text-sm text-error">
                     Missing facts, copy cannot be generated:{" "}
@@ -845,7 +1096,10 @@ export default function CampaignAssistantPage() {
                     >
                       <textarea
                         value={openingDm}
-                        onChange={(e) => setOpeningDm(e.target.value)}
+                        onChange={(e) => {
+                          setOpeningDm(e.target.value);
+                          setCopyEdited(true);
+                        }}
                         rows={3}
                         className={`${inputClass} resize-y`}
                       />
@@ -856,7 +1110,10 @@ export default function CampaignAssistantPage() {
                     >
                       <input
                         value={openingButton}
-                        onChange={(e) => setOpeningButton(e.target.value)}
+                        onChange={(e) => {
+                          setOpeningButton(e.target.value);
+                          setCopyEdited(true);
+                        }}
                         className={inputClass}
                       />
                     </Field>
@@ -868,7 +1125,10 @@ export default function CampaignAssistantPage() {
                 >
                   <textarea
                     value={revealDm}
-                    onChange={(e) => setRevealDm(e.target.value)}
+                    onChange={(e) => {
+                      setRevealDm(e.target.value);
+                      setCopyEdited(true);
+                    }}
                     rows={3}
                     className={`${inputClass} resize-y`}
                   />
@@ -879,7 +1139,10 @@ export default function CampaignAssistantPage() {
                 >
                   <input
                     value={linkButton}
-                    onChange={(e) => setLinkButton(e.target.value)}
+                    onChange={(e) => {
+                      setLinkButton(e.target.value);
+                      setCopyEdited(true);
+                    }}
                     className={inputClass}
                   />
                 </Field>

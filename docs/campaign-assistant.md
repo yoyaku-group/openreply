@@ -104,6 +104,64 @@ no emoji, no dashes, no invented names, Meta limits (body 640, button 20).
 
 Conflict errors carry a link to the existing campaign.
 
+### AI copy
+
+While you review the standard copy, an AI copywriter works on a better
+version in the background. It never blocks anything: every failure keeps the
+standard copy.
+
+**The flow.** Preparing a buyable product (`Pre-order`, `Back in stock`,
+`Available`) queues one generation. The screen shows the standard copy at
+once with a **Writing a better version…** badge, and polls the generation
+status every 1.5 s for up to 25 s. When the AI version arrives and you have
+not edited the texts yet, it replaces them in the fields with the badge
+**AI · v{n}**. If you already edited, the badge reads **AI version ready**
+with a **Use it** button — nothing is overwritten. On failure or after 25 s
+the badge falls back to **Standard copy**. **Regenerate AI copy** queues a
+new generation without touching your edits — fact corrections, name and
+scope stay; the AI text is only applied when it was built from the same
+facts you see on screen.
+
+**The sources.** The product description is the main source; the caption is
+optional and only suggests a hook for the reveal DM. The description and the
+caption are each truncated to 1,200 characters.
+
+**The guard chain.** The model answers one JSON object
+(`openingDm`, `openingButton`, `revealDm`, `linkButton`) against a strict
+schema. The app then validates:
+
+1. zod: the four strings exist and respect the prompt limits (opening 160,
+   reveal 280, buttons 20 characters);
+2. the YOYAKU linter with one relaxation: a proper noun that appears verbatim
+   in the description or the caption is allowed ("Discogs" in the LM-02
+   caption) — prices, emoji, dashes, AI mentions, URLs and length limits stay
+   forbidden whatever the source;
+3. on any error, exactly one repair attempt is queued, its prompt carrying
+   the linter messages and the previous answer;
+4. a second failure marks the generation FAILED and the standard copy stays.
+
+**Kill switches.** `COPYWRITER_ENABLED=false` in the app environment stops
+new generations (default). `systemctl stop openreply-copywriter` stops the
+host worker from draining the queue. Both leave every campaign on its
+standard copy.
+
+**What is stored.** Each generation stores the product facts and the
+truncated caption (public shop data only — never tokens or personal data),
+the rendered prompt, the raw answer, the lint result and the standard copy it
+falls back to. On save from the assistant, the copy you validated is stored
+as `finalCopy` with its `editDistance` from the model output and the campaign
+it landed on. Rows are purged after 90 days by the `purge-copywriter` cron
+route. The prompt itself is versioned per workspace: v1 is seeded from
+`lib/assistant/prompts/caption-to-dm.v1.md` on first use, a new version is a
+new row, and the rendered prompt travels with the generation — editing the
+prompt never needs a worker deploy.
+
+**Release sync.** The inactive campaigns created by the release sync get an
+AI copy generation too. When it passes the guard chain, the copy is applied
+to that campaign only if it is still inactive and nobody edited its four
+copy fields; `appliedAt` records the swap. The campaign is never activated by
+the AI — activation stays human (playbook).
+
 ## Français
 
 1. **Ouvrez l'assistant** depuis la liste des campagnes (**Prepare from a
@@ -201,3 +259,64 @@ faits uniquement, pas d'emoji, pas de tirets, pas de nom inventé, limites Meta
 | `INSTAGRAM_CAPABILITY_BLOCKED` | Validate | Le compte ne peut pas lire les commentaires ou envoyer le type de DM. |
 
 Les erreurs de conflit portent un lien vers la campagne existante.
+
+### Le copy IA
+
+Pendant que vous révisez le copy standard, un rédacteur IA travaille en
+arrière-plan sur une meilleure version. Il ne bloque jamais rien : chaque
+échec garde le copy standard.
+
+**Le flux.** Préparer un produit achetable (`Pre-order`, `Back in stock`,
+`Available`) met une génération en file. L'écran affiche le copy standard
+immédiatement avec le badge **Writing a better version…**, et interroge le
+statut toutes les 1,5 s pendant 25 s maximum. Quand la version IA arrive et
+que vous n'avez rien édité, elle remplace les textes avec le badge
+**AI · v{n}**. Si vous avez déjà édité, le badge affiche **AI version ready**
+avec un bouton **Use it** — rien n'est écrasé. En cas d'échec ou après 25 s,
+le badge revient à **Standard copy**. **Regenerate AI copy** remet une
+génération en file sans toucher à vos modifications — corrections de faits,
+nom et périmètre restent ; le texte IA n'est appliqué que s'il a été produit
+à partir des mêmes faits que ceux affichés.
+
+**Les sources.** La description produit est la source principale ; la légende
+est facultative et ne fait que suggérer un hook pour le DM du lien.
+Description et légende sont chacune tronquées à 1 200 caractères.
+
+**La chaîne de garde.** Le modèle répond un objet JSON (`openingDm`,
+`openingButton`, `revealDm`, `linkButton`) contre un schéma strict.
+L'application valide ensuite :
+
+1. zod : les quatre chaînes existent et respectent les limites du prompt
+   (ouverture 160, révélation 280, boutons 20 caractères) ;
+2. le linter YOYAKU avec un seul assouplissement : un nom propre présent
+   tel quel dans la description ou la légende est accepté (« Discogs » dans
+   la légende de la LM-02) — prix, emoji, tirets, mentions d'IA, URLs et
+   limites de longueur restent interdits quelle que soit la source ;
+3. sur toute erreur, exactement une tentative de réparation est remise en
+   file, son prompt portant les messages du linter et la réponse précédente ;
+4. un second échec marque la génération FAILED et le copy standard reste.
+
+**Kill switches.** `COPYWRITER_ENABLED=false` dans l'environnement de
+l'application arrête les nouvelles générations (défaut).
+`systemctl stop openreply-copywriter` arrête le worker hôte qui draine la
+file. Les deux laissent chaque campagne sur son copy standard.
+
+**Ce qui est stocké.** Chaque génération stocke les faits produit et la
+légende tronquée (données publiques de la boutique seulement — jamais de
+token ni de donnée personnelle), le prompt rendu, la réponse brute, le
+résultat du linter et le copy standard de repli. À la sauvegarde depuis
+l'assistant, le copy que vous avez validé est stocké en `finalCopy` avec sa
+distance d'édition (`editDistance`) d'avec la sortie du modèle et la campagne
+où il a atterri. Les lignes sont purgées après 90 jours par la route cron
+`purge-copywriter`. Le prompt lui-même est versionné par workspace : la v1
+est semée depuis `lib/assistant/prompts/caption-to-dm.v1.md` au premier
+usage, une nouvelle version est une nouvelle ligne, et le prompt rendu voyage
+avec la génération — modifier le prompt ne demande jamais de redéploiement du
+worker.
+
+**Synchronisation des sorties.** Les campagnes inactives créées par la
+synchronisation des sorties reçoivent aussi une génération IA. Quand elle
+passe la chaîne de garde, le copy est appliqué à cette campagne seulement si
+elle est toujours inactive et si personne n'a modifié ses quatre champs de
+copy ; `appliedAt` enregistre l'échange. L'IA n'active jamais une campagne —
+l'activation reste humaine (playbook).

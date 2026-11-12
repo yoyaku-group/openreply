@@ -1,15 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-const { mockPrisma, mockFetch } = vi.hoisted(() => ({
+const { mockPrisma, mockFetch, mockCopywriter } = vi.hoisted(() => ({
   mockPrisma: {
     instagramAccount: { findFirst: vi.fn() },
     $queryRaw: vi.fn(),
   },
   mockFetch: vi.fn(),
+  mockCopywriter: {
+    enqueueGeneration: vi.fn(),
+    storedCopyFromCampaignCopy: vi.fn((copy: {
+      openingDmMessage: string;
+      openingDmButtonLabel: string;
+      dmMessage: string;
+      linkButtonLabel: string;
+    }) => ({
+      openingDm: copy.openingDmMessage,
+      openingButton: copy.openingDmButtonLabel,
+      revealDm: copy.dmMessage,
+      linkButton: copy.linkButtonLabel,
+    })),
+  },
 }));
 
 vi.mock("@/lib/db/client", () => ({ prisma: mockPrisma }));
+vi.mock("@/lib/copywriter/service", () => mockCopywriter);
 vi.mock("@/lib/workspace-access", () => ({
   getCurrentWorkspaceContext: vi.fn(async () => ({
     workspaceId: "workspace_1",
@@ -71,6 +86,8 @@ function request(body: Record<string, unknown>) {
 beforeEach(() => {
   vi.clearAllMocks();
   clearAssistantProductCache();
+  delete process.env.COPYWRITER_ENABLED;
+  mockCopywriter.enqueueGeneration.mockResolvedValue("gen_123");
   mockPrisma.instagramAccount.findFirst.mockResolvedValue({
     id: "account_1",
     workspaceId: "workspace_1",
@@ -229,6 +246,72 @@ describe("POST /api/assistant/prepare", () => {
     expect(payload.data.checks).toEqual({ purchasable: false });
     // The copy for an unbuyable product never claims availability.
     expect(payload.data.copy.openingDm).not.toMatch(/out now|back in stock/i);
+    // Unbuyable states keep the truthful standard copy: nothing is queued.
+    expect(mockCopywriter.enqueueGeneration).not.toHaveBeenCalled();
+    expect(payload.data.generationId).toBeNull();
+  });
+
+  it("never enqueues a generation for a sold-out product", async () => {
+    process.env.COPYWRITER_ENABLED = "true";
+    mockFetch.mockImplementation(async (input: string | URL | Request) => {
+      const href = input instanceof Request ? input.url : input.toString();
+      const path = href.replace(/^https?:\/\/[^/]+/, "");
+      if (path === "/wp-json/wc/store/v1/products?sku=SO-01") {
+        return jsonResponse([
+          {
+            ...LM02_STORE,
+            sku: "SO-01",
+            slug: "so-01",
+            is_purchasable: false,
+            is_on_backorder: false,
+            is_in_stock: false,
+            categories: [],
+          },
+        ]);
+      }
+      if (path === "/wp-json/wp/v2/product?slug=so-01&_fields=id,musicartist,musiclabel") {
+        return jsonResponse([{ id: 746990, musicartist: [28126], musiclabel: [42124] }]);
+      }
+      if (path === "/wp-json/wp/v2/musicartist?include=28126&per_page=100&_fields=id,name") {
+        return jsonResponse([{ id: 28126, name: "Nuron" }]);
+      }
+      if (path === "/wp-json/wp/v2/musiclabel?include=42124&per_page=100&_fields=id,name") {
+        return jsonResponse([{ id: 42124, name: "Blueprint ARchives" }]);
+      }
+      return jsonResponse([]);
+    });
+
+    const response = await POST(request({ product: "SO-01" }) as never);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.data.facts.state).toBe("sold_out");
+    expect(payload.data.checks).toEqual({ purchasable: false });
+    expect(mockCopywriter.enqueueGeneration).not.toHaveBeenCalled();
+    expect(payload.data.generationId).toBeNull();
+  });
+
+  it("enqueues a generation for a buyable product and reports its id", async () => {
+    process.env.COPYWRITER_ENABLED = "true";
+    const response = await POST(request({ product: "LM-02" }) as never);
+    const payload = await response.json();
+
+    expect(payload.data.generationId).toBe("gen_123");
+    expect(mockCopywriter.enqueueGeneration).toHaveBeenCalledTimes(1);
+    const args = mockCopywriter.enqueueGeneration.mock.calls[0][0];
+    expect(args.workspaceId).toBe("workspace_1");
+    expect(args.facts.sku).toBe("LM-02");
+    expect(args.standardCopy.openingDm).toContain("Likemind 02");
+  });
+
+  it("answers generationId null when the copywriter is disabled", async () => {
+    // The service checks COPYWRITER_ENABLED (default off) and returns null;
+    // the route passes the null straight through as the generation id.
+    mockCopywriter.enqueueGeneration.mockResolvedValue(null);
+    const response = await POST(request({ product: "LM-02" }) as never);
+    const payload = await response.json();
+
+    expect(payload.data.generationId).toBeNull();
   });
 
   it("never creates or updates a campaign", async () => {
