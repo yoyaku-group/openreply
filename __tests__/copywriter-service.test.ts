@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { mockPrisma, mockTx } = vi.hoisted(() => {
   const mockTx = {
     $queryRaw: vi.fn(),
-    copyGeneration: { updateMany: vi.fn() },
+    copyGeneration: {
+      updateMany: vi.fn(),
+      create: vi.fn(),
+    },
     copywriterPrompt: { findFirst: vi.fn(), create: vi.fn() },
   };
   const mockPrisma = {
@@ -119,9 +122,13 @@ beforeEach(() => {
   mockPrisma.copyGeneration.findUnique.mockReset();
   mockPrisma.copyGeneration.findUnique.mockResolvedValue(null);
   mockTx.$queryRaw.mockResolvedValue([]);
+  // mockReset also drops leftover mockResolvedValueOnce from the previous test.
+  mockTx.copyGeneration.updateMany.mockReset();
   mockTx.copyGeneration.updateMany.mockResolvedValue({ count: 0 });
   mockTx.copywriterPrompt.findFirst.mockReset();
   mockTx.copywriterPrompt.findFirst.mockResolvedValue(null);
+  mockTx.copyGeneration.create.mockReset();
+  mockTx.copyGeneration.create.mockResolvedValue({ id: "gen_repair" });
   mockTx.copywriterPrompt.create.mockReset();
   mockTx.copywriterPrompt.create.mockResolvedValue({ id: "prompt_new" });
   mockPrisma.copyGeneration.create.mockResolvedValue({ id: "gen_new" });
@@ -216,6 +223,41 @@ describe("enqueueGeneration", () => {
     expect(data.renderedPrompt).toContain("Discogs");
     expect(data.input.caption).toBe("Fighting the Discogs Sharks");
     expect(data.standardCopy).toEqual(STANDARD_COPY);
+  });
+
+  it("reuses a recent equivalent queued row instead of stacking paid calls", async () => {
+    process.env.COPYWRITER_ENABLED = "true";
+    mockPrisma.copyGeneration.findFirst.mockResolvedValue({
+      id: "gen_recent",
+      automationId: null,
+      autoApply: false,
+      input: { facts: { sku: "LM-02" }, caption: "" },
+    });
+    const id = await enqueueGeneration({
+      workspaceId: "workspace_1",
+      facts: FACTS,
+      standardCopy: STANDARD_COPY,
+    });
+    expect(id).toBe("gen_recent");
+    expect(mockPrisma.copyGeneration.create).not.toHaveBeenCalled();
+  });
+
+  it("queues a new row when the recent one differs (other SKU or caption)", async () => {
+    process.env.COPYWRITER_ENABLED = "true";
+    mockPrisma.copyGeneration.findFirst.mockResolvedValue({
+      id: "gen_recent_other",
+      automationId: null,
+      autoApply: false,
+      input: { facts: { sku: "XX-99" }, caption: "" },
+    });
+    const id = await enqueueGeneration({
+      workspaceId: "workspace_1",
+      facts: FACTS,
+      caption: "Different caption",
+      standardCopy: STANDARD_COPY,
+    });
+    expect(id).toBe("gen_new");
+    expect(mockPrisma.copyGeneration.create).toHaveBeenCalledTimes(1);
   });
 
   it("seeds the v1 prompt from the markdown file on first use", async () => {
@@ -377,14 +419,15 @@ describe("submitCopyResult", () => {
 
   it("queues one repair attempt on invalid JSON (attempt 1)", async () => {
     mockPrisma.copyGeneration.findUnique.mockResolvedValue(generationRow());
+    mockTx.copyGeneration.updateMany.mockResolvedValueOnce({ count: 1 });
     const result = await submitCopyResult("gen_1", "worker-1", {
       rawOutput: "I could not produce JSON today, sorry.",
       tier: "claude",
       latencyMs: 400,
     });
     expect(result).toEqual({ status: "REPAIRED" });
-    const failedUpdate = mockPrisma.copyGeneration.updateMany.mock.calls[0][0];
-    const repairCreate = mockPrisma.copyGeneration.create.mock.calls[0][0];
+    const failedUpdate = mockTx.copyGeneration.updateMany.mock.calls[0][0];
+    const repairCreate = mockTx.copyGeneration.create.mock.calls[0][0];
     expect(failedUpdate.where).toMatchObject({
       id: "gen_1",
       status: "CLAIMED",
@@ -393,6 +436,8 @@ describe("submitCopyResult", () => {
     expect(failedUpdate.data.failureCode).toBe(FAILURE_CODES.LINT_REPAIR_QUEUED);
     expect(failedUpdate.data.status).toBe("FAILED");
     expect(repairCreate.data.attempt).toBe(2);
+    // The status route follows this precise back-link, never a heuristic.
+    expect(repairCreate.data.sourceGenerationId).toBe("gen_1");
     // No explicit status: the row lands as the PENDING column default.
     expect(repairCreate.data.status).toBeUndefined();
     expect(repairCreate.data.renderedPrompt).toContain("RENDERED PROMPT");
@@ -624,6 +669,25 @@ describe("session-side status and final copy", () => {
 
     const status = await getGenerationStatus("gen_1", "workspace_1");
     expect(status?.status).toBe("CLAIMED");
+    const followWhere = mockPrisma.copyGeneration.findFirst.mock.calls[0][0].where;
+    expect(followWhere).toEqual({
+      sourceGenerationId: "gen_1",
+      workspaceId: "workspace_1",
+    });
+  });
+
+  it("does not follow another product's repair row", async () => {
+    mockPrisma.copyGeneration.findUnique.mockResolvedValue(
+      generationRow({
+        status: "FAILED",
+        failureCode: "LINT_REPAIR_QUEUED",
+      })
+    );
+    // No repair row linked to THIS generation.
+    mockPrisma.copyGeneration.findFirst.mockResolvedValue(null);
+    const status = await getGenerationStatus("gen_1", "workspace_1");
+    expect(status?.status).toBe("FAILED");
+    expect(status?.failureCode).toBe("LINT_REPAIR_QUEUED");
   });
 
   it("returns the status for the owning workspace and null otherwise", async () => {

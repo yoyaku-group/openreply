@@ -477,6 +477,19 @@ export default function CampaignAssistantPage() {
     );
   }, [effectiveFacts, name, openingDm, openingButton, revealDm, linkButton]);
 
+  // Pin the standard-copy seed of the facts the SERVER generated from (the
+  // response carries them). The AI text may only replace copy rendered from
+  // these same facts — a later correction changes the seed and the stale AI
+  // text is dropped instead of silently restoring old names.
+  function pinSeedFromFacts(facts: ProductFacts, captionText: string) {
+    const seedGenerated = generateCopy(facts, captionText);
+    setAiPinnedSeed(
+      seedGenerated.ok
+        ? `${seedGenerated.openingDm}\n${seedGenerated.openingButton}\n${seedGenerated.revealDm}\n${seedGenerated.linkButton}`
+        : ""
+    );
+  }
+
   async function prepare() {
     setPrepareError(null);
     if (!productInput.trim()) {
@@ -512,7 +525,7 @@ export default function CampaignAssistantPage() {
       setAiCopy(null);
       setAiPromptVersion(null);
       setCopyEdited(false);
-      setAiPinnedSeed(null);
+      pinSeedFromFacts(prepared.facts, captionInput);
       setAiStatus(prepared.generationId ? "pending" : "idle");
       setName(
         defaultCampaignName({
@@ -525,6 +538,48 @@ export default function CampaignAssistantPage() {
       setPostUrl(null);
       setPostThumb(null);
     } catch {
+      setPrepareError("The product could not be read from the shop.");
+    } finally {
+      setPreparing(false);
+    }
+  }
+
+  // Re-queue a generation WITHOUT the full prepare reset: the user's fact
+  // corrections, campaign name, when-scope and copy edits all stay. The new
+  // generation is pinned to the server's resolved facts; if those differ
+  // from the corrected facts, the stale-seed guard drops its copy on arrival.
+  async function regenerate() {
+    setPrepareError(null);
+    if (!productInput.trim()) {
+      setPrepareError("Enter a product URL or a SKU.");
+      return;
+    }
+    setPreparing(true);
+    try {
+      const res = await fetch("/api/assistant/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product: productInput.trim(),
+          caption: captionInput.trim() || undefined,
+          instagramAccountId: selectedAccountId || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setAiStatus("failed");
+        setPrepareError(data.error ?? "The product could not be read from the shop.");
+        return;
+      }
+      const prepared = data.data as PrepareData;
+      setGenerationId(prepared.generationId ?? null);
+      setAiCopy(null);
+      setAiPromptVersion(null);
+      setCopyEdited(false);
+      pinSeedFromFacts(prepared.facts, captionInput);
+      setAiStatus(prepared.generationId ? "pending" : "idle");
+    } catch {
+      setAiStatus("failed");
       setPrepareError("The product could not be read from the shop.");
     } finally {
       setPreparing(false);
@@ -991,7 +1046,7 @@ export default function CampaignAssistantPage() {
                     effectiveFacts.state !== "sold_out" && (
                       <button
                         type="button"
-                        onClick={() => void prepare()}
+                        onClick={() => void regenerate()}
                         disabled={preparing || aiStatus === "pending"}
                         className="rounded border border-border px-2.5 py-1 text-xs font-medium text-muted hover:text-foreground disabled:opacity-50"
                       >

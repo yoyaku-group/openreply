@@ -666,6 +666,9 @@ model CopyGeneration {
   /// Set by the release sync (applied by the DONE guard) or on save from the
   /// assistant; plain string on purpose, like ReleaseSyncEvent.automationId.
   automationId   String?
+  /// Set on a repair attempt: the generation it repairs. The status route
+  /// follows this link — matching by prompt/workspace would cross products.
+  sourceGenerationId String?
   promptId       String
   promptVersion  Int
   /// Product facts plus the caption truncated to 1,200 characters. Public
@@ -705,6 +708,7 @@ model CopyGeneration {
   @@index([status, createdAt])
   @@index([workspaceId, createdAt])
   @@index([automationId])
+  @@index([sourceGenerationId])
 }
 
 enum CopyGenerationState {

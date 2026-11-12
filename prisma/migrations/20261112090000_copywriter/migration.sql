@@ -27,6 +27,7 @@ CREATE TABLE "CopyGeneration" (
   "id" TEXT NOT NULL,
   "workspaceId" TEXT NOT NULL,
   "automationId" TEXT,
+  "sourceGenerationId" TEXT,
   "promptId" TEXT NOT NULL,
   "promptVersion" INTEGER NOT NULL,
   "input" JSONB NOT NULL,
@@ -68,6 +69,10 @@ CREATE INDEX "CopyGeneration_workspaceId_createdAt_idx"
   ON "CopyGeneration"("workspaceId", "createdAt");
 CREATE INDEX "CopyGeneration_automationId_idx"
   ON "CopyGeneration"("automationId");
+CREATE INDEX "CopyGeneration_sourceGenerationId_idx"
+  ON "CopyGeneration"("sourceGenerationId");
+CREATE INDEX "CopywriterPrompt_workspaceId_isActive_idx"
+  ON "CopywriterPrompt"("workspaceId", "isActive");
 
 ALTER TABLE "CopywriterPrompt"
   ADD CONSTRAINT "CopywriterPrompt_workspaceId_fkey"

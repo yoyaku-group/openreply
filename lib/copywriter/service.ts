@@ -249,6 +249,45 @@ export interface EnqueueGenerationInput {
  * copywriter is disabled or anything fails — callers never wait and never
  * block a campaign on the AI.
  */
+const DEDUPE_WINDOW_MS = 60 * 1000;
+
+/**
+ * A recent equivalent row for the same product within the dedupe window:
+ * repeated Prepare or Regenerate clicks must not stack paid cascade calls
+ * for the exact same request. Identity = workspace, automation target,
+ * product SKU, caption and standard copy all equal.
+ */
+async function findRecentEquivalentRow(
+  workspaceId: string,
+  input: EnqueueGenerationInput,
+  promptId: string,
+  now: Date
+): Promise<{ id: string } | null> {
+  const recent = await prisma.copyGeneration.findFirst({
+    where: {
+      workspaceId,
+      promptId,
+      status: { in: ["PENDING", "CLAIMED"] },
+      createdAt: { gte: new Date(now.getTime() - DEDUPE_WINDOW_MS) },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!recent) return null;
+  if ((recent.automationId ?? null) !== (input.automationId ?? null)) return null;
+  if (recent.autoApply !== (input.autoApply ?? false)) return null;
+  if (!isRecord(recent.input)) return null;
+  const recentFacts = recent.input.facts;
+  const recentCaption = typeof recent.input.caption === "string" ? recent.input.caption : "";
+  if (
+    !isRecord(recentFacts) ||
+    recentFacts.sku !== input.facts.sku ||
+    recentCaption !== truncateBlock(input.caption)
+  ) {
+    return null;
+  }
+  return { id: recent.id };
+}
+
 export async function enqueueGeneration(
   input: EnqueueGenerationInput
 ): Promise<string | null> {
@@ -256,6 +295,13 @@ export async function enqueueGeneration(
 
   try {
     const prompt = await ensureActivePrompt(input.workspaceId);
+    const duplicate = await findRecentEquivalentRow(
+      input.workspaceId,
+      input,
+      prompt.id,
+      new Date()
+    );
+    if (duplicate) return duplicate.id;
     const row = await prisma.copyGeneration.create({
       data: {
         workspaceId: input.workspaceId,
@@ -577,25 +623,41 @@ export async function submitCopyResult(
   if (row.attempt <= 1) {
     // One repair attempt: a fresh PENDING row whose prompt carries the
     // linter messages and the previous answer. Attempt 1 itself is terminal.
-    const written = await writeUnderLease(id, workerId, {
-      status: "FAILED",
-      failureCode: FAILURE_CODES.LINT_REPAIR_QUEUED,
-      ...terminalData,
+    // The FAILED write and the repair create are one transaction: a DB blip
+    // between them must not leave a row that promises a repair none exists.
+    const written = await prisma.$transaction(async (tx) => {
+      const marked = await tx.copyGeneration.updateMany({
+        where: {
+          id,
+          status: "CLAIMED",
+          leaseOwner: workerId,
+          leaseExpiresAt: { gt: new Date() },
+        },
+        data: {
+          status: "FAILED",
+          failureCode: FAILURE_CODES.LINT_REPAIR_QUEUED,
+          ...terminalData,
+        },
+      });
+      if (marked.count !== 1) return false;
+      await tx.copyGeneration.create({
+        data: {
+          workspaceId: row.workspaceId,
+          automationId: row.automationId,
+          autoApply: row.autoApply,
+          // The precise back-link the status route follows.
+          sourceGenerationId: row.id,
+          promptId: row.promptId,
+          promptVersion: row.promptVersion,
+          input: row.input as Prisma.InputJsonValue,
+          renderedPrompt: `${row.renderedPrompt}${repairAppendix(violations, payload.rawOutput)}`,
+          attempt: row.attempt + 1,
+          standardCopy: row.standardCopy as Prisma.InputJsonValue,
+        },
+      });
+      return true;
     });
     if (!written) throw new CopywriterError("INVALID_LEASE", 409);
-    await prisma.copyGeneration.create({
-      data: {
-        workspaceId: row.workspaceId,
-        automationId: row.automationId,
-        autoApply: row.autoApply,
-        promptId: row.promptId,
-        promptVersion: row.promptVersion,
-        input: row.input as Prisma.InputJsonValue,
-        renderedPrompt: `${row.renderedPrompt}${repairAppendix(violations, payload.rawOutput)}`,
-        attempt: row.attempt + 1,
-        standardCopy: row.standardCopy as Prisma.InputJsonValue,
-      },
-    });
     return { status: "REPAIRED" };
   }
 
@@ -743,13 +805,11 @@ export async function getGenerationStatus(
     row.status === "FAILED" &&
     row.failureCode === FAILURE_CODES.LINT_REPAIR_QUEUED
   ) {
+    // Follow the explicit back-link, never a heuristic: two products can
+    // share a workspace and prompt, and a loose match would serve product
+    // B's repair row to product A's screen.
     const repair = await prisma.copyGeneration.findFirst({
-      where: {
-        workspaceId: row.workspaceId,
-        promptId: row.promptId,
-        attempt: { gt: row.attempt },
-        createdAt: { gt: row.createdAt },
-      },
+      where: { sourceGenerationId: row.id, workspaceId: row.workspaceId },
       orderBy: { createdAt: "desc" },
     });
     if (repair) return generationStatusFrom(repair);

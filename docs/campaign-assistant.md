@@ -117,8 +117,10 @@ status every 1.5 s for up to 25 s. When the AI version arrives and you have
 not edited the texts yet, it replaces them in the fields with the badge
 **AI · v{n}**. If you already edited, the badge reads **AI version ready**
 with a **Use it** button — nothing is overwritten. On failure or after 25 s
-the badge falls back to **Standard copy**. **Regenerate AI copy** re-prepares
-the product and queues a new generation.
+the badge falls back to **Standard copy**. **Regenerate AI copy** queues a
+new generation without touching your edits — fact corrections, name and
+scope stay; the AI text is only applied when it was built from the same
+facts you see on screen.
 
 **The sources.** The product description is the main source; the caption is
 optional and only suggests a hook for the reveal DM. The description and the
@@ -271,8 +273,10 @@ statut toutes les 1,5 s pendant 25 s maximum. Quand la version IA arrive et
 que vous n'avez rien édité, elle remplace les textes avec le badge
 **AI · v{n}**. Si vous avez déjà édité, le badge affiche **AI version ready**
 avec un bouton **Use it** — rien n'est écrasé. En cas d'échec ou après 25 s,
-le badge revient à **Standard copy**. **Regenerate AI copy** relance la
-préparation et remet une génération en file.
+le badge revient à **Standard copy**. **Regenerate AI copy** remet une
+génération en file sans toucher à vos modifications — corrections de faits,
+nom et périmètre restent ; le texte IA n'est appliqué que s'il a été produit
+à partir des mêmes faits que ceux affichés.
 
 **Les sources.** La description produit est la source principale ; la légende
 est facultative et ne fait que suggérer un hook pour le DM du lien.
