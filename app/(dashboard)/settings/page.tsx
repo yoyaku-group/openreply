@@ -163,6 +163,8 @@ export default function SettingsPage() {
   const canConnectInstagram =
     canManageMembers || membersData?.currentUserRole === "EDITOR";
   const canDisconnectInstagram = canManageMembers;
+  // The prompt lab is a workspace-owner surface (lot S4).
+  const isOwner = membersData?.currentUserRole === "OWNER";
 
   return (
     <div className="max-w-2xl mx-auto space-y-8">
@@ -172,6 +174,24 @@ export default function SettingsPage() {
       <Suspense fallback={null}>
         <InstagramConnectNotice />
       </Suspense>
+
+      {isOwner && (
+        <section className="panel rounded p-6">
+          <h2 className="text-base font-semibold mb-4">AI copywriter</h2>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-muted">
+              Improve the AI campaign copy: metrics, golden examples, test before
+              activate, one-click revert.
+            </p>
+            <a
+              href="/settings/copywriter"
+              className="shrink-0 rounded border border-accent px-4 py-2 text-sm font-medium text-accent hover:bg-accent/5"
+            >
+              Prompt lab
+            </a>
+          </div>
+        </section>
+      )}
 
       <section className="panel rounded p-6">
         <h2 className="text-base font-semibold mb-6">Instagram Connection</h2>

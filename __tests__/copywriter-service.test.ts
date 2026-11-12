@@ -32,6 +32,7 @@ const { mockPrisma, mockTx } = vi.hoisted(() => {
     },
     automation: {
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
     },
@@ -146,6 +147,7 @@ beforeEach(() => {
     body: "FACTS:\n{{facts}}\n{{caption}}\nSTATE: {{state}}",
   });
   mockPrisma.automation.findUnique.mockResolvedValue(null);
+  mockPrisma.automation.findFirst.mockResolvedValue({ id: "automation_1" });
   mockPrisma.automation.update.mockResolvedValue({});
   mockPrisma.automation.updateMany.mockResolvedValue({ count: 1 });
 });
@@ -400,6 +402,24 @@ describe("claimCopyItems", () => {
     expect(items).toEqual([]);
     expect(mockPrisma.copyGeneration.findMany).not.toHaveBeenCalled();
   });
+
+  it("a trial runs on its DRAFT model, not the prompt row's model", async () => {
+    mockTx.$queryRaw.mockResolvedValue([{ id: "trial_1" }]);
+    mockTx.copyGeneration.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+    mockPrisma.copyGeneration.findMany.mockResolvedValue([
+      {
+        id: "trial_1",
+        renderedPrompt: "DRAFT RENDER",
+        createdAt: new Date(),
+        modelOverride: "sonnet",
+        prompt: { model: "haiku" },
+      },
+    ]);
+    const items = await claimCopyItems("worker-1", 5);
+    expect(items[0].model).toBe("sonnet");
+  });
 });
 
 describe("submitCopyResult", () => {
@@ -479,6 +499,30 @@ describe("submitCopyResult", () => {
     expect(repairCreate.data.renderedPrompt).toContain(
       "I could not produce JSON today"
     );
+  });
+
+  it("a trial's repair row stays a trial (isolation travels)", async () => {
+    // Attempt 1 of a TRIAL failed: the repair row must not fall back to
+    // isTrial=false and leak into production metrics, the recent feed or
+    // the dedupe.
+    mockPrisma.copyGeneration.findUnique.mockResolvedValue(
+      generationRow({
+        isTrial: true,
+        modelOverride: "sonnet",
+        trialBodyHash: "hash-of-draft",
+      })
+    );
+    mockTx.copyGeneration.updateMany.mockResolvedValueOnce({ count: 1 });
+    const result = await submitCopyResult("trial_1", "worker-1", {
+      rawOutput: "no json",
+      tier: "claude",
+      latencyMs: 300,
+    });
+    expect(result).toEqual({ status: "REPAIRED" });
+    const repairCreate = mockTx.copyGeneration.create.mock.calls[0][0].data;
+    expect(repairCreate.isTrial).toBe(true);
+    expect(repairCreate.modelOverride).toBe("sonnet");
+    expect(repairCreate.trialBodyHash).toBe("hash-of-draft");
   });
 
   it("fails with LINT_FAILED when attempt 2 fails the linter", async () => {
@@ -841,6 +885,28 @@ describe("session-side status and final copy", () => {
       })
     ).toBeNull();
     expect(mockPrisma.copyGeneration.update).not.toHaveBeenCalled();
+  });
+
+  it("refuses an automationId from another workspace and stores nothing (S3 review carry-over)", async () => {
+    mockPrisma.copyGeneration.findUnique.mockResolvedValue(
+      generationRow({
+        status: "DONE",
+        output: { openingDm: "a", openingButton: "b", revealDm: "c", linkButton: "d" },
+      })
+    );
+    mockPrisma.automation.findFirst.mockResolvedValue(null);
+    await expect(
+      recordFinalCopy("gen_1", "workspace_1", {
+        automationId: "automation_foreign",
+        finalCopy: STANDARD_COPY,
+      })
+    ).rejects.toMatchObject({ code: "NOT_FOUND", status: 404 });
+    // Nothing stored: no finalCopy, no editDistance, no automationId.
+    expect(mockPrisma.copyGeneration.update).not.toHaveBeenCalled();
+    expect(mockPrisma.automation.findFirst).toHaveBeenCalledWith({
+      where: { id: "automation_foreign", workspaceId: "workspace_1" },
+      select: { id: true },
+    });
   });
 });
 
