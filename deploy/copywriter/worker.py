@@ -138,8 +138,25 @@ async def post_json(cfg: Config, path: str, payload: dict) -> None:
 
 def load_cascade(cfg: Config):
     """Return the cascade call bound to this worker, or None when the shared
-    library is unavailable. Imported lazily so the module stays importable
-    (and testable) on hosts without /opt/shared-libs."""
+    library is unavailable or the credential directory is unusable. Imported
+    lazily so the module stays importable (and testable) on hosts without
+    /opt/shared-libs."""
+    # The systemd unit ships with LoadCredential= as a commented placeholder;
+    # when CLAUDE_CASCADE_CRED_DIR points at an empty or missing directory,
+    # every item would fail per-call and the queue would burn claim attempts
+    # silently. Refuse to start instead — the misconfiguration must be loud.
+    cred_dir = os.environ.get("CLAUDE_CASCADE_CRED_DIR", "").strip()
+    if cred_dir and (
+        not os.path.isdir(cred_dir) or not os.listdir(cred_dir)
+    ):
+        print(
+            "[copywriter] CLAUDE_CASCADE_CRED_DIR is set but empty or missing; "
+            "refusing to start (install the LoadCredential= lines from an "
+            "existing cascade unit)",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
     if "/opt/shared-libs" not in sys.path:
         sys.path.insert(0, "/opt/shared-libs")
     try:
@@ -153,17 +170,25 @@ def load_cascade(cfg: Config):
         return None
 
     async def cascade_call(item: dict):
-        return await call_claude_cascade(
-            item["renderedPrompt"],
-            model=item["model"],
-            max_turns=1,
-            available_tools="",
-            allowed_tools="",
-            isolated_context=True,
-            json_schema=item["jsonSchema"],
-            timeout=item["timeoutSec"],
-            provider_policy="max-first",
-            cwd=cfg.workdir,
+        # A hard TOTAL bound: if the library's timeout turned out to be
+        # per-tier, the whole call must still finish well inside the app's
+        # 60 s lease — otherwise the result post lands past expiry and the
+        # paid answer is discarded. A timeout here raises TimeoutError,
+        # which process_item posts as CASCADE_FAILED.
+        return await asyncio.wait_for(
+            call_claude_cascade(
+                item["renderedPrompt"],
+                model=item["model"],
+                max_turns=1,
+                available_tools="",
+                allowed_tools="",
+                isolated_context=True,
+                json_schema=item["jsonSchema"],
+                timeout=item["timeoutSec"],
+                provider_policy="max-first",
+                cwd=cfg.workdir,
+            ),
+            timeout=float(item["timeoutSec"]),
         )
 
     return cascade_call

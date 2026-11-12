@@ -171,6 +171,36 @@ class ConfigTests(unittest.TestCase):
         }
         self.assertIsNone(worker.config_from_env(env))
 
+    def test_empty_credential_directory_refuses_to_start(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as empty_dir:
+            env = {
+                "COPYWRITER_BRIDGE_TOKEN": "token",
+                "COPYWRITER_WORKDIR": os.getcwd(),
+                "CLAUDE_CASCADE_CRED_DIR": empty_dir,
+            }
+            # config_from_env passes; the credential gate fires in
+            # load_cascade, so main() exits 2 with a loud message.
+            with mock.patch.dict(os.environ, env, clear=False):
+                self.assertEqual(worker.main(), 2)
+
+    def test_populated_credential_directory_passes_the_gate(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as cred_dir:
+            with open(os.path.join(cred_dir, "credential"), "w") as handle:
+                handle.write("x")
+            env = {
+                "COPYWRITER_BRIDGE_TOKEN": "token",
+                "COPYWRITER_WORKDIR": os.getcwd(),
+                "CLAUDE_CASCADE_CRED_DIR": cred_dir,
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                # The gate passes; the shared cascade library is absent on
+                # this host, which is also a loud exit 2, not per-item fail.
+                self.assertEqual(worker.main(), 2)
+
     def test_main_exits_2_when_token_missing(self):
         env = {
             "COPYWRITER_BRIDGE_TOKEN": "",

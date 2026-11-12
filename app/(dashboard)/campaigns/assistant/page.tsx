@@ -580,7 +580,9 @@ export default function CampaignAssistantPage() {
       setGenerationId(prepared.generationId ?? null);
       setAiCopy(null);
       setAiPromptVersion(null);
-      setCopyEdited(false);
+      // copyEdited is deliberately kept: a user who hand-edited the texts
+      // and asks for a Regenerate still gets the result behind "Use it" —
+      // their written copy is never silently overwritten.
       pinSeedFromFacts(prepared.facts, captionInput);
       setPollNonce((n) => n + 1);
       setAiStatus(prepared.generationId ? "pending" : "idle");

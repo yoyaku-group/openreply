@@ -252,6 +252,24 @@ export interface EnqueueGenerationInput {
 const DEDUPE_WINDOW_MS = 60 * 1000;
 
 /**
+ * Deterministic serialization with object keys sorted at every depth. Two
+ * equal JSON values serialize identically even when one came back from a
+ * JSONB column (Postgres reorders keys by length, then bytes).
+ */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (isRecord(value)) {
+    const entries = Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+/**
  * A recent equivalent row for the same product within the dedupe window:
  * repeated Prepare or Regenerate clicks must not stack paid cascade calls
  * for the exact same request. Identity = workspace, automation target,
@@ -279,9 +297,11 @@ async function findRecentEquivalentRow(
   const recentCaption = typeof recent.input.caption === "string" ? recent.input.caption : "";
   if (recentCaption !== truncateBlock(input.caption)) return null;
   // The whole fact block and the standard copy must be identical: a fact
-  // correction between two clicks must NOT be served the old row.
+  // correction between two clicks must NOT be served the old row. The
+  // comparison is key-order-insensitive: JSONB does not preserve the key
+  // order a plain JSON.stringify would expect.
   const sameJson = (a: unknown, b: unknown) =>
-    JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+    canonicalJson(a) === canonicalJson(b);
   if (!sameJson(recent.input.facts, input.facts)) return null;
   if (!sameJson(recent.standardCopy, input.standardCopy)) return null;
   return { id: recent.id };

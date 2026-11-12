@@ -243,6 +243,37 @@ describe("enqueueGeneration", () => {
     expect(mockPrisma.copyGeneration.create).not.toHaveBeenCalled();
   });
 
+  it("matches a JSONB round-trip whose keys were reordered by Postgres", async () => {
+    process.env.COPYWRITER_ENABLED = "true";
+    // JSONB stores keys by length then bytes, so the row comes back with a
+    // different key order than the in-memory object. The dedupe must still
+    // recognise the same content.
+    const reorderedCopy = {
+      revealDm: STANDARD_COPY.revealDm,
+      linkButton: STANDARD_COPY.linkButton,
+      openingDm: STANDARD_COPY.openingDm,
+      openingButton: STANDARD_COPY.openingButton,
+    };
+    // Same content, reversed key order (JSONB-style).
+    const reorderedFacts = Object.fromEntries(
+      Object.entries(FACTS as unknown as Record<string, unknown>).reverse()
+    );
+    mockPrisma.copyGeneration.findFirst.mockResolvedValue({
+      id: "gen_recent_reordered",
+      automationId: null,
+      autoApply: false,
+      input: { facts: reorderedFacts, caption: "" },
+      standardCopy: reorderedCopy,
+    });
+    const id = await enqueueGeneration({
+      workspaceId: "workspace_1",
+      facts: FACTS,
+      standardCopy: STANDARD_COPY,
+    });
+    expect(id).toBe("gen_recent_reordered");
+    expect(mockPrisma.copyGeneration.create).not.toHaveBeenCalled();
+  });
+
   it("queues a new row when the recent one differs (other SKU or caption)", async () => {
     process.env.COPYWRITER_ENABLED = "true";
     // The recent row was built from DIFFERENT facts: the dedupe must miss so
