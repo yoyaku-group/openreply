@@ -724,17 +724,22 @@ export async function getTrialResults(
   });
 
   // One bounded tail read serves every baseline: the comparison the docs
-  // promise is the ACTIVE version's outcome for the same input. A baseline
-  // that queued its repair is judged on the repair's outcome, exactly like
-  // the trial side — otherwise the gate would be biased in the draft's
-  // favour.
+  // promise is the ACTIVE version's outcome for the same input. The tail is
+  // newest-first and the map keeps the FIRST hit per input, so the baseline
+  // is the MOST RECENT production row for that input. A baseline that
+  // queued its repair is judged on the repair's outcome, exactly like the
+  // trial side — otherwise the gate would be biased in the draft's favour.
   const active = await ensureActivePrompt(workspaceId);
   const tail = await prisma.copyGeneration.findMany({
     where: { workspaceId, isTrial: false, promptVersion: active.version },
     orderBy: { createdAt: "desc" },
     take: TRIAL_SOURCE_SCAN,
   });
-  const tailByKey = new Map(tail.map((row) => [inputKey(row.input), row]));
+  const tailByKey = new Map<string, (typeof tail)[number]>();
+  for (const row of tail) {
+    const key = inputKey(row.input);
+    if (!tailByKey.has(key)) tailByKey.set(key, row);
+  }
 
   const items: TrialItemStatus[] = [];
   for (const row of rows) {
@@ -770,8 +775,12 @@ export async function getTrialResults(
 export interface TrialVerdict {
   /** Every requested id resolved to a finished trial row. */
   ready: boolean;
+  /** Draft passes over ALL trial inputs (display). */
   trialPass: number;
+  /** Active-version passes over the comparable inputs (display). */
   baselinePass: number;
+  /** Draft passes over the comparable inputs (the gate's own number). */
+  comparablePass: number;
   /** Inputs that actually had an active-version baseline to compare with. */
   baselinesFound: number;
   gateOk: boolean;
@@ -802,6 +811,7 @@ export function verdictFromItems(items: TrialItemStatus[]): TrialVerdict {
     ready: finished,
     trialPass,
     baselinePass,
+    comparablePass,
     baselinesFound: comparable.length,
     gateOk:
       finished && comparable.length > 0 && comparablePass >= baselinePass,
@@ -867,12 +877,14 @@ export async function activateDraft(input: ActivateDraftInput) {
     if (runRoots.length === 0) {
       throw new CopywriterError("ACTIVATION_GATE_FAILED", 409);
     }
-    // The newest run is the one batch whose roots sit within 5 minutes of
-    // the most recent root (a run's 5 inserts share one transaction; a
-    // re-test of the same body hours later starts a new batch).
+    // A run's 5 roots are inserted in ONE transaction, so Postgres stamps
+    // them with the same transaction timestamp (CURRENT_TIMESTAMP is the
+    // tx start). The run being activated is the newest such batch — a
+    // re-test hours (or minutes) later is its own batch, never a merge.
     const newestAt = runRoots[0].createdAt.getTime();
+    const BATCH_TOLERANCE_MS = 1000;
     const runIds = runRoots
-      .filter((row) => newestAt - row.createdAt.getTime() <= 5 * 60 * 1000)
+      .filter((row) => Math.abs(newestAt - row.createdAt.getTime()) <= BATCH_TOLERANCE_MS)
       .map((row) => row.id);
     const submitted = new Set(input.trialIds);
     const coversRun =

@@ -92,6 +92,8 @@ interface TrialVerdictData {
   ready: boolean;
   trialPass: number;
   baselinePass: number;
+  comparablePass: number;
+  baselinesFound: number;
   gateOk: boolean;
 }
 
@@ -681,11 +683,13 @@ export default function CopywriterLabPage() {
             )}
             {verdict?.ready && (
               <p className={`text-xs ${verdict.gateOk ? "text-success" : "text-error"}`}>
-                Trial lint pass {verdict.trialPass}/{trialItems.length} · active version{" "}
-                {verdict.baselinePass}/{trialItems.length}
+                Trial lint pass {verdict.trialPass}/{trialItems.length} · on the{" "}
+                {verdict.baselinesFound} comparable input
+                {verdict.baselinesFound === 1 ? "" : "s"}: draft {verdict.comparablePass} vs
+                active version {verdict.baselinePass}
                 {verdict.gateOk
                   ? " — the gate is satisfied."
-                  : " — worse than the active version: use “Activate anyway” to record the override."}
+                  : " — worse than the active version (or no comparable baseline): use “Activate anyway” to record the override."}
               </p>
             )}
             {trialItems.length > 0 && (

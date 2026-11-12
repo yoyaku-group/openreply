@@ -530,6 +530,9 @@ describe("trialVerdict (activation gate)", () => {
     });
   }
 
+  // One run = one transaction: all roots share the same createdAt.
+  const RUN_TS = new Date("2026-11-12T12:00:00Z");
+
   function boundTrial(
     id: string,
     body: string,
@@ -542,6 +545,7 @@ describe("trialVerdict (activation gate)", () => {
       isTrial: true,
       status,
       input,
+      createdAt: RUN_TS,
       modelOverride: model,
       trialBodyHash: sha256(body),
     });
@@ -563,6 +567,7 @@ describe("trialVerdict (activation gate)", () => {
       ready: true,
       trialPass: 1,
       baselinePass: 1,
+      comparablePass: 1,
       baselinesFound: 2,
       gateOk: true,
     });
@@ -692,6 +697,7 @@ describe("trialVerdict (activation gate)", () => {
           status: "DONE",
           attempt: 2,
           sourceGenerationId: "t1",
+          createdAt: new Date("2026-11-12T12:00:05Z"),
           modelOverride: "haiku",
           trialBodyHash: sha256("b {{state}}"),
           input: INPUT_A,
@@ -711,6 +717,57 @@ describe("trialVerdict (activation gate)", () => {
     const data = mockTx.copywriterPrompt.create.mock.calls[0][0].data;
     expect(data.isActive).toBe(true);
     expect(data.reason).not.toContain("override");
+  });
+
+  it("a re-test of the same draft starts a fresh batch, not a merged run", async () => {
+    // Two runs of the same body (10 roots in the window). The page submits
+    // the newest batch's ids only; the gate must accept it.
+    const FIRST = new Date("2026-11-12T10:00:00Z");
+    const SECOND = new Date("2026-11-12T11:00:00Z");
+    mockPrisma.copyGeneration.findMany.mockImplementation((arg: {
+      where: {
+        id?: { in?: string[] };
+        trialBodyHash?: string;
+        modelOverride?: string;
+      };
+    }) => {
+      const root = (id: string, input: unknown, status: string, at: Date) =>
+        recentRow({
+          id,
+          isTrial: true,
+          status,
+          input,
+          createdAt: at,
+          modelOverride: "haiku",
+          trialBodyHash: sha256("b {{state}}"),
+        });
+      const rows = [
+        root("old_1", INPUT_A, "FAILED", FIRST),
+        root("old_2", INPUT_B, "FAILED", FIRST),
+        root("new_1", INPUT_A, "DONE", SECOND),
+        root("new_2", INPUT_B, "DONE", SECOND),
+      ];
+      if (arg.where.id?.in) {
+        // The verdict only sees the ids the page submitted.
+        return Promise.resolve(rows.filter((row) => arg.where!.id!.in!.includes(row.id)));
+      }
+      if (arg.where.trialBodyHash) {
+        // Emulate the real query: newest first.
+        return Promise.resolve(
+          [...rows].sort((a, b) => (b.createdAt as Date).getTime() - (a.createdAt as Date).getTime())
+        );
+      }
+      return Promise.resolve([root("p1", INPUT_A, "FAILED", FIRST)]);
+    });
+    await activateDraft({
+      workspaceId: "workspace_1",
+      body: "b {{state}}",
+      model: "haiku",
+      reason: "second run after the first failed",
+      authorEmail: "o@x",
+      trialIds: ["new_1", "new_2"],
+    });
+    expect(mockTx.copywriterPrompt.create).toHaveBeenCalledTimes(1);
   });
 
   it("refuses activation without any trial or override", async () => {
