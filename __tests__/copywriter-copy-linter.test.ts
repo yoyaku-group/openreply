@@ -154,6 +154,86 @@ describe("lintGeneratedCopy (AI output gate)", () => {
   });
 });
 
+describe("invented-noun: sentence starts and possessives (LM-02 smoke 2026-11-12)", () => {
+  // The first real production generation for LM-02: the copy was faithful,
+  // yet the linter refused it for "Saw", "Want", "This" and "Nuron's".
+  const SOURCE =
+    "Four pieces of melodic, abstract techno from the 1994 UK split: Mirage and In Motion by Nuron, Contrapoint and Interlagos by Fugue.";
+  const inventedNoun = (violations: { rule: string; detail: string }[]) =>
+    violations.filter((v) => v.rule === "invented-noun");
+
+  it("does not read a capitalized sentence start as a proper noun", () => {
+    const result = lintCampaignCopy(
+      copy({
+        openingDmMessage:
+          "Saw your comment on the post. Likemind 02 is back in stock. Want us to send you the link?",
+        dmMessage: "This one tends to move fast. Here you go:",
+      }),
+      FACTS,
+      { sourceText: SOURCE }
+    );
+    expect(result.violations).toEqual([]);
+  });
+
+  it("keeps no-hey-opening without double-reporting Hey as a noun", () => {
+    const result = lintCampaignCopy(
+      copy({ openingDmMessage: "Hey! Saw your comment. Likemind 02 is back." }),
+      FACTS,
+      { sourceText: SOURCE }
+    );
+    expect(result.violations.map((v) => v.rule)).toEqual(["no-hey-opening"]);
+  });
+
+  it("accepts the possessive of a fact or source name", () => {
+    const result = lintCampaignCopy(
+      copy({
+        dmMessage:
+          "Here you go. Nuron's Mirage and In Motion paired with Fugue's Contrapoint and Interlagos.",
+      }),
+      FACTS,
+      { sourceText: SOURCE }
+    );
+    expect(inventedNoun(result.violations)).toEqual([]);
+  });
+
+  it("still refuses an invented name at the start of a sentence", () => {
+    const result = lintCampaignCopy(
+      copy({ openingDmMessage: "Burial is back. Likemind 02 is in stock." }),
+      FACTS,
+      { sourceText: SOURCE }
+    );
+    expect(inventedNoun(result.violations)).toHaveLength(1);
+    expect(inventedNoun(result.violations)[0].detail).toContain("Burial");
+  });
+
+  it("still refuses an invented possessive", () => {
+    const result = lintCampaignCopy(
+      copy({ dmMessage: "Here you go, Burial's favourite record." }),
+      FACTS,
+      { sourceText: SOURCE }
+    );
+    expect(inventedNoun(result.violations)[0]?.detail).toContain("Burial's");
+  });
+
+  it("applies the starter list at sentence start only", () => {
+    const result = lintCampaignCopy(
+      copy({ openingDmMessage: "Likemind 02 is back for This crowd." }),
+      FACTS,
+      { sourceText: SOURCE }
+    );
+    expect(inventedNoun(result.violations)[0]?.detail).toContain("This");
+  });
+
+  it("keeps the rhetorical-hook rule on AI copy", () => {
+    const result = lintGeneratedCopy(
+      copy({ dmMessage: "Here you go. The reissue is back in stock, ready to spin." }),
+      FACTS,
+      { sourceText: SOURCE }
+    );
+    expect(result.violations.map((v) => v.rule)).toContain("rhetorical-hook");
+  });
+});
+
 describe("copyEditDistance", () => {
   it("computes character-level Levenshtein", () => {
     expect(levenshtein("kitten", "sitting")).toBe(3);

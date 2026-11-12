@@ -84,6 +84,48 @@ const ALLOWED_CAPITALIZED = new Set([
   "yoyaku",
 ]);
 
+/**
+ * Ordinary English words a sentence may start with. A capital letter at the
+ * start of a sentence is grammar, not a name: "Saw your comment", "This one",
+ * "Want the link?" must not read as invented proper nouns. The list is closed
+ * on purpose: a sentence-initial word outside it still goes through the fact
+ * and source lookup, so an invented name at the start of a sentence ("Burial
+ * is back") is still refused. Greetings are listed so the invented-noun rule
+ * does not double-report them; the no-hey-opening rule still fires.
+ */
+const SENTENCE_STARTERS = new Set([
+  // pronouns, determiners
+  "a", "an", "all", "another", "any", "both", "each", "every", "his", "her",
+  "i", "i'm", "i've", "it", "it's", "its", "my", "no", "one", "our", "some",
+  "that", "that's", "their", "these", "they", "they're", "this", "those",
+  "we", "we're", "we've", "we'll", "what", "what's", "which", "who", "you",
+  "you're", "you've", "you'll", "your",
+  // conjunctions, prepositions, adverbs
+  "after", "also", "and", "as", "at", "back", "before", "but", "by", "for",
+  "from", "how", "if", "in", "just", "now", "of", "on", "once", "only", "or",
+  "since", "so", "still", "then", "to", "too", "when", "where", "while",
+  "why", "with", "yes",
+  // numbers
+  "two", "three", "four", "five", "six", "first", "last",
+  // verbs a DM sentence opens with
+  "check", "comes", "coming", "enjoy", "find", "give", "glad", "got", "grab",
+  "have", "hear", "listen", "look", "saw", "see", "seen", "take", "tap",
+  "thanks", "thank", "want",
+  // greetings (no-hey-opening owns the style judgement)
+  "hey", "hi", "hello",
+]);
+
+/** Index of `match` starts a sentence: text start, or after . ! ? : or a newline. */
+function startsSentence(text: string, index: number): boolean {
+  const before = text.slice(0, index);
+  return before.trim() === "" || /(?:[.!?:]\s+|\n\s*)$/.test(before);
+}
+
+/** "Nuron's" names Nuron: drop a trailing possessive before the lookup. */
+function stripPossessive(word: string): string {
+  return word.replace(/'s?$/i, "");
+}
+
 function collectFactWords(nouns: string[]): Set<string> {
   const words = new Set<string>();
   for (const noun of nouns) {
@@ -121,7 +163,12 @@ function findInventedNouns(
 
   for (const match of text.matchAll(/\b[A-Z][A-Za-z0-9'&-]*\b/g)) {
     const word = match[0];
-    const lower = word.toLowerCase();
+    const whole = word.toLowerCase();
+    if (startsSentence(text, match.index ?? 0) && SENTENCE_STARTERS.has(whole)) {
+      continue;
+    }
+    const lower = stripPossessive(whole);
+    if (!lower) continue;
     if (ALLOWED_CAPITALIZED.has(lower)) continue;
     if (factWords.has(lower)) continue;
     // All-caps tokens that are substrings of a fact (catno fragments) pass.
