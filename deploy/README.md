@@ -61,43 +61,51 @@ The app queues `CopyGeneration` rows; this host worker transports them to the
 subscription cascade. Install (the app container itself never runs the
 cascade):
 
-1. Create `/etc/openreply/copywriter.env`, mode `0600`:
+Install and rotation go through one script, run as root on the host. It
+writes the shared token to both consumers in the same run (rules/75), never
+prints it and never passes it on a command line:
 
-   ```
-   OPENREPLY_INTERNAL_URL=http://127.0.0.1:3048
-   COPYWRITER_BRIDGE_TOKEN=<one 32-byte token, same value as the app's .env>
-   COPYWRITER_WORKDIR=/var/lib/openreply-copywriter
-   ```
+```bash
+cd /opt/openreply
+bash deploy/copywriter/install.sh token    # COPYWRITER_BRIDGE_TOKEN in .env and
+                                           # /etc/openreply/copywriter.env, recreate
+                                           # web + worker, restart the unit if present
+bash deploy/copywriter/install.sh unit     # install the unit with this host's
+                                           # cascade LoadCredential lines, enable it
+bash deploy/copywriter/install.sh enable   # COPYWRITER_ENABLED=true, recreate web
+bash deploy/copywriter/install.sh status   # health without token (401) and with it (200)
+```
 
-   Generate the token with `openssl rand -base64 32`. `COPYWRITER_WORKDIR`
-   is created by `StateDirectory=openreply-copywriter` at unit start; the
-   cascade must never share it with another job.
+Consumers of `COPYWRITER_BRIDGE_TOKEN`:
 
-2. Copy the `LoadCredential=` lines from an existing cascade unit into
-   `deploy/systemd/openreply-copywriter.service` (they ship as a commented
-   placeholder), then:
+| Consumer | File | Reads it as |
+|---|---|---|
+| App (web + worker containers) | `/opt/openreply/.env` | compose `env_file` |
+| Host worker `openreply-copywriter.service` | `/etc/openreply/copywriter.env` (0600) | systemd `EnvironmentFile` |
 
-   ```bash
-   systemctl daemon-reload
-   systemctl enable --now openreply-copywriter.service
-   ```
+The worker env file also holds `OPENREPLY_INTERNAL_URL=http://127.0.0.1:3048`
+and `COPYWRITER_WORKDIR=/var/lib/openreply-copywriter`. That directory is
+created by `StateDirectory=openreply-copywriter`; the cascade must never share
+it with another job.
 
-3. Health check (requires `COPYWRITER_BRIDGE_TOKEN` in the environment of the
-   calling shell, or read it from the env file):
+`unit` copies the `LoadCredential=` lines from
+`/etc/systemd/system/dkay-credits-sync.service`, the host's working cascade
+unit, in place of the commented placeholder in
+`deploy/systemd/openreply-copywriter.service`. It refuses to install when it
+finds none.
 
-   ```bash
-   curl -sS -H "Authorization: Bearer $COPYWRITER_BRIDGE_TOKEN" \
-     http://127.0.0.1:3048/api/internal/copywriter/health
-   ```
+Rotating the token is `install.sh token` again: both files change together
+and the unit restarts. The health route answers `pending` / `claimed` /
+`done` / `failed` queue counts and the active prompt version per workspace.
 
-   `pending` / `claimed` / `done` / `failed` are the queue counts, and the
-   active prompt version per workspace should show `1` after the first
-   prepared campaign.
+The public vhosts (`openreply.yoyaku.fr`, `openreply.objects.press`) must
+answer 404 on `/api/internal/copywriter/`, like the SAV bridge (see
+`deploy/nginx/openreply.yoyaku.fr.conf`).
 
-4. Kill switch: `systemctl stop openreply-copywriter`. The queue simply
-   stops draining; campaigns keep their standard copy. The other switch is
-   `COPYWRITER_ENABLED=false` in the app's `.env` (no new rows are queued;
-   restart the app to apply).
+Kill switches: `systemctl stop openreply-copywriter` (the queue stops
+draining; campaigns keep their standard copy) or
+`bash deploy/copywriter/install.sh disable` (`COPYWRITER_ENABLED=false`: no
+new rows are queued, the assistant uses the standard copy).
 
 Purge: the `purge-copywriter` cron route (already in `deploy/cron.sh`)
 deletes generation rows older than 90 days.
