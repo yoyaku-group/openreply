@@ -11,6 +11,12 @@ ExecStart=/usr/bin/python3 /opt/openreply/deploy/copywriter/worker.py
 Restart=on-failure
 RestartSec=10
 EnvironmentFile=/etc/openreply/copywriter.env
+# Same environment as the host's working cascade units: the cascade spawns
+# the claude CLI, which writes under the service user's home (~/.claude), so
+# no ProtectSystem=strict / ProtectHome=read-only here.
+Environment=PYTHONDONTWRITEBYTECODE=1
+StandardOutput=journal
+StandardError=journal
 
 # Cascade credentials use the same mechanism as the host's other cascade
 # units. The LoadCredential= lines below are a placeholder: copy them at
@@ -21,12 +27,7 @@ EnvironmentFile=/etc/openreply/copywriter.env
 Environment=CLAUDE_CASCADE_CRED_DIR=%d
 
 NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=read-only
 PrivateTmp=true
-# StateDirectory is writable under ProtectSystem=strict. If the cascade CLI
-# keeps a cache under $HOME, copy the ReadWritePaths= line from an existing
-# cascade unit at install time (same step as the LoadCredential= lines).
 StateDirectory=openreply-copywriter
 
 [Install]
