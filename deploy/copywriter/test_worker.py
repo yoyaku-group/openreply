@@ -196,10 +196,26 @@ class ConfigTests(unittest.TestCase):
                 "COPYWRITER_WORKDIR": os.getcwd(),
                 "CLAUDE_CASCADE_CRED_DIR": cred_dir,
             }
+
+            async def fake_cascade(item):
+                raise AssertionError("the loop must not run in tests")
+
+            captured = {}
+
+            async def fake_run_forever(cfg, cascade_call):
+                captured["callable"] = callable(cascade_call)
+
+            # Mock the library import and the loop: this test must pass (or
+            # fail fast) on ANY host — on the production host the real
+            # claude_cascade exists and main() would otherwise loop forever
+            # against the live app.
             with mock.patch.dict(os.environ, env, clear=False):
-                # The gate passes; the shared cascade library is absent on
-                # this host, which is also a loud exit 2, not per-item fail.
-                self.assertEqual(worker.main(), 2)
+                with mock.patch.object(worker, "load_cascade",
+                                       return_value=fake_cascade):
+                    with mock.patch.object(worker, "run_forever",
+                                           fake_run_forever):
+                        self.assertEqual(worker.main(), 0)
+            self.assertTrue(captured["callable"])
 
     def test_main_exits_2_when_token_missing(self):
         env = {
