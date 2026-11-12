@@ -69,14 +69,26 @@ async function maybeEnqueueAiCopy(
   workspaceId: string
 ) {
   if (event.facts.eventType === "instore_published") return;
-  const resolved = await resolveProduct(event.sku);
-  if (!resolved.ok || !isPurchasableState(resolved.facts.state)) return;
-  await enqueueGeneration({
-    workspaceId,
-    automationId: automation.id,
-    facts: resolved.facts,
-    standardCopy: storedCopyFromCampaignCopy(standardCopy),
-  });
+  try {
+    const resolved = await resolveProduct(event.sku);
+    if (!resolved.ok || !isPurchasableState(resolved.facts.state)) return;
+    await enqueueGeneration({
+      workspaceId,
+      automationId: automation.id,
+      // The DONE result may replace the untouched inactive campaign's copy.
+      autoApply: true,
+      facts: resolved.facts,
+      standardCopy: storedCopyFromCampaignCopy(standardCopy),
+    });
+  } catch (error) {
+    // Belt and braces: the sync already created the campaign and recorded
+    // the outcome. A queue or shop hiccup must not abort the remaining
+    // events or fail the cron run.
+    console.error(
+      "[sync-releases] AI copy enqueue failed; standard copy stays",
+      error
+    );
+  }
 }
 
 export async function GET(request: NextRequest) {

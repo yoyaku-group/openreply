@@ -16,8 +16,10 @@ const { mockPrisma, mockTx } = vi.hoisted(() => {
     copyGeneration: {
       create: vi.fn(),
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
       deleteMany: vi.fn(),
     },
     copywriterPrompt: {
@@ -28,6 +30,7 @@ const { mockPrisma, mockTx } = vi.hoisted(() => {
     automation: {
       findUnique: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
     },
   };
   return { mockPrisma, mockTx };
@@ -92,6 +95,8 @@ function generationRow(overrides: Record<string, unknown> = {}) {
     promptId: "prompt_1",
     promptVersion: 1,
     attempt: 1,
+    claimAttempts: 1,
+    autoApply: false,
     status: "CLAIMED",
     leaseOwner: "worker-1",
     leaseExpiresAt: new Date(Date.now() + 30_000),
@@ -121,6 +126,8 @@ beforeEach(() => {
   mockTx.copywriterPrompt.create.mockResolvedValue({ id: "prompt_new" });
   mockPrisma.copyGeneration.create.mockResolvedValue({ id: "gen_new" });
   mockPrisma.copyGeneration.update.mockResolvedValue({});
+  mockPrisma.copyGeneration.updateMany.mockResolvedValue({ count: 1 });
+  mockPrisma.copyGeneration.findFirst.mockResolvedValue(null);
   mockPrisma.copyGeneration.findUnique.mockResolvedValue(null);
   mockPrisma.copyGeneration.findMany.mockResolvedValue([]);
   mockPrisma.copyGeneration.deleteMany.mockResolvedValue({ count: 0 });
@@ -133,6 +140,7 @@ beforeEach(() => {
   });
   mockPrisma.automation.findUnique.mockResolvedValue(null);
   mockPrisma.automation.update.mockResolvedValue({});
+  mockPrisma.automation.updateMany.mockResolvedValue({ count: 1 });
 });
 
 describe("renderPrompt", () => {
@@ -269,7 +277,9 @@ describe("claimCopyItems", () => {
 
   it("leases rows with FOR UPDATE SKIP LOCKED and returns the worker contract", async () => {
     mockTx.$queryRaw.mockResolvedValue([{ id: "gen_1" }]);
-    mockTx.copyGeneration.updateMany.mockResolvedValue({ count: 1 });
+    mockTx.copyGeneration.updateMany
+      .mockResolvedValueOnce({ count: 0 }) // stuck gate does not fire
+      .mockResolvedValueOnce({ count: 1 }); // lease acquired
     mockPrisma.copyGeneration.findMany.mockResolvedValue([
       {
         id: "gen_1",
@@ -292,9 +302,27 @@ describe("claimCopyItems", () => {
     const sql = mockTx.$queryRaw.mock.calls[0][0].join("?");
     expect(sql).toContain("FOR UPDATE SKIP LOCKED");
     expect(sql).toContain("'PENDING'");
-    const leaseData = mockTx.copyGeneration.updateMany.mock.calls[0][0].data;
-    expect(leaseData.leaseOwner).toBe("worker-1");
-    expect(leaseData.status).toBe("CLAIMED");
+    // First the stuck-row gate, then the lease; the lease increments the
+    // claim attempt counter.
+    const stuckData = mockTx.copyGeneration.updateMany.mock.calls[0][0];
+    expect(stuckData.where.claimAttempts).toEqual({ gte: 3 });
+    expect(stuckData.data.failureCode).toBe("CLAIM_ATTEMPTS_EXHAUSTED");
+    const leaseData = mockTx.copyGeneration.updateMany.mock.calls[1][0];
+    expect(leaseData.where.claimAttempts).toEqual({ lt: 3 });
+    expect(leaseData.data.leaseOwner).toBe("worker-1");
+    expect(leaseData.data.status).toBe("CLAIMED");
+    expect(leaseData.data.claimAttempts).toEqual({ increment: 1 });
+  });
+
+  it("fails a row that keeps losing its worker instead of retrying forever", async () => {
+    mockTx.$queryRaw.mockResolvedValue([{ id: "gen_stuck" }]);
+    mockTx.copyGeneration.updateMany
+      .mockResolvedValueOnce({ count: 1 }) // stuck gate fires
+      .mockResolvedValueOnce({ count: 0 });
+
+    const items = await claimCopyItems("worker-1", 5);
+    expect(items).toEqual([]);
+    expect(mockPrisma.copyGeneration.findMany).not.toHaveBeenCalled();
   });
 });
 
@@ -307,11 +335,44 @@ describe("submitCopyResult", () => {
       latencyMs: 900,
     });
     expect(result).toEqual({ status: "DONE" });
-    const data = mockPrisma.copyGeneration.update.mock.calls[0][0].data;
-    expect(data.status).toBe("DONE");
-    expect(data.output).toMatchObject({ openingDm: expect.any(String) });
-    expect(data.tier).toBe("claude");
-    expect(data.latencyMs).toBe(900);
+    const write = mockPrisma.copyGeneration.updateMany.mock.calls[0][0];
+    expect(write.data.status).toBe("DONE");
+    expect(write.data.output).toMatchObject({ openingDm: expect.any(String) });
+    expect(write.data.tier).toBe("claude");
+    expect(write.data.latencyMs).toBe(900);
+    // The write still belongs to a live lease.
+    expect(write.where).toMatchObject({
+      status: "CLAIMED",
+      leaseOwner: "worker-1",
+    });
+    // Assistant rows never auto-apply, even when a save recorded the id.
+    expect(mockPrisma.automation.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("auto-applies a DONE release-sync row (autoApply set at enqueue)", async () => {
+    mockPrisma.copyGeneration.findUnique
+      .mockResolvedValueOnce(generationRow({ autoApply: true, automationId: "automation_1" }))
+      .mockResolvedValueOnce(
+        generationRow({
+          status: "DONE",
+          autoApply: true,
+          automationId: "automation_1",
+          output: {
+            openingDm: "a",
+            openingButton: "b",
+            revealDm: "c",
+            linkButton: "d",
+          },
+        })
+      );
+    mockPrisma.automation.updateMany.mockResolvedValue({ count: 1 });
+    const result = await submitCopyResult("gen_1", "worker-1", {
+      rawOutput: VALID_OUTPUT,
+      tier: "claude",
+      latencyMs: 900,
+    });
+    expect(result).toEqual({ status: "DONE" });
+    expect(mockPrisma.automation.updateMany).toHaveBeenCalledTimes(1);
   });
 
   it("queues one repair attempt on invalid JSON (attempt 1)", async () => {
@@ -322,9 +383,13 @@ describe("submitCopyResult", () => {
       latencyMs: 400,
     });
     expect(result).toEqual({ status: "REPAIRED" });
-    const failedUpdate = mockPrisma.copyGeneration.update.mock.calls[0][0];
+    const failedUpdate = mockPrisma.copyGeneration.updateMany.mock.calls[0][0];
     const repairCreate = mockPrisma.copyGeneration.create.mock.calls[0][0];
-    expect(failedUpdate.where).toEqual({ id: "gen_1" });
+    expect(failedUpdate.where).toMatchObject({
+      id: "gen_1",
+      status: "CLAIMED",
+      leaseOwner: "worker-1",
+    });
     expect(failedUpdate.data.failureCode).toBe(FAILURE_CODES.LINT_REPAIR_QUEUED);
     expect(failedUpdate.data.status).toBe("FAILED");
     expect(repairCreate.data.attempt).toBe(2);
@@ -353,7 +418,7 @@ describe("submitCopyResult", () => {
       latencyMs: 800,
     });
     expect(result).toEqual({ status: "FAILED" });
-    const data = mockPrisma.copyGeneration.update.mock.calls[0][0].data;
+    const data = mockPrisma.copyGeneration.updateMany.mock.calls[0][0].data;
     expect(data.status).toBe("FAILED");
     expect(data.failureCode).toBe(FAILURE_CODES.LINT_FAILED);
     expect(data.lintErrors).toEqual(
@@ -416,7 +481,7 @@ describe("submitCopyFailure", () => {
   it("marks FAILED with a sanitized code and never retries", async () => {
     mockPrisma.copyGeneration.findUnique.mockResolvedValue(generationRow());
     await submitCopyFailure("gen_1", "worker-1", "CASCADE_FAILED");
-    const data = mockPrisma.copyGeneration.update.mock.calls[0][0].data;
+    const data = mockPrisma.copyGeneration.updateMany.mock.calls[0][0].data;
     expect(data.status).toBe("FAILED");
     expect(data.failureCode).toBe("CASCADE_FAILED");
   });
@@ -448,29 +513,31 @@ describe("applyGenerationToAutomation (release-sync guard)", () => {
 
   it("applies the AI copy to an untouched inactive campaign and records appliedAt", async () => {
     mockPrisma.copyGeneration.findUnique.mockResolvedValue(rowWithAutomation());
-    mockPrisma.automation.findUnique.mockResolvedValue({
+    mockPrisma.automation.updateMany.mockResolvedValue({ count: 1 });
+
+    const outcome = await applyGenerationToAutomation("gen_1");
+    expect(outcome).toBe("applied");
+    // The guarded write IS the guard: untouched (four standard fields), still
+    // inactive, still in this workspace. No activation, no public reply, no
+    // binding field is ever in the write set.
+    const guarded = mockPrisma.automation.updateMany.mock.calls[0][0];
+    expect(guarded.where).toEqual({
       id: "automation_1",
+      workspaceId: "workspace_1",
       isActive: false,
       openingDmMessage: STANDARD_COPY.openingDm,
       openingDmButtonLabel: STANDARD_COPY.openingButton,
       dmMessage: STANDARD_COPY.revealDm,
       linkButtonLabel: STANDARD_COPY.linkButton,
     });
-
-    const outcome = await applyGenerationToAutomation("gen_1");
-    expect(outcome).toBe("applied");
-    const automationData = mockPrisma.automation.update.mock.calls[0][0];
-    expect(automationData.where).toEqual({ id: "automation_1" });
-    // Exactly the four copy fields; the campaign is never activated and no
-    // public reply or binding field is ever touched.
-    expect(Object.keys(automationData.data).sort()).toEqual([
+    expect(Object.keys(guarded.data).sort()).toEqual([
       "dmMessage",
       "linkButtonLabel",
       "openingDmButtonLabel",
       "openingDmMessage",
     ]);
-    expect(automationData.data.isActive).toBeUndefined();
-    expect(automationData.data.dmMessage).toBe(output.revealDm);
+    expect(guarded.data.isActive).toBeUndefined();
+    expect(guarded.data.dmMessage).toBe(output.revealDm);
     expect(mockPrisma.copyGeneration.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: "gen_1" },
@@ -481,14 +548,10 @@ describe("applyGenerationToAutomation (release-sync guard)", () => {
 
   it("skips an edited campaign without overwriting it", async () => {
     mockPrisma.copyGeneration.findUnique.mockResolvedValue(rowWithAutomation());
+    mockPrisma.automation.updateMany.mockResolvedValue({ count: 0 });
     mockPrisma.automation.findUnique.mockResolvedValue({
-      id: "automation_1",
+      workspaceId: "workspace_1",
       isActive: false,
-      // The team edited the reveal DM after creation.
-      openingDmMessage: STANDARD_COPY.openingDm,
-      openingDmButtonLabel: STANDARD_COPY.openingButton,
-      dmMessage: "Hand-edited reveal text",
-      linkButtonLabel: STANDARD_COPY.linkButton,
     });
 
     const outcome = await applyGenerationToAutomation("gen_1");
@@ -499,18 +562,30 @@ describe("applyGenerationToAutomation (release-sync guard)", () => {
 
   it("skips an active campaign without touching it", async () => {
     mockPrisma.copyGeneration.findUnique.mockResolvedValue(rowWithAutomation());
+    mockPrisma.automation.updateMany.mockResolvedValue({ count: 0 });
     mockPrisma.automation.findUnique.mockResolvedValue({
-      id: "automation_1",
+      workspaceId: "workspace_1",
       isActive: true,
-      openingDmMessage: STANDARD_COPY.openingDm,
-      openingDmButtonLabel: STANDARD_COPY.openingButton,
-      dmMessage: STANDARD_COPY.revealDm,
-      linkButtonLabel: STANDARD_COPY.linkButton,
     });
 
     const outcome = await applyGenerationToAutomation("gen_1");
     expect(outcome).toBe("skipped_active");
     expect(mockPrisma.automation.update).not.toHaveBeenCalled();
+    expect(mockPrisma.copyGeneration.update).not.toHaveBeenCalled();
+  });
+
+  it("skips a campaign from another workspace", async () => {
+    mockPrisma.copyGeneration.findUnique.mockResolvedValue(rowWithAutomation());
+    mockPrisma.automation.updateMany.mockResolvedValue({ count: 0 });
+    mockPrisma.automation.findUnique.mockResolvedValue({
+      workspaceId: "workspace_other",
+      isActive: false,
+    });
+
+    expect(await applyGenerationToAutomation("gen_1")).toBe(
+      "skipped_no_automation"
+    );
+    expect(mockPrisma.copyGeneration.update).not.toHaveBeenCalled();
   });
 
   it("skips when the automation is gone or the row has no output", async () => {
@@ -522,6 +597,7 @@ describe("applyGenerationToAutomation (release-sync guard)", () => {
     mockPrisma.copyGeneration.findUnique.mockResolvedValue(
       rowWithAutomation({ automationId: "automation_gone" })
     );
+    mockPrisma.automation.updateMany.mockResolvedValue({ count: 0 });
     mockPrisma.automation.findUnique.mockResolvedValue(null);
     expect(await applyGenerationToAutomation("gen_1")).toBe(
       "skipped_no_automation"
@@ -530,6 +606,26 @@ describe("applyGenerationToAutomation (release-sync guard)", () => {
 });
 
 describe("session-side status and final copy", () => {
+  it("follows the repair attempt when the first attempt queued one", async () => {
+    mockPrisma.copyGeneration.findUnique.mockResolvedValue(
+      generationRow({
+        status: "FAILED",
+        failureCode: "LINT_REPAIR_QUEUED",
+      })
+    );
+    mockPrisma.copyGeneration.findFirst.mockResolvedValue(
+      generationRow({
+        id: "gen_repair",
+        status: "CLAIMED",
+        attempt: 2,
+        leaseOwner: "worker-1",
+      })
+    );
+
+    const status = await getGenerationStatus("gen_1", "workspace_1");
+    expect(status?.status).toBe("CLAIMED");
+  });
+
   it("returns the status for the owning workspace and null otherwise", async () => {
     mockPrisma.copyGeneration.findUnique.mockResolvedValue(
       generationRow({

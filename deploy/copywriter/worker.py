@@ -40,7 +40,11 @@ FAIL_PATH = "/api/internal/copywriter/items/{id}/fail"
 # The app long-polls a claim for up to 20 s; leave headroom on the client.
 CLAIM_TIMEOUT_S = 30
 POST_TIMEOUT_S = 15
-CLAIM_LIMIT = 5
+# One item per claim. A 60 s lease against a 45 s cascade timeout means a
+# batch of 5 processed serially could outlive items' leases and pay for
+# cascade calls whose results are then rejected. This worker is a pure
+# transport; the long-poll keeps throughput without batches.
+CLAIM_LIMIT = 1
 CLAIM_RETRY_S = 5
 
 
@@ -178,7 +182,26 @@ async def process_item(
         poster = lambda path, payload: post_json(cfg, path, payload)  # noqa: E731
 
     started = time.monotonic()
-    res = await cascade_call(item)
+    try:
+        res = await cascade_call(item)
+    except Exception as error:  # noqa: BLE001
+        # A cascade crash (timeout, subprocess failure, malformed item) must
+        # not take the worker down: the other claimed items would sit on
+        # expired leases and systemd would restart into a crash loop. The
+        # code only — never the exception text, it can name providers.
+        log_event(
+            f"CASCADE_RAISED: {type(error).__name__}",
+            None,
+        )
+        try:
+            await poster(
+                FAIL_PATH.format(id=item["id"]),
+                {"workerId": cfg.worker_id, "code": "CASCADE_FAILED"},
+            )
+        except Exception as post_error:  # noqa: BLE001
+            log_event(f"APP_UNREACHABLE: {type(post_error).__name__}")
+            return False
+        return True
     latency_ms = int((time.monotonic() - started) * 1000)
 
     tier = getattr(res, "tier", None)

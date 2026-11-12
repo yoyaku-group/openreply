@@ -32,6 +32,8 @@ CREATE TABLE "CopyGeneration" (
   "input" JSONB NOT NULL,
   "renderedPrompt" TEXT NOT NULL,
   "attempt" INTEGER NOT NULL DEFAULT 1,
+  "claimAttempts" INTEGER NOT NULL DEFAULT 0,
+  "autoApply" BOOLEAN NOT NULL DEFAULT false,
   "status" "CopyGenerationState" NOT NULL DEFAULT 'PENDING',
   "leaseOwner" TEXT,
   "leaseExpiresAt" TIMESTAMP(3),

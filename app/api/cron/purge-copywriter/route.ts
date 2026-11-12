@@ -11,7 +11,9 @@ export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET || process.env.NEXTAUTH_SECRET;
 
-  if (authHeader !== `Bearer ${cronSecret}`) {
+  // Fail closed: with no secret configured, nothing may authorize — a
+  // literal "Bearer undefined" must not purge.
+  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json(
       { success: false, error: "Unauthorized" },
       { status: 401 }

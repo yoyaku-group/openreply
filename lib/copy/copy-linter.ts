@@ -208,10 +208,15 @@ export function lintGeneratedCopy(
   const result = lintCampaignCopy(copy, facts, options);
   const violations = [...result.violations];
 
-  for (const [field, value] of [
+  // Buttons are model output too: a 20-character button can still carry a
+  // price or say "AI picks". Every user-visible field is checked.
+  const fields: readonly (readonly [string, string])[] = [
     ["openingDmMessage", copy.openingDmMessage],
     ["dmMessage", copy.dmMessage],
-  ] as const) {
+    ["openingDmButtonLabel", copy.openingDmButtonLabel],
+    ["linkButtonLabel", copy.linkButtonLabel],
+  ];
+  for (const [field, value] of fields) {
     if (PRICE_PATTERN.test(value)) {
       violations.push({
         rule: "no-price",

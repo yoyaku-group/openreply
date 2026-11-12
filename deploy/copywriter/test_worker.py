@@ -98,6 +98,40 @@ class ProcessItemTests(unittest.TestCase):
         self.assertTrue(self.run_item(result, poster))
         self.assertEqual(posted, ["/api/internal/copywriter/items/gen_1/fail"])
 
+    def test_cascade_exception_posts_fail_and_keeps_worker_alive(self):
+        posted = []
+        calls = []
+
+        async def cascade_call(item):
+            calls.append(item)
+            raise TimeoutError("cascade subprocess hung")
+
+        async def poster(path, payload):
+            posted.append((path, payload))
+
+        ran = asyncio.run(worker.process_item(ITEM, self.cfg, cascade_call, poster))
+        self.assertTrue(ran)
+        # The item is failed with the stable code and the loop continues.
+        self.assertEqual(len(calls), 1)
+        path, payload = posted[0]
+        self.assertEqual(path, "/api/internal/copywriter/items/gen_1/fail")
+        self.assertEqual(payload["code"], "CASCADE_FAILED")
+        self.assertNotIn("hung", str(payload))
+
+    def test_cascade_exception_with_unreachable_app_reports_once(self):
+        calls = []
+
+        async def cascade_call(item):
+            calls.append(item)
+            raise RuntimeError("boom")
+
+        async def poster(path, payload):
+            raise ConnectionError("app is down")
+
+        ran = asyncio.run(worker.process_item(ITEM, self.cfg, cascade_call, poster))
+        self.assertFalse(ran)
+        self.assertEqual(len(calls), 1)
+
     def test_app_unreachable_after_call_never_re_calls_cascade(self):
         calls = []
 

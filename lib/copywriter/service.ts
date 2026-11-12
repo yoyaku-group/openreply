@@ -27,6 +27,8 @@ import { sanitizeFailureCode } from "@/lib/sav/security";
 const LEASE_MS = 60 * 1000;
 const CLAIM_TIMEOUT_SEC = 45;
 export const MAX_CLAIM_LIMIT = 5;
+/** A row that keeps losing its worker is failed, not retried forever. */
+export const MAX_CLAIM_ATTEMPTS = 3;
 const TEXT_BLOCK_MAX_LENGTH = 1200;
 const RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const REPAIR_OUTPUT_MAX_LENGTH = 1200;
@@ -106,15 +108,6 @@ export function asCopyTexts(value: unknown): CopyTexts | null {
     return null;
   }
   return { openingDm, openingButton, revealDm, linkButton };
-}
-
-function copyTextsEqual(a: CopyTexts, b: CopyTexts): boolean {
-  return (
-    (a.openingDm ?? "") === (b.openingDm ?? "") &&
-    (a.openingButton ?? "") === (b.openingButton ?? "") &&
-    (a.revealDm ?? "") === (b.revealDm ?? "") &&
-    (a.linkButton ?? "") === (b.linkButton ?? "")
-  );
 }
 
 /** The Automation columns the four fields map onto. */
@@ -239,6 +232,13 @@ export async function ensureActivePrompt(workspaceId: string) {
 export interface EnqueueGenerationInput {
   workspaceId: string;
   automationId?: string | null;
+  /**
+   * Release sync only: the DONE result may auto-apply to the campaign while
+   * the guards hold. Assistant rows must never auto-apply — recording
+   * automationId on save would otherwise re-arm the applier over the copy
+   * the team just validated.
+   */
+  autoApply?: boolean;
   facts: ProductFacts;
   caption?: string | null;
   standardCopy: CopyTexts;
@@ -260,6 +260,7 @@ export async function enqueueGeneration(
       data: {
         workspaceId: input.workspaceId,
         automationId: input.automationId ?? null,
+        autoApply: input.autoApply ?? false,
         promptId: prompt.id,
         promptVersion: prompt.version,
         input: {
@@ -314,9 +315,29 @@ export async function claimCopyItems(
 
     const claimed: string[] = [];
     for (const candidate of candidates) {
+      // A poisoned item (worker crash loop, unreachable app) must not burn
+      // cascade quota forever: past the cap the row is terminal.
+      const stuck = await tx.copyGeneration.updateMany({
+        where: {
+          id: candidate.id,
+          claimAttempts: { gte: MAX_CLAIM_ATTEMPTS },
+          OR: [
+            { status: "PENDING" },
+            { status: "CLAIMED", leaseExpiresAt: { lte: now } },
+          ],
+        },
+        data: {
+          status: "FAILED",
+          failureCode: "CLAIM_ATTEMPTS_EXHAUSTED",
+          leaseOwner: null,
+          leaseExpiresAt: null,
+        },
+      });
+      if (stuck.count === 1) continue;
       const updated = await tx.copyGeneration.updateMany({
         where: {
           id: candidate.id,
+          claimAttempts: { lt: MAX_CLAIM_ATTEMPTS },
           OR: [
             { status: "PENDING" },
             { status: "CLAIMED", leaseExpiresAt: { lte: now } },
@@ -326,6 +347,7 @@ export async function claimCopyItems(
           status: "CLAIMED",
           leaseOwner: workerId,
           leaseExpiresAt: new Date(now.getTime() + LEASE_MS),
+          claimAttempts: { increment: 1 },
         },
       });
       if (updated.count === 1) claimed.push(candidate.id);
@@ -472,6 +494,28 @@ function validateOutput(
 
 /* ----------------------------- result / fail ------------------------------ */
 
+/**
+ * The write must still belong to a live lease: a worker whose lease expired
+ * between the check and the write must not finish a row another worker may
+ * already own (a duplicate repair row would be the visible damage).
+ */
+async function writeUnderLease(
+  id: string,
+  workerId: string,
+  data: Prisma.CopyGenerationUpdateManyMutationInput
+): Promise<boolean> {
+  const result = await prisma.copyGeneration.updateMany({
+    where: {
+      id,
+      status: "CLAIMED",
+      leaseOwner: workerId,
+      leaseExpiresAt: { gt: new Date() },
+    },
+    data,
+  });
+  return result.count === 1;
+}
+
 async function requireLeaseHolder(id: string, workerId: string) {
   const row = await prisma.copyGeneration.findUnique({ where: { id } });
   if (!row) throw new CopywriterError("NOT_FOUND", 404);
@@ -499,72 +543,68 @@ export async function submitCopyResult(
   const { violations, output } = validateOutput(row, payload.rawOutput);
 
   if (output && violations.length === 0) {
-    await prisma.copyGeneration.update({
-      where: { id: row.id },
-      data: {
-        status: "DONE",
-        output,
-        rawOutput: payload.rawOutput,
-        tier: payload.tier,
-        latencyMs: payload.latencyMs,
-        lintErrors: Prisma.DbNull,
-        failureCode: null,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-      },
+    const written = await writeUnderLease(id, workerId, {
+      status: "DONE",
+      output,
+      rawOutput: payload.rawOutput,
+      tier: payload.tier,
+      latencyMs: payload.latencyMs,
+      lintErrors: Prisma.DbNull,
+      failureCode: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
     });
-    // Release-sync rows carry the automation id: apply the AI copy while the
-    // guards hold. Assistant rows are applied on save from the page.
-    if (row.automationId) await applyGenerationToAutomation(row.id);
+    if (!written) throw new CopywriterError("INVALID_LEASE", 409);
+    // Release-sync rows carry the automation id AND the autoApply flag:
+    // apply the AI copy while the guards hold. Assistant rows are applied
+    // on save from the page — a save that records automationId must not
+    // re-arm this applier over the copy the team just validated.
+    if (row.autoApply && row.automationId) {
+      await applyGenerationToAutomation(row.id);
+    }
     return { status: "DONE" };
   }
+
+  const terminalData = {
+    lintErrors: violations as unknown as Prisma.InputJsonValue,
+    rawOutput: payload.rawOutput,
+    tier: payload.tier,
+    latencyMs: payload.latencyMs,
+    leaseOwner: null,
+    leaseExpiresAt: null,
+  };
 
   if (row.attempt <= 1) {
     // One repair attempt: a fresh PENDING row whose prompt carries the
     // linter messages and the previous answer. Attempt 1 itself is terminal.
-    await prisma.$transaction([
-      prisma.copyGeneration.update({
-        where: { id: row.id },
-        data: {
-          status: "FAILED",
-          failureCode: FAILURE_CODES.LINT_REPAIR_QUEUED,
-          lintErrors: violations as unknown as Prisma.InputJsonValue,
-          rawOutput: payload.rawOutput,
-          tier: payload.tier,
-          latencyMs: payload.latencyMs,
-          leaseOwner: null,
-          leaseExpiresAt: null,
-        },
-      }),
-      prisma.copyGeneration.create({
-        data: {
-          workspaceId: row.workspaceId,
-          automationId: row.automationId,
-          promptId: row.promptId,
-          promptVersion: row.promptVersion,
-          input: row.input as Prisma.InputJsonValue,
-          renderedPrompt: `${row.renderedPrompt}${repairAppendix(violations, payload.rawOutput)}`,
-          attempt: row.attempt + 1,
-          standardCopy: row.standardCopy as Prisma.InputJsonValue,
-        },
-      }),
-    ]);
+    const written = await writeUnderLease(id, workerId, {
+      status: "FAILED",
+      failureCode: FAILURE_CODES.LINT_REPAIR_QUEUED,
+      ...terminalData,
+    });
+    if (!written) throw new CopywriterError("INVALID_LEASE", 409);
+    await prisma.copyGeneration.create({
+      data: {
+        workspaceId: row.workspaceId,
+        automationId: row.automationId,
+        autoApply: row.autoApply,
+        promptId: row.promptId,
+        promptVersion: row.promptVersion,
+        input: row.input as Prisma.InputJsonValue,
+        renderedPrompt: `${row.renderedPrompt}${repairAppendix(violations, payload.rawOutput)}`,
+        attempt: row.attempt + 1,
+        standardCopy: row.standardCopy as Prisma.InputJsonValue,
+      },
+    });
     return { status: "REPAIRED" };
   }
 
-  await prisma.copyGeneration.update({
-    where: { id: row.id },
-    data: {
-      status: "FAILED",
-      failureCode: FAILURE_CODES.LINT_FAILED,
-      lintErrors: violations as unknown as Prisma.InputJsonValue,
-      rawOutput: payload.rawOutput,
-      tier: payload.tier,
-      latencyMs: payload.latencyMs,
-      leaseOwner: null,
-      leaseExpiresAt: null,
-    },
+  const written = await writeUnderLease(id, workerId, {
+    status: "FAILED",
+    failureCode: FAILURE_CODES.LINT_FAILED,
+    ...terminalData,
   });
+  if (!written) throw new CopywriterError("INVALID_LEASE", 409);
   return { status: "FAILED" };
 }
 
@@ -573,16 +613,16 @@ export async function submitCopyFailure(
   workerId: string,
   code: unknown
 ): Promise<void> {
-  const row = await requireLeaseHolder(id, workerId);
-  await prisma.copyGeneration.update({
-    where: { id: row.id },
-    data: {
-      status: "FAILED",
-      failureCode: sanitizeFailureCode(code ?? FAILURE_CODES.WORKER_FAILED),
-      leaseOwner: null,
-      leaseExpiresAt: null,
-    },
+  // The lease pre-check gives the precise 404 vs 409 code; the write itself
+  // is lease-guarded, so an expired lease still cannot finish the row.
+  await requireLeaseHolder(id, workerId);
+  const written = await writeUnderLease(id, workerId, {
+    status: "FAILED",
+    failureCode: sanitizeFailureCode(code ?? FAILURE_CODES.WORKER_FAILED),
+    leaseOwner: null,
+    leaseExpiresAt: null,
   });
+  if (!written) throw new CopywriterError("INVALID_LEASE", 409);
 }
 
 /* --------------------- release-sync apply (DONE guard) --------------------- */
@@ -609,32 +649,41 @@ export async function applyGenerationToAutomation(
   const output = asCopyTexts(row?.output);
   if (!row || row.status !== "DONE" || !output) return "skipped_no_output";
   if (!row.automationId) return "skipped_no_automation";
-
-  const automation = await prisma.automation.findUnique({
-    where: { id: row.automationId },
-  });
-  if (!automation) return "skipped_no_automation";
-  if (automation.isActive) return "skipped_active";
-
   const standard = asCopyTexts(row.standardCopy);
-  const current: CopyTexts = {
-    openingDm: automation.openingDmMessage,
-    openingButton: automation.openingDmButtonLabel,
-    revealDm: automation.dmMessage,
-    linkButton: automation.linkButtonLabel ?? "",
-  };
-  if (!standard || !copyTextsEqual(current, standard)) return "skipped_edited";
+  if (!standard) return "skipped_edited";
 
-  await prisma.$transaction([
-    prisma.automation.update({
-      where: { id: automation.id },
-      data: automationCopyFields(output),
-    }),
-    prisma.copyGeneration.update({
-      where: { id: row.id },
-      data: { appliedAt: new Date() },
-    }),
-  ]);
+  // One guarded write IS the guard: untouched (all four fields still equal
+  // the stored standard copy), still inactive, still in this workspace. An
+  // operator activating or editing the campaign between an earlier read and
+  // the write cannot be overwritten — the WHERE misses and nothing moves.
+  const applied = await prisma.automation.updateMany({
+    where: {
+      id: row.automationId,
+      workspaceId: row.workspaceId,
+      isActive: false,
+      openingDmMessage: standard.openingDm,
+      openingDmButtonLabel: standard.openingButton,
+      dmMessage: standard.revealDm,
+      linkButtonLabel: standard.linkButton,
+    },
+    data: automationCopyFields(output),
+  });
+  if (applied.count !== 1) {
+    // Classify only for the outcome code; the campaign is left untouched.
+    const automation = await prisma.automation.findUnique({
+      where: { id: row.automationId },
+      select: { workspaceId: true, isActive: true },
+    });
+    if (!automation || automation.workspaceId !== row.workspaceId) {
+      return "skipped_no_automation";
+    }
+    if (automation.isActive) return "skipped_active";
+    return "skipped_edited";
+  }
+  await prisma.copyGeneration.update({
+    where: { id: row.id },
+    data: { appliedAt: new Date() },
+  });
   return "applied";
 }
 
@@ -649,17 +698,17 @@ export interface GenerationStatus {
   failureCode?: string;
 }
 
-/** Workspace-scoped status read by the assistant page. */
-export async function getGenerationStatus(
-  id: string,
-  workspaceId: string
-): Promise<GenerationStatus | null> {
-  const row = await prisma.copyGeneration.findUnique({ where: { id } });
-  if (!row || row.workspaceId !== workspaceId) return null;
-
+function generationStatusFrom(row: {
+  status: string;
+  output: unknown;
+  lintErrors: unknown;
+  promptVersion: number;
+  tier: string | null;
+  failureCode: string | null;
+}): GenerationStatus {
   const output = asCopyTexts(row.output);
   return {
-    status: row.status,
+    status: row.status as GenerationStatus["status"],
     copy: output
       ? {
           openingDm: output.openingDm ?? "",
@@ -675,6 +724,37 @@ export async function getGenerationStatus(
     tier: row.tier ?? undefined,
     failureCode: row.failureCode ?? undefined,
   };
+}
+
+/**
+ * Workspace-scoped status read by the assistant page. The page polls the id
+ * it received from prepare; when that attempt failed and queued its repair,
+ * the status follows the repair row so a successful repair still reaches the
+ * screen instead of falling back to the standard copy.
+ */
+export async function getGenerationStatus(
+  id: string,
+  workspaceId: string
+): Promise<GenerationStatus | null> {
+  const row = await prisma.copyGeneration.findUnique({ where: { id } });
+  if (!row || row.workspaceId !== workspaceId) return null;
+
+  if (
+    row.status === "FAILED" &&
+    row.failureCode === FAILURE_CODES.LINT_REPAIR_QUEUED
+  ) {
+    const repair = await prisma.copyGeneration.findFirst({
+      where: {
+        workspaceId: row.workspaceId,
+        promptId: row.promptId,
+        attempt: { gt: row.attempt },
+        createdAt: { gt: row.createdAt },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    if (repair) return generationStatusFrom(repair);
+  }
+  return generationStatusFrom(row);
 }
 
 export interface RecordFinalCopyInput {

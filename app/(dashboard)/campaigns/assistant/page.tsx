@@ -254,6 +254,10 @@ export default function CampaignAssistantPage() {
   const [aiCopy, setAiCopy] = useState<AiCopyTexts | null>(null);
   const [aiPromptVersion, setAiPromptVersion] = useState<number | null>(null);
   const [copyEdited, setCopyEdited] = useState(false);
+  // The standard-copy seed the applied AI text was pinned to. A facts edit
+  // after prepare changes the seed: the AI text names the OLD facts, so it
+  // must not silently come back over the corrected standard copy.
+  const [aiPinnedSeed, setAiPinnedSeed] = useState<string | null>(null);
 
   const [completeId, setCompleteId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -372,17 +376,26 @@ export default function CampaignAssistantPage() {
 
   // The AI version replaces the texts in the fields only while the user has
   // not edited them; otherwise it waits behind the explicit "Use it" button.
-  // Re-applies after a facts-driven reseed for as long as no manual edit.
+  // It applies once against the facts it was generated from: when the facts
+  // change afterwards (artist/label/tag corrections), the standard copy
+  // reseeds with the corrected names and the stale AI text is dropped — the
+  // badge returns to "Standard copy" and Regenerate can queue a fresh one.
   useEffect(() => {
     if (!aiCopy) return;
     if (aiStatus !== "ready" && aiStatus !== "ready_applied") return;
     if (copyEdited) return;
+    if (aiPinnedSeed !== null && aiPinnedSeed !== seedKey) {
+      setAiCopy(null);
+      setAiStatus("idle");
+      return;
+    }
     setOpeningDm(aiCopy.openingDm);
     setOpeningButton(aiCopy.openingButton);
     setRevealDm(aiCopy.revealDm);
     setLinkButton(aiCopy.linkButton);
+    setAiPinnedSeed(seedKey);
     setAiStatus("ready_applied");
-  }, [aiCopy, aiStatus, copyEdited, seedKey]);
+  }, [aiCopy, aiStatus, copyEdited, seedKey, aiPinnedSeed]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Poll the generation status while the host worker works. The standard
@@ -440,6 +453,9 @@ export default function CampaignAssistantPage() {
     setRevealDm(aiCopy.revealDm);
     setLinkButton(aiCopy.linkButton);
     setCopyEdited(false);
+    // An explicit Use it is the user's call even after a facts edit; pin it
+    // so the swap effect does not undo the click.
+    setAiPinnedSeed(seedKey);
     setAiStatus("ready_applied");
   }
 
@@ -496,6 +512,7 @@ export default function CampaignAssistantPage() {
       setAiCopy(null);
       setAiPromptVersion(null);
       setCopyEdited(false);
+      setAiPinnedSeed(null);
       setAiStatus(prepared.generationId ? "pending" : "idle");
       setName(
         defaultCampaignName({

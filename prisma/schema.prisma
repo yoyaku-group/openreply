@@ -673,6 +673,13 @@ model CopyGeneration {
   input          Json
   renderedPrompt String  @db.Text
   attempt        Int                 @default(1)
+  /// Times this row was leased (including expired-lease re-claims). A row
+  /// that keeps losing its worker is failed instead of retried forever.
+  claimAttempts  Int                 @default(0)
+  /// Release-sync rows only: the DONE result auto-applies to the campaign.
+  /// Assistant rows never auto-apply — a save that records automationId must
+  /// not re-arm the applier over the copy the team just validated.
+  autoApply      Boolean             @default(false)
   status         CopyGenerationState @default(PENDING)
   leaseOwner     String?
   leaseExpiresAt DateTime?

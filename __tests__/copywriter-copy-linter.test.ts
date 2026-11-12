@@ -98,6 +98,22 @@ describe("lintGeneratedCopy (AI output gate)", () => {
     );
   });
 
+  it("refuses a price or an AI mention inside a button label", () => {
+    const priced = lintGeneratedCopy(copy({ linkButtonLabel: "Buy 25€" }), FACTS);
+    expect(priced.violations).toEqual(
+      expect.arrayContaining([expect.objectContaining({ rule: "no-price" })])
+    );
+    const bot = lintGeneratedCopy(
+      copy({ openingDmButtonLabel: "Ask the bot" }),
+      FACTS
+    );
+    expect(bot.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ rule: "no-ai-mention" }),
+      ])
+    );
+  });
+
   it("refuses a URL in the AI copy", () => {
     const result = lintGeneratedCopy(
       copy({ dmMessage: "Here you go: https://yoyaku.io/release/x/" }),
