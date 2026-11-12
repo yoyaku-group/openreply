@@ -269,6 +269,8 @@ export default function CampaignAssistantPage() {
   const [finishLink, setFinishLink] = useState<{ label: string; url: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [previewTab, setPreviewTab] = useState<PreviewTab>("dm");
+  // Prompt-lab entry point (lot S4): owners only.
+  const [isOwner, setIsOwner] = useState(false);
 
   // Load accounts and preselect like the campaign builder.
   useEffect(() => {
@@ -283,6 +285,12 @@ export default function CampaignAssistantPage() {
         );
       })
       .catch(() => setAccounts([]));
+    fetch("/api/workspace/members")
+      .then((r) => r.json())
+      .then((payload) => {
+        if (payload?.success) setIsOwner(payload.data.currentUserRole === "OWNER");
+      })
+      .catch(() => {});
   }, []);
 
   // Fetch the connected account's avatar for the phone preview (cache-first).
@@ -766,6 +774,17 @@ export default function CampaignAssistantPage() {
 
   return (
     <div className="space-y-8">
+      {isOwner && (
+        <div className="flex justify-end">
+          <Link
+            href="/settings/copywriter"
+            className="text-xs font-medium text-muted underline hover:text-foreground"
+          >
+            Improve the AI copy
+          </Link>
+        </div>
+      )}
+
       {/* 1. Product and caption */}
       <Section title="Product">
         <div className="grid gap-4 lg:grid-cols-2">

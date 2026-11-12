@@ -256,7 +256,7 @@ const DEDUPE_WINDOW_MS = 60 * 1000;
  * equal JSON values serialize identically even when one came back from a
  * JSONB column (Postgres reorders keys by length, then bytes).
  */
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(canonicalJson).join(",")}]`;
   }
@@ -285,6 +285,10 @@ async function findRecentEquivalentRow(
     where: {
       workspaceId,
       promptId,
+      // A prompt-lab trial row is never a production dedupe target: its id
+      // must not be handed back to the assistant, and a trial must not be
+      // served instead of a real generation.
+      isTrial: false,
       status: { in: ["PENDING", "CLAIMED"] },
       createdAt: { gte: new Date(now.getTime() - DEDUPE_WINDOW_MS) },
     },
@@ -739,6 +743,10 @@ export async function applyGenerationToAutomation(
   });
   const output = asCopyTexts(row?.output);
   if (!row || row.status !== "DONE" || !output) return "skipped_no_output";
+  // A prompt-lab trial row is never applied to a campaign, whatever its
+  // flags: trials exist only to compare a draft prompt against the active
+  // one on the lab screen.
+  if (row.isTrial) return "skipped_no_automation";
   if (!row.automationId) return "skipped_no_automation";
   const standard = asCopyTexts(row.standardCopy);
   if (!standard) return "skipped_edited";
@@ -863,6 +871,18 @@ export async function recordFinalCopy(
 ): Promise<{ editDistance: number | null } | null> {
   const row = await prisma.copyGeneration.findUnique({ where: { id } });
   if (!row || row.workspaceId !== workspaceId) return null;
+  // A trial generation never carries an automationId: it never lands on a
+  // campaign, so provenance cannot be recorded on it either.
+  if (row.isTrial) return null;
+
+  // The stored campaign must live in the caller's workspace: a guessed or
+  // foreign automation id must not stamp provenance (S3 review carry-over).
+  // Nothing is stored when the check fails.
+  const automation = await prisma.automation.findFirst({
+    where: { id: input.automationId, workspaceId },
+    select: { id: true },
+  });
+  if (!automation) throw new CopywriterError("NOT_FOUND", 404);
 
   // The user saw (and validated) whatever the status route served — for a
   // repaired generation that is the repair row. Measure the distance from

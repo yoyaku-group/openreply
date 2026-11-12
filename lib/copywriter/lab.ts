@@ -1,0 +1,799 @@
+import { Prisma } from "@/app/generated/prisma/client";
+import {
+  CopywriterError,
+  canonicalJson,
+  ensureActivePrompt,
+  renderPrompt,
+} from "@/lib/copywriter/service";
+import type { CopyTexts } from "@/lib/copywriter/edit-distance";
+import { isRecord } from "@/lib/copywriter/service";
+import { prisma } from "@/lib/db/client";
+
+/**
+ * The prompt lab (lot S4): everything behind /settings/copywriter.
+ *
+ * Append-only prompts: editing, reverting and changing the golden examples
+ * all create a NEW `CopywriterPrompt` version inside one transaction (the
+ * partial unique index in the migration stays the race-proof backstop), so
+ * per-version metrics stay attributable to the exact prompt content.
+ *
+ * Trials are isolated by construction: `isTrial` rows never carry an
+ * automationId, are never auto-applied and are excluded from production
+ * metrics — every one of them still spends the shared subscription quota,
+ * which is why a run is capped at 5 inputs and a second concurrent run per
+ * workspace is refused.
+ */
+
+const METRICS_WINDOW_DAYS = 90;
+/** A version with fewer generations has no readable metrics. */
+export const METRICS_MIN_GENERATIONS = 5;
+/** The four data blocks a prompt body may render. */
+export const ALLOWED_PLACEHOLDERS = [
+  "facts",
+  "description",
+  "caption",
+  "state",
+  "examples",
+] as const;
+export const PROMPT_BODY_MAX_LENGTH = 4000;
+export const EXAMPLES_CAP = 3;
+export const TRIAL_RUN_SIZE = 5;
+/** How many recent rows are scanned to find 5 distinct inputs. */
+const TRIAL_SOURCE_SCAN = 50;
+export const LAB_MODELS = ["haiku", "sonnet"] as const;
+export type LabModel = (typeof LAB_MODELS)[number];
+/** Trial polling window on the lab page (same shape as the assistant). */
+export const TRIAL_POLL_MAX_MS = 60 * 1000;
+
+const PLACEHOLDER_RE = /\{\{([^{}]+)\}\}/g;
+
+/* ------------------------------ validation -------------------------------- */
+
+export interface PromptBodyCheck {
+  unknownPlaceholders: string[];
+  tooLong: boolean;
+}
+
+/** Pure check of a draft prompt body against the lab rules. */
+export function checkPromptBody(body: string): PromptBodyCheck {
+  const unknown = new Set<string>();
+  for (const match of body.matchAll(PLACEHOLDER_RE)) {
+    const name = (match[1] ?? "").trim();
+    if (!(ALLOWED_PLACEHOLDERS as readonly string[]).includes(name)) {
+      unknown.add(name);
+    }
+  }
+  return {
+    unknownPlaceholders: [...unknown],
+    tooLong: body.length > PROMPT_BODY_MAX_LENGTH,
+  };
+}
+
+/**
+ * Throws the stable lab error codes so routes can map them 1:1:
+ * PROMPT_BODY_TOO_LONG and UNKNOWN_PLACEHOLDER (both 400).
+ */
+export function assertValidPromptBody(body: string): void {
+  const check = checkPromptBody(body);
+  if (check.tooLong) {
+    throw new CopywriterError("PROMPT_BODY_TOO_LONG", 400);
+  }
+  if (check.unknownPlaceholders.length > 0) {
+    throw new CopywriterError("UNKNOWN_PLACEHOLDER", 400);
+  }
+}
+
+export function assertValidLabModel(model: string): void {
+  if (!(LAB_MODELS as readonly string[]).includes(model)) {
+    throw new CopywriterError("INVALID_MODEL", 400);
+  }
+}
+
+function assertValidReason(reason: string): void {
+  if (!reason.trim()) throw new CopywriterError("REASON_REQUIRED", 400);
+}
+
+function assertValidExamples(examples: readonly string[]): void {
+  if (examples.length > EXAMPLES_CAP) {
+    throw new CopywriterError("EXAMPLES_CAP_REACHED", 400);
+  }
+  if (examples.some((example) => typeof example !== "string" || !example.trim())) {
+    throw new CopywriterError("INVALID_EXAMPLE", 400);
+  }
+}
+
+/* ------------------------------- versions --------------------------------- */
+
+function readExamplesJson(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+export interface CreatePromptVersionInput {
+  workspaceId: string;
+  body: string;
+  model: string;
+  reason: string;
+  authorEmail: string;
+  /** Replaces the examples on the new version. Omit to inherit none. */
+  examples?: readonly string[];
+  /** Flip `isActive` in the same transaction (one-active-per-workspace). */
+  activate?: boolean;
+}
+
+/**
+ * Append a prompt version. Never mutates an existing row's content; when
+ * `activate` is set, the previously active rows are deactivated inside the
+ * same transaction first.
+ */
+export async function createPromptVersion(
+  input: CreatePromptVersionInput
+) {
+  assertValidPromptBody(input.body);
+  assertValidLabModel(input.model);
+  assertValidReason(input.reason);
+  const examples = input.examples ?? [];
+  assertValidExamples(examples);
+
+  return prisma.$transaction(async (tx) => {
+    const max = await tx.copywriterPrompt.aggregate({
+      where: { workspaceId: input.workspaceId },
+      _max: { version: true },
+    });
+    const activate = input.activate ?? false;
+    if (activate) {
+      await tx.copywriterPrompt.updateMany({
+        where: { workspaceId: input.workspaceId, isActive: true },
+        data: { isActive: false },
+      });
+    }
+    return tx.copywriterPrompt.create({
+      data: {
+        workspaceId: input.workspaceId,
+        version: (max._max.version ?? 0) + 1,
+        body: input.body,
+        model: input.model,
+        reason: input.reason,
+        authorEmail: input.authorEmail,
+        isActive: activate,
+        examples:
+          examples.length > 0
+            ? (examples as unknown as Prisma.InputJsonValue)
+            : Prisma.DbNull,
+      },
+    });
+  });
+}
+
+export interface RevertPromptInput {
+  workspaceId: string;
+  promptId: string;
+  reason: string;
+  authorEmail: string;
+}
+
+/**
+ * Revert to vN: a NEW version (max + 1) whose body, model and examples copy
+ * the target row, activated in one transaction. History stays append-only;
+ * the target row itself is never rewritten.
+ */
+export async function revertToPrompt(input: RevertPromptInput) {
+  assertValidReason(input.reason);
+  const target = await prisma.copywriterPrompt.findFirst({
+    where: { id: input.promptId, workspaceId: input.workspaceId },
+  });
+  if (!target) throw new CopywriterError("NOT_FOUND", 404);
+
+  return prisma.$transaction(async (tx) => {
+    const max = await tx.copywriterPrompt.aggregate({
+      where: { workspaceId: input.workspaceId },
+      _max: { version: true },
+    });
+    await tx.copywriterPrompt.updateMany({
+      where: { workspaceId: input.workspaceId, isActive: true },
+      data: { isActive: false },
+    });
+    return tx.copywriterPrompt.create({
+      data: {
+        workspaceId: input.workspaceId,
+        version: (max._max.version ?? 0) + 1,
+        body: target.body,
+        model: target.model,
+        reason: input.reason,
+        authorEmail: input.authorEmail,
+        isActive: true,
+        examples: (target.examples ?? Prisma.DbNull) as Prisma.InputJsonValue,
+      },
+    });
+  });
+}
+
+export async function getPromptVersions(workspaceId: string) {
+  const versions = await prisma.copywriterPrompt.findMany({
+    where: { workspaceId },
+    orderBy: { version: "desc" },
+  });
+  return {
+    versions,
+    active: versions.find((version) => version.isActive) ?? null,
+  };
+}
+
+/* -------------------------------- metrics --------------------------------- */
+
+export interface LabVersionMetrics {
+  promptVersion: number;
+  generations: number;
+  lintPassFirstAttempt: number;
+  repairRate: number;
+  fallbackRate: number;
+  acceptedWithoutEdit: number;
+  medianEditDistance: number | null;
+  medianLatencyMs: number | null;
+  tierMix: Record<string, number>;
+  enoughData: boolean;
+}
+
+interface LabMetricRow {
+  promptVersion: number;
+  generations: number | bigint;
+  lintPassFirstAttempt: number | bigint;
+  repairs: number | bigint;
+  fallbacks: number | bigint;
+  acceptedWithoutEdit: number | bigint;
+  medianEditDistance: string | number | null;
+  medianLatency: string | number | null;
+  tierMix: unknown;
+}
+
+const numberFrom = (value: number | bigint | string | null | undefined) =>
+  value === null || value === undefined ? null : Number(value);
+
+/**
+ * Pure projection of the aggregate rows onto the metrics the page renders.
+ * Tests run this on a fixture; the query only bounds and groups.
+ */
+export function labMetricsFromRows(rows: LabMetricRow[]): LabVersionMetrics[] {
+  return rows.map((row) => {
+    const generations = Number(row.generations);
+    const repairs = Number(row.repairs);
+    const fallbacks = Number(row.fallbacks);
+    const tierMix: Record<string, number> = {};
+    if (isRecord(row.tierMix)) {
+      for (const [tier, count] of Object.entries(row.tierMix)) {
+        tierMix[tier] = Number(count);
+      }
+    }
+    return {
+      promptVersion: Number(row.promptVersion),
+      generations,
+      lintPassFirstAttempt: Number(row.lintPassFirstAttempt),
+      repairRate: generations > 0 ? repairs / generations : 0,
+      fallbackRate: generations > 0 ? fallbacks / generations : 0,
+      acceptedWithoutEdit: Number(row.acceptedWithoutEdit),
+      medianEditDistance: numberFrom(row.medianEditDistance),
+      medianLatencyMs: numberFrom(row.medianLatency),
+      tierMix,
+      enoughData: generations >= METRICS_MIN_GENERATIONS,
+    };
+  });
+}
+
+/**
+ * One bounded aggregate query per workspace: last 90 days, production rows
+ * only (trials excluded), grouped by prompt version. Tier mix rides along as
+ * a correlated aggregate so the whole read stays a single GROUP BY.
+ */
+export async function getLabMetrics(
+  workspaceId: string,
+  now = new Date()
+): Promise<LabVersionMetrics[]> {
+  const since = new Date(now.getTime() - METRICS_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const rows = await prisma.$queryRaw<LabMetricRow[]>`
+    SELECT
+      g."promptVersion" AS "promptVersion",
+      COUNT(*)::int AS "generations",
+      COUNT(*) FILTER (WHERE g."attempt" = 1 AND g."status" = 'DONE')::int AS "lintPassFirstAttempt",
+      COUNT(*) FILTER (WHERE g."attempt" > 1)::int AS "repairs",
+      COUNT(*) FILTER (WHERE g."status" = 'FAILED')::int AS "fallbacks",
+      COUNT(*) FILTER (WHERE g."editDistance" = 0)::int AS "acceptedWithoutEdit",
+      PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY g."editDistance") AS "medianEditDistance",
+      PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY g."latencyMs") AS "medianLatency",
+      (
+        SELECT COALESCE(jsonb_object_agg(t."tier", t."n"), '{}'::jsonb)
+        FROM (
+          SELECT t2."tier" AS "tier", COUNT(*)::int AS "n"
+          FROM "CopyGeneration" t2
+          WHERE t2."workspaceId" = ${workspaceId}
+            AND t2."isTrial" = false
+            AND t2."createdAt" >= ${since}
+            AND t2."tier" IS NOT NULL
+            AND t2."promptVersion" = g."promptVersion"
+          GROUP BY t2."tier"
+        ) t
+      ) AS "tierMix"
+    FROM "CopyGeneration" g
+    WHERE g."workspaceId" = ${workspaceId}
+      AND g."isTrial" = false
+      AND g."createdAt" >= ${since}
+    GROUP BY g."promptVersion"`;
+  return labMetricsFromRows(rows);
+}
+
+/* ---------------------------- recent generations --------------------------- */
+
+function factsFromInput(input: unknown): Record<string, unknown> {
+  if (!isRecord(input) || !isRecord(input.facts)) return {};
+  const facts = input.facts;
+  const pick = (key: string) =>
+    typeof facts[key] === "string" ? (facts[key] as string) : undefined;
+  return {
+    sku: pick("sku"),
+    title: pick("title"),
+    artists: Array.isArray(facts.artists) ? facts.artists : undefined,
+    label: pick("label"),
+    state: pick("state"),
+  };
+}
+
+export function captionFromInput(input: unknown): string {
+  return isRecord(input) && typeof input.caption === "string" ? input.caption : "";
+}
+
+/** Canonical identity of a generation input (facts + caption). */
+export function inputKey(input: unknown): string {
+  if (!isRecord(input)) return "";
+  return canonicalJson({ facts: input.facts ?? null, caption: input.caption ?? null });
+}
+
+export async function getRecentGenerations(workspaceId: string, limit = 20) {
+  const rows = await prisma.copyGeneration.findMany({
+    where: { workspaceId, isTrial: false },
+    orderBy: { createdAt: "desc" },
+    take: Math.max(1, Math.min(Math.floor(limit) || 20, 50)),
+  });
+  // Campaign names join in one bounded read; a generation whose campaign was
+  // deleted simply carries no name.
+  const automationIds = [
+    ...new Set(rows.map((row) => row.automationId).filter((id): id is string => !!id)),
+  ];
+  const campaigns = automationIds.length
+    ? await prisma.automation.findMany({
+        where: { workspaceId, id: { in: automationIds } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const campaignNames = new Map(campaigns.map((c) => [c.id, c.name]));
+  return rows.map((row) => ({
+    id: row.id,
+    createdAt: row.createdAt,
+    status: row.status,
+    attempt: row.attempt,
+    promptVersion: row.promptVersion,
+    tier: row.tier,
+    latencyMs: row.latencyMs,
+    failureCode: row.failureCode,
+    editDistance: row.editDistance,
+    hasFinalCopy: row.finalCopy !== null,
+    lintErrors: row.lintErrors,
+    output: row.output,
+    finalCopy: row.finalCopy,
+    input: row.input,
+    renderedPrompt: row.renderedPrompt,
+    facts: factsFromInput(row.input),
+    caption: captionFromInput(row.input),
+    campaignId: row.automationId,
+    campaignName: row.automationId
+      ? campaignNames.get(row.automationId) ?? null
+      : null,
+  }));
+}
+
+/* ----------------------------- golden examples ----------------------------- */
+
+const EXAMPLE_FACT_KEYS = ["sku", "title", "artists", "label", "state"] as const;
+
+/**
+ * A golden example block, in the exact format the {{examples}} placeholder
+ * renders: "FACTS {json} → OUTPUT {json}".
+ */
+export function exampleBlock(facts: unknown, copy: CopyTexts): string {
+  const block: Record<string, unknown> = {};
+  if (isRecord(facts)) {
+    for (const key of EXAMPLE_FACT_KEYS) {
+      if (facts[key] !== undefined && facts[key] !== null && facts[key] !== "") {
+        block[key] = facts[key];
+      }
+    }
+  }
+  return `FACTS ${JSON.stringify(block)} → OUTPUT ${JSON.stringify({
+    openingDm: copy.openingDm,
+    openingButton: copy.openingButton,
+    revealDm: copy.revealDm,
+    linkButton: copy.linkButton,
+  })}`;
+}
+
+/**
+ * Build an example from a generation the team validated. Refuses anything
+ * without a `finalCopy`: an example is the human-validated copy, never the
+ * raw model output.
+ */
+export async function makeExampleFromGeneration(
+  workspaceId: string,
+  generationId: string
+): Promise<string> {
+  const row = await prisma.copyGeneration.findFirst({
+    where: { id: generationId, workspaceId },
+  });
+  if (!row) throw new CopywriterError("NOT_FOUND", 404);
+  const copy = row.finalCopy;
+  if (!isRecord(copy)) throw new CopywriterError("NO_FINAL_COPY", 400);
+  const texts: CopyTexts = {
+    openingDm: typeof copy.openingDm === "string" ? copy.openingDm : null,
+    openingButton: typeof copy.openingButton === "string" ? copy.openingButton : null,
+    revealDm: typeof copy.revealDm === "string" ? copy.revealDm : "",
+    linkButton: typeof copy.linkButton === "string" ? copy.linkButton : "",
+  };
+  if (!texts.revealDm || !texts.linkButton) {
+    throw new CopywriterError("NO_FINAL_COPY", 400);
+  }
+  return exampleBlock(factsFromInput(row.input), texts);
+}
+
+/**
+ * Build an example from a campaign picked by name or SKU search. The FACTS
+ * side is limited to what a campaign row actually stores (SKU tag, name).
+ */
+export function exampleFromCampaign(automation: {
+  name: string;
+  catnoTag: string | null;
+  openingDmMessage: string | null;
+  openingDmButtonLabel: string | null;
+  dmMessage: string | null;
+  linkButtonLabel: string | null;
+}): string {
+  return exampleBlock(
+    { sku: automation.catnoTag ?? undefined, title: automation.name },
+    {
+      openingDm: automation.openingDmMessage,
+      openingButton: automation.openingDmButtonLabel,
+      revealDm: automation.dmMessage ?? "",
+      linkButton: automation.linkButtonLabel ?? "",
+    }
+  );
+}
+
+export async function searchCampaignsForExamples(workspaceId: string, query: string) {
+  const q = query.trim();
+  if (q.length < 2) return [];
+  return prisma.automation.findMany({
+    where: {
+      workspaceId,
+      lifecycle: { not: "ARCHIVED" },
+      OR: [
+        { name: { contains: q, mode: "insensitive" } },
+        { catnoTag: { contains: q, mode: "insensitive" } },
+      ],
+    },
+    select: {
+      id: true,
+      name: true,
+      catnoTag: true,
+      openingDmMessage: true,
+      openingDmButtonLabel: true,
+      dmMessage: true,
+      linkButtonLabel: true,
+      isActive: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+  });
+}
+
+/**
+ * Append a golden example by creating a NEW active version with the same
+ * body — the examples live on the version, so metrics stay attributable.
+ * The cap of 3 is enforced here. An identical example is a no-op.
+ */
+export async function addGoldenExample(
+  workspaceId: string,
+  block: string,
+  authorEmail: string
+) {
+  const active = await ensureActivePrompt(workspaceId);
+  const current = readExamplesJson(active.examples);
+  if (current.includes(block)) {
+    return { prompt: active, examples: current, added: false };
+  }
+  if (current.length >= EXAMPLES_CAP) {
+    throw new CopywriterError("EXAMPLES_CAP_REACHED", 400);
+  }
+  const prompt = await createPromptVersion({
+    workspaceId,
+    body: active.body,
+    model: active.model,
+    reason: `Add golden example (${current.length + 1}/${EXAMPLES_CAP})`,
+    authorEmail,
+    examples: [...current, block],
+    activate: true,
+  });
+  return { prompt, examples: [...current, block], added: true };
+}
+
+export async function removeGoldenExample(
+  workspaceId: string,
+  index: number,
+  authorEmail: string
+) {
+  const active = await ensureActivePrompt(workspaceId);
+  const current = readExamplesJson(active.examples);
+  if (index < 0 || index >= current.length) {
+    throw new CopywriterError("NOT_FOUND", 404);
+  }
+  const next = current.filter((_, i) => i !== index);
+  const prompt = await createPromptVersion({
+    workspaceId,
+    body: active.body,
+    model: active.model,
+    reason: `Remove golden example (${current.length - 1}/${EXAMPLES_CAP} left)`,
+    authorEmail,
+    examples: next,
+    activate: true,
+  });
+  return { prompt, examples: next };
+}
+
+/* --------------------------------- trials --------------------------------- */
+
+export interface TrialRunResult {
+  ids: string[];
+}
+
+/**
+ * Enqueue one trial run: up to 5 generations, one per recent distinct input,
+ * rendered from the DRAFT body. Rows are `isTrial` from birth: no
+ * automationId, no auto-apply, excluded from production metrics. A second
+ * concurrent run per workspace is refused — trials spend the same shared
+ * subscription quota as production generations.
+ */
+export async function createTrialRun(input: {
+  workspaceId: string;
+  body: string;
+  model: string;
+  authorEmail: string;
+}): Promise<TrialRunResult> {
+  assertValidPromptBody(input.body);
+  assertValidLabModel(input.model);
+
+  const running = await prisma.copyGeneration.count({
+    where: {
+      workspaceId: input.workspaceId,
+      isTrial: true,
+      status: { in: ["PENDING", "CLAIMED"] },
+    },
+  });
+  if (running > 0) throw new CopywriterError("TRIAL_IN_PROGRESS", 409);
+
+  const active = await ensureActivePrompt(input.workspaceId);
+  const recent = await prisma.copyGeneration.findMany({
+    where: { workspaceId: input.workspaceId, isTrial: false },
+    orderBy: { createdAt: "desc" },
+    take: TRIAL_SOURCE_SCAN,
+  });
+  const seen = new Set<string>();
+  const sources: typeof recent = [];
+  for (const row of recent) {
+    const key = inputKey(row.input);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sources.push(row);
+    if (sources.length === TRIAL_RUN_SIZE) break;
+  }
+  if (sources.length === 0) {
+    throw new CopywriterError("NO_TRIAL_INPUTS", 409);
+  }
+
+  const examples = readExamplesJson(active.examples);
+  const ids = await prisma.$transaction(async (tx) =>
+    Promise.all(
+      sources.map((source) => {
+        const facts =
+          isRecord(source.input) && isRecord(source.input.facts)
+            ? source.input.facts
+            : { description: "" };
+        return tx.copyGeneration.create({
+          data: {
+            workspaceId: input.workspaceId,
+            // Trials never touch a campaign.
+            automationId: null,
+            autoApply: false,
+            isTrial: true,
+            promptId: active.id,
+            promptVersion: active.version,
+            input: source.input as Prisma.InputJsonValue,
+            renderedPrompt: renderPrompt(
+              input.body,
+              facts as never,
+              captionFromInput(source.input),
+              { examples }
+            ),
+            standardCopy: source.standardCopy as Prisma.InputJsonValue,
+          },
+          select: { id: true },
+        });
+      })
+    )
+  );
+  return { ids: ids.map((row) => row.id) };
+}
+
+export interface TrialItemStatus {
+  id: string;
+  /** The id actually carrying the outcome (the repair row, when one ran). */
+  effectiveId: string;
+  status: "PENDING" | "CLAIMED" | "DONE" | "FAILED";
+  lintOk: boolean;
+  lintErrors: unknown;
+  output: unknown;
+  tier: string | null;
+  latencyMs: number | null;
+  promptVersion: number;
+  baseline: {
+    generationId: string;
+    promptVersion: number;
+    status: string;
+    output: unknown;
+  } | null;
+  input: unknown;
+}
+
+/** Follow the repair link the way the assistant status route does. */
+async function effectiveOutcome(workspaceId: string, row: {
+  id: string;
+  status: string;
+  failureCode: string | null;
+}) {
+  if (row.status === "FAILED" && row.failureCode === "LINT_REPAIR_QUEUED") {
+    const repair = await prisma.copyGeneration.findFirst({
+      where: { sourceGenerationId: row.id, workspaceId },
+      orderBy: { createdAt: "desc" },
+    });
+    if (repair) return repair;
+  }
+  return null;
+}
+
+/**
+ * Trial results for the lab screen: each trial's effective outcome, its lint
+ * status, and the most recent production output for the same input as the
+ * side-by-side baseline.
+ */
+export async function getTrialResults(
+  workspaceId: string,
+  ids: string[]
+): Promise<TrialItemStatus[]> {
+  if (ids.length === 0 || ids.length > TRIAL_RUN_SIZE) {
+    throw new CopywriterError("INVALID_TRIAL_IDS", 400);
+  }
+  const rows = await prisma.copyGeneration.findMany({
+    where: { workspaceId, id: { in: ids }, isTrial: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  // One bounded tail read serves every baseline: the side-by-side comparison
+  // is the most recent production output for the SAME input, whatever
+  // prompt version produced it.
+  const tail = await prisma.copyGeneration.findMany({
+    where: { workspaceId, isTrial: false },
+    orderBy: { createdAt: "desc" },
+    take: TRIAL_SOURCE_SCAN,
+  });
+  const tailByKey = new Map(tail.map((row) => [inputKey(row.input), row]));
+
+  const items: TrialItemStatus[] = [];
+  for (const row of rows) {
+    const effective = (await effectiveOutcome(workspaceId, row)) ?? row;
+    const source = tailByKey.get(inputKey(row.input));
+    items.push({
+      id: row.id,
+      effectiveId: effective.id,
+      status: effective.status as TrialItemStatus["status"],
+      lintOk: effective.status === "DONE",
+      lintErrors: effective.lintErrors,
+      output: effective.output,
+      tier: effective.tier,
+      latencyMs: effective.latencyMs,
+      promptVersion: row.promptVersion,
+      baseline: source
+        ? {
+            generationId: source.id,
+            promptVersion: source.promptVersion,
+            status: source.status,
+            output: source.output,
+          }
+        : null,
+      input: row.input,
+    });
+  }
+  return items;
+}
+
+export interface TrialVerdict {
+  /** Every requested id resolved to a finished trial row. */
+  ready: boolean;
+  trialPass: number;
+  baselinePass: number;
+  gateOk: boolean;
+}
+
+/**
+ * The activation gate: the draft's lint pass on the trial inputs must be at
+ * least as good as the active version's pass on the same inputs.
+ */
+export async function trialVerdict(
+  workspaceId: string,
+  ids: string[]
+): Promise<TrialVerdict> {
+  const items = await getTrialResults(workspaceId, ids);
+  if (items.length === 0) {
+    throw new CopywriterError("NOT_FOUND", 404);
+  }
+  const finished = items.every((item) => item.status === "DONE" || item.status === "FAILED");
+  const trialPass = items.filter((item) => item.lintOk).length;
+  const baselinePass = items.filter(
+    (item) => item.baseline && item.baseline.status === "DONE"
+  ).length;
+  return {
+    ready: finished,
+    trialPass,
+    baselinePass,
+    gateOk: finished && trialPass >= baselinePass,
+  };
+}
+
+/* ------------------------------- activation ------------------------------- */
+
+export interface ActivateDraftInput {
+  workspaceId: string;
+  body: string;
+  model: string;
+  reason: string;
+  authorEmail: string;
+  examples?: readonly string[];
+  trialIds?: string[];
+  activateAnyway?: boolean;
+}
+
+const OVERRIDE_MARKER = " [activation override]";
+
+/**
+ * Create version N+1 from the draft and flip it active in one transaction.
+ * Without the explicit override, the gate demands a trial run on this draft
+ * whose lint pass is at least as good as the active version's on the same
+ * inputs. Using the override is recorded in the reason.
+ */
+export async function activateDraft(input: ActivateDraftInput) {
+  if (!input.activateAnyway) {
+    if (!input.trialIds?.length) {
+      throw new CopywriterError("ACTIVATION_GATE_FAILED", 409);
+    }
+    const verdict = await trialVerdict(input.workspaceId, input.trialIds);
+    if (!verdict.gateOk) {
+      throw new CopywriterError("ACTIVATION_GATE_FAILED", 409);
+    }
+  }
+  const reason = input.activateAnyway
+    ? `${input.reason}${OVERRIDE_MARKER}`
+    : input.reason;
+  return createPromptVersion({
+    workspaceId: input.workspaceId,
+    body: input.body,
+    model: input.model,
+    reason,
+    authorEmail: input.authorEmail,
+    examples: input.examples,
+    activate: true,
+  });
+}

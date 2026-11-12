@@ -162,6 +162,58 @@ to that campaign only if it is still inactive and nobody edited its four
 copy fields; `appliedAt` records the swap. The campaign is never activated by
 the AI — activation stays human (playbook).
 
+### Prompt lab
+
+The prompt lab (`/settings/copywriter`, linked from the assistant page and
+from Settings) is where an owner improves the prompt when the AI copy is not
+right. Editors may read it; only owners can change anything.
+
+**Every change is a new version.** Editing the prompt, reverting, adding or
+removing a golden example all create a NEW version (append-only rows, one
+active per workspace). Nothing on an old row is ever rewritten, so the
+per-version metrics stay attributable to the exact prompt content. A reason
+is required on every change.
+
+**How to read the metrics.** Per version, over the last 90 days and only for
+production generations (trials excluded):
+
+- **Generations** — how many times the version ran. Below 5, the row reads
+  "not enough data": ratios on four rows mean nothing.
+- **Lint pass on the first attempt** — the share of generations that passed
+  schema + linter without a repair. This is the headline quality number.
+- **Repair rate** — how often the one repair attempt had to run.
+- **Fallback rate** — FAILED rows: the shop fell back to the standard copy.
+  Sustained above ~10%, the prompt (or the model tier) needs work.
+- **Accepted without edit** (`editDistance = 0`) — how often the team kept
+  the AI copy exactly as written. Median edit distance tells you HOW MUCH
+  the team rewrites; a rising distance with a good lint pass means the copy
+  is technically valid but off-voice.
+- **Median latency and tier mix** — cost/speed context for the quality
+  numbers.
+
+**When to add an example.** When a generation needed manual correction and
+the corrected copy (the `finalCopy` the team validated) is the house style
+you want repeated. Use **Make it an example** on that generation, or search
+a campaign by name or SKU when the good copy lives on an older campaign.
+At most 3 examples — they are style anchors, not a training set. The
+validated copy and its input facts are stored on the prompt version and
+rendered into the `{{examples}}` placeholder as `FACTS … → OUTPUT {json}`.
+
+**Test before activate.** **Test on the last 5** runs the draft prompt
+against the 5 most recent distinct real inputs. Trials are isolated: they
+never touch a campaign, never carry an automation id and are excluded from
+the production metrics — but they DO spend the shared subscription quota,
+which is why a run is capped at 5 inputs and a second concurrent run is
+refused. Results show side by side with the active version's output for the
+same input, with lint status. **Activate** is only available when the draft's
+lint pass is at least as good as the active version's on the same inputs —
+or behind the explicit **Activate anyway** checkbox, whose use is recorded
+in the version's reason.
+
+**Revert.** One click on any version in History: it creates a new version
+that copies the old one and activates it. If a change made the copy worse,
+revert first, investigate after.
+
 ## Français
 
 1. **Ouvrez l'assistant** depuis la liste des campagnes (**Prepare from a
@@ -320,3 +372,62 @@ passe la chaîne de garde, le copy est appliqué à cette campagne seulement si
 elle est toujours inactive et si personne n'a modifié ses quatre champs de
 copy ; `appliedAt` enregistre l'échange. L'IA n'active jamais une campagne —
 l'activation reste humaine (playbook).
+
+### Le laboratoire de prompt
+
+Le laboratoire de prompt (`/settings/copywriter`, lié depuis la page
+l'assistant et depuis les réglages) est l'endroit où un owner améliore le
+prompt quand le copy IA n'est pas bon. Les éditeurs peuvent le lire ; seuls
+les owners peuvent le modifier.
+
+**Chaque changement est une nouvelle version.** Éditer le prompt, revenir en
+arrière, ajouter ou retirer un exemple crée TOUJOURS une nouvelle version
+(lignes en append-only, une seule active par workspace). Rien sur une
+ancienne ligne n'est jamais réécrit : les métriques par version restent
+attribuables au contenu exact du prompt. Une raison est exigée à chaque
+changement.
+
+**Lire les métriques.** Par version, sur les 90 derniers jours et seulement
+pour les générations de production (essais exclus) :
+
+- **Générations** — combien de fois la version a tourné. Sous 5, la ligne
+  affiche « pas assez de données » : des ratios sur quatre lignes ne veulent
+  rien dire.
+- **Lint pass au premier essai** — la part des générations qui ont passé
+  schéma + linter sans réparation. C'est le chiffre qualité principal.
+- **Taux de réparation** — combien de fois la tentative de réparation a dû
+  tourner.
+- **Taux de repli** — les lignes FAILED : la boutique est retombée sur le
+  copy standard. Au-dessus de ~10 % en continu, le prompt (ou le palier de
+  modèle) doit être retravaillé.
+- **Accepté sans modification** (`editDistance = 0`) — combien de fois
+  l'équipe a gardé le copy IA tel quel. La distance d'édition médiane dit de
+  COMBIEN l'équipe réécrit ; une distance qui monte avec un bon lint pass
+  signifie un copy techniquement valide mais hors voix.
+- **Latence médiane et mix de paliers** — le contexte coût/vitesse des
+  chiffres qualité.
+
+**Quand ajouter un exemple.** Quand une génération a demandé une correction
+manuelle et que le copy corrigé (le `finalCopy` validé par l'équipe) est le
+style maison à répéter. Utilisez **Make it an example** sur cette génération,
+ou cherchez une campagne par nom ou SKU quand le bon copy vit sur une
+ancienne campagne. 3 exemples maximum — ce sont des ancres de style, pas un
+jeu d'entraînement. Le copy validé et ses faits d'entrée sont stockés sur la
+version du prompt et rendus dans le bloc `{{examples}}` au format
+`FACTS … → OUTPUT {json}`.
+
+**Tester avant d'activer.** **Test on the last 5** fait tourner le prompt
+brouillon sur les 5 entrées réelles distinctes les plus récentes. Les essais
+sont isolés : ils ne touchent jamais une campagne, ne portent jamais
+d'identifiant de campagne et sont exclus des métriques de production — mais
+ils consomment le même quota partagé, d'où une limite de 5 entrées par essai
+et le refus d'un second essai simultané. Les résultats s'affichent côte à
+côte avec la sortie de la version active pour la même entrée, avec le statut
+lint. **Activer** n'est possible que si le lint pass du brouillon est au
+moins aussi bon que celui de la version active sur les mêmes entrées — ou
+derrière la case explicite **Activate anyway**, dont l'usage est consigné
+dans la raison de la version.
+
+**Revenir en arrière.** Un clic sur une version de l'historique : une
+nouvelle version copiant l'ancienne est créée et activée. Si un changement a
+dégradé le copy, on revient d'abord, on cherche ensuite.

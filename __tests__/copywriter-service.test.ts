@@ -32,6 +32,7 @@ const { mockPrisma, mockTx } = vi.hoisted(() => {
     },
     automation: {
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
     },
@@ -146,6 +147,7 @@ beforeEach(() => {
     body: "FACTS:\n{{facts}}\n{{caption}}\nSTATE: {{state}}",
   });
   mockPrisma.automation.findUnique.mockResolvedValue(null);
+  mockPrisma.automation.findFirst.mockResolvedValue({ id: "automation_1" });
   mockPrisma.automation.update.mockResolvedValue({});
   mockPrisma.automation.updateMany.mockResolvedValue({ count: 1 });
 });
@@ -841,6 +843,28 @@ describe("session-side status and final copy", () => {
       })
     ).toBeNull();
     expect(mockPrisma.copyGeneration.update).not.toHaveBeenCalled();
+  });
+
+  it("refuses an automationId from another workspace and stores nothing (S3 review carry-over)", async () => {
+    mockPrisma.copyGeneration.findUnique.mockResolvedValue(
+      generationRow({
+        status: "DONE",
+        output: { openingDm: "a", openingButton: "b", revealDm: "c", linkButton: "d" },
+      })
+    );
+    mockPrisma.automation.findFirst.mockResolvedValue(null);
+    await expect(
+      recordFinalCopy("gen_1", "workspace_1", {
+        automationId: "automation_foreign",
+        finalCopy: STANDARD_COPY,
+      })
+    ).rejects.toMatchObject({ code: "NOT_FOUND", status: 404 });
+    // Nothing stored: no finalCopy, no editDistance, no automationId.
+    expect(mockPrisma.copyGeneration.update).not.toHaveBeenCalled();
+    expect(mockPrisma.automation.findFirst).toHaveBeenCalledWith({
+      where: { id: "automation_foreign", workspaceId: "workspace_1" },
+      select: { id: true },
+    });
   });
 });
 

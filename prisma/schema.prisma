@@ -647,6 +647,11 @@ model CopywriterPrompt {
   /// name the dashboard editor.
   authorEmail String
   reason      String
+  /// Golden examples rendered as "FACTS … → OUTPUT {json}" blocks, injected
+  /// into the {{examples}} placeholder. At most 3, enforced in the lab
+  /// service. Changing the list creates a NEW version (append-only), so
+  /// metrics stay attributable to the exact prompt content.
+  examples    Json?
   createdAt   DateTime @default(now())
 
   workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -683,6 +688,10 @@ model CopyGeneration {
   /// Assistant rows never auto-apply — a save that records automationId must
   /// not re-arm the applier over the copy the team just validated.
   autoApply      Boolean             @default(false)
+  /// Prompt-lab trial row (draft prompt tested on the last 5 inputs). A
+  /// trial never carries an automationId, is never auto-applied and is
+  /// excluded from production metrics and the recent-generations feed.
+  isTrial        Boolean             @default(false)
   status         CopyGenerationState @default(PENDING)
   leaseOwner     String?
   leaseExpiresAt DateTime?
