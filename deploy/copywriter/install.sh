@@ -32,6 +32,10 @@ readonly UNIT_SRC="$APP_DIR/deploy/systemd/$UNIT"
 readonly UNIT_DST="/etc/systemd/system/$UNIT"
 # The host's working cascade unit: its LoadCredential lines are the reference.
 readonly CASCADE_REF_UNIT="/etc/systemd/system/dkay-credits-sync.service"
+# Only the credentials claude_cascade.py itself reads (zai.env for GLM,
+# minimax-max.env for MiniMax). Anything else the reference unit loads, now or
+# later, never reaches the copywriter worker.
+readonly CASCADE_CRED_IDS="zai.env minimax-max.env"
 readonly INTERNAL_URL="http://127.0.0.1:3048"
 readonly HEALTH_PATH="/api/internal/copywriter/health"
 readonly WORKDIR="/var/lib/openreply-copywriter"
@@ -125,6 +129,9 @@ cmd_token() {
   [ "$a" = "$b" ] || die "token mismatch between the two consumers"
   echo "token: written to both consumers (digests match)"
   recreate_web
+  # A restart is safe mid-generation: SIGTERM lets the worker finish its
+  # current item, and a row whose result is refused (old token) stays CLAIMED
+  # until its 60 s lease expires, then claimCopyItems hands it out again.
   if [ -f "$UNIT_DST" ]; then
     systemctl restart "$UNIT"
     echo "worker unit: restarted"
@@ -139,20 +146,27 @@ cmd_unit() {
   local tmp
   tmp=$(mktemp)
   # Replace the commented LoadCredential placeholders with the reference
-  # unit's real lines (copied, never printed).
-  awk -v ref="$CASCADE_REF_UNIT" '
+  # unit's lines for the allowlisted cascade credentials (copied, never
+  # printed). The credential ID is the text between "=" and the first ":".
+  awk -v ref="$CASCADE_REF_UNIT" -v ids="$CASCADE_CRED_IDS" '
+    BEGIN { n = split(ids, list, " "); for (i = 1; i <= n; i++) allow[list[i]] = 1 }
     /^# LoadCredential=/ {
       if (!done) {
-        while ((getline line < ref) > 0)
-          if (line ~ /^LoadCredential(Encrypted)?=/) print line
+        while ((getline line < ref) > 0) {
+          if (line !~ /^LoadCredential(Encrypted)?=/) continue
+          id = line; sub(/^[^=]*=/, "", id); sub(/:.*/, "", id)
+          if (id in allow) print line
+        }
         done = 1
       }
       next
     }
     { print }' "$UNIT_SRC" > "$tmp"
-  if ! grep -q '^LoadCredential' "$tmp"; then
+  local found
+  found=$(grep -c '^LoadCredential' "$tmp" || true)
+  if [ "$found" -ne "$(wc -w <<<"$CASCADE_CRED_IDS")" ]; then
     rm -f "$tmp"
-    die "no LoadCredential line found in $CASCADE_REF_UNIT"
+    die "expected one LoadCredential line per cascade credential ($CASCADE_CRED_IDS) in $CASCADE_REF_UNIT, found $found"
   fi
   install -m 0644 "$tmp" "$UNIT_DST"
   rm -f "$tmp"

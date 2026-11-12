@@ -91,8 +91,9 @@ it with another job.
 `unit` copies the `LoadCredential=` lines from
 `/etc/systemd/system/dkay-credits-sync.service`, the host's working cascade
 unit, in place of the commented placeholder in
-`deploy/systemd/openreply-copywriter.service`. It refuses to install when it
-finds none.
+`deploy/systemd/openreply-copywriter.service`. Only the two credentials the
+cascade reads (GLM and MiniMax, `CASCADE_CRED_IDS` in the script) are copied;
+the script refuses to install when either is missing.
 
 Rotating the token is `install.sh token` again: both files change together
 and the unit restarts. The health route answers `pending` / `claimed` /
