@@ -16,11 +16,13 @@ export async function GET(request: NextRequest) {
   try {
     const guard = await requireLabReader();
     if (!guard.ok) return guard.response;
+    // Clamped here AND in the service: a huge limit must never pull the
+    // workspace's whole generation history in one request.
     const limitParam = Number(request.nextUrl.searchParams.get("limit"));
-    const generations = await getRecentGenerations(
-      guard.context.workspaceId,
-      Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 20
-    );
+    const limit = Number.isFinite(limitParam)
+      ? Math.min(Math.max(Math.floor(limitParam), 1), 50)
+      : 20;
+    const generations = await getRecentGenerations(guard.context.workspaceId, limit);
     return labJson({ success: true, data: { generations } });
   } catch (error) {
     return labError(error);

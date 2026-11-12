@@ -34,6 +34,8 @@ export const METRICS_MIN_GENERATIONS = 5;
  * threshold the owner still gets through the override, recorded.
  */
 export const GATE_MIN_COMPARABLE_BASELINES = 3;
+/** One golden example block above this is refused (stable EXAMPLE_TOO_LONG). */
+export const EXAMPLE_MAX_LENGTH = 1500;
 /** The four data blocks a prompt body may render. */
 export const ALLOWED_PLACEHOLDERS = [
   "facts",
@@ -570,6 +572,9 @@ export async function addGoldenExample(
   if (current.length >= EXAMPLES_CAP) {
     throw new CopywriterError("EXAMPLES_CAP_REACHED", 400);
   }
+  if (block.length > EXAMPLE_MAX_LENGTH) {
+    throw new CopywriterError("EXAMPLE_TOO_LONG", 400);
+  }
   const prompt = await createPromptVersion({
     workspaceId,
     body: active.body,
@@ -577,6 +582,9 @@ export async function addGoldenExample(
     reason: `Add golden example (${current.length + 1}/${EXAMPLES_CAP})`,
     authorEmail,
     examples: [...current, block],
+    // A concurrent version change (another owner editing/reverting) must not
+    // be silently clobbered by an example operation.
+    expectedActiveId: active.id,
     activate: true,
   });
   return { prompt, examples: [...current, block], added: true };
@@ -600,6 +608,7 @@ export async function removeGoldenExample(
     reason: `Remove golden example (${current.length - 1}/${EXAMPLES_CAP} left)`,
     authorEmail,
     examples: next,
+    expectedActiveId: active.id,
     activate: true,
   });
   return { prompt, examples: next };
@@ -636,6 +645,9 @@ export async function createTrialRun(input: {
   const seen = new Set<string>();
   const sources: typeof recent = [];
   for (const row of recent) {
+    // A row without a facts record cannot render a meaningful draft prompt:
+    // skip it rather than queue a generation built on a fake shape.
+    if (!isRecord(row.input) || !isRecord(row.input.facts)) continue;
     const key = inputKey(row.input);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -775,6 +787,14 @@ export async function getTrialResults(
     const baselineOutcome = source
       ? (await effectiveOutcome(workspaceId, source)) ?? source
       : null;
+    // A baseline is comparable only when its outcome is TERMINAL: DONE, or
+    // FAILED for a reason that is not a queued repair. PENDING/CLAIMED rows
+    // and repairs still in flight say nothing about the active version.
+    const baselineTerminal =
+      baselineOutcome !== null &&
+      (baselineOutcome.status === "DONE" ||
+        (baselineOutcome.status === "FAILED" &&
+          baselineOutcome.failureCode !== "LINT_REPAIR_QUEUED"));
     items.push({
       id: row.id,
       effectiveId: effective.id,
@@ -785,7 +805,7 @@ export async function getTrialResults(
       tier: effective.tier,
       latencyMs: effective.latencyMs,
       promptVersion: row.promptVersion,
-      baseline: baselineOutcome
+      baseline: baselineTerminal
         ? {
             generationId: baselineOutcome.id,
             promptVersion: baselineOutcome.promptVersion,

@@ -53,6 +53,14 @@ describe("canWriteLab", () => {
     expect(await canWriteLab(context({ role: "MEMBER" }))).toBe(false);
   });
 
+  it("the allowlist never grants a MEMBER write access", async () => {
+    mockPrisma.workspaceMember.findFirst.mockResolvedValue(null);
+    vi.stubEnv("COPYWRITER_LAB_EMAILS", "ben@yoyaku.fr");
+    mockPrisma.user.findUnique.mockResolvedValue({ email: "ben@yoyaku.fr" });
+    expect(await canWriteLab(context({ role: "MEMBER" }))).toBe(false);
+    expect(await canWriteLab(context({ role: "EDITOR" }))).toBe(true);
+  });
+
   it("fails closed when no owner exists and the allowlist is empty or unset", async () => {
     mockPrisma.workspaceMember.findFirst.mockResolvedValue(null);
     delete process.env.COPYWRITER_LAB_EMAILS;

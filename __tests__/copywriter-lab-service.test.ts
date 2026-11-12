@@ -491,6 +491,23 @@ describe("createTrialRun", () => {
     ).rejects.toMatchObject({ code: "NO_TRIAL_INPUTS" });
   });
 
+  it("skips sources without a facts record instead of rendering a fake shape", async () => {
+    mockPrisma.copyGeneration.findMany.mockResolvedValue([
+      recentRow({ id: "bad", input: { caption: "no facts here" } }),
+      recentRow({ id: "worse", input: "not even an object" }),
+      recentRow({ id: "good", input: { facts: { sku: "A", state: "restock" }, caption: "" } }),
+    ]);
+    const run = await createTrialRun({
+      workspaceId: "workspace_1",
+      body: "b {{state}}",
+      model: "haiku",
+      authorEmail: "o@x",
+    });
+    expect(run.ids).toHaveLength(1);
+    const data = mockTx.copyGeneration.create.mock.calls[0][0].data;
+    expect(data.input.facts.sku).toBe("A");
+  });
+
   it("validates the draft body before spending quota", async () => {
     await expect(
       createTrialRun({
@@ -761,13 +778,19 @@ describe("trialVerdict (activation gate)", () => {
   });
 
   it("refuses trial ids that belong to a DIFFERENT draft body", async () => {
+    // The trials themselves are gate-passing (3/3 done, 3 comparable DONE
+    // baselines): the binding is the ONLY reason this activation fails.
     setupTrials(
       [
         boundTrial("t1", "BODY A {{state}}", "haiku", INPUT_A, "DONE"),
         boundTrial("t2", "BODY A {{state}}", "haiku", INPUT_B, "DONE"),
         boundTrial("t3", "BODY A {{state}}", "haiku", INPUT_C, "DONE"),
       ],
-      [baselineRow("p1", INPUT_A, "DONE")]
+      [
+        baselineRow("p1", INPUT_A, "DONE"),
+        baselineRow("p2", INPUT_B, "DONE"),
+        baselineRow("p3", INPUT_C, "DONE"),
+      ]
     );
     // The owner tested BODY A but submits BODY B with A's trial ids.
     await expect(
@@ -779,7 +802,7 @@ describe("trialVerdict (activation gate)", () => {
         authorEmail: "o@x",
         trialIds: ["t1", "t2", "t3"],
       })
-    ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
+    ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED", status: 409 });
     expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
   });
 
@@ -816,9 +839,18 @@ describe("trialVerdict (activation gate)", () => {
   });
 
   it("refuses trials that ran on a different model than the draft", async () => {
+    // Gate-passing trials: the binding is the only rejection reason.
     setupTrials(
-      [boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE")],
-      [baselineRow("p1", INPUT_A, "DONE")]
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "DONE"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "DONE"),
+      ],
+      [
+        baselineRow("p1", INPUT_A, "DONE"),
+        baselineRow("p2", INPUT_B, "DONE"),
+        baselineRow("p3", INPUT_C, "DONE"),
+      ]
     );
     await expect(
       activateDraft({
@@ -827,10 +859,59 @@ describe("trialVerdict (activation gate)", () => {
         model: "sonnet",
         reason: "model swap after the trial",
         authorEmail: "o@x",
-        trialIds: ["t1"],
+        trialIds: ["t1", "t2", "t3"],
       })
-    ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
+    ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED", status: 409 });
     expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
+  });
+
+  it("in-flight baselines are not comparable (gate refuses)", async () => {
+    // Three baselines, none terminal: PENDING, a queued repair with no
+    // repair row yet, and a queued repair whose repair row is CLAIMED.
+    setupTrials(
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "FAILED"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "FAILED"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "FAILED"),
+      ],
+      [
+        recentRow({ id: "p1", status: "PENDING", input: INPUT_A, promptVersion: 3 }),
+        recentRow({
+          id: "p2",
+          status: "FAILED",
+          failureCode: "LINT_REPAIR_QUEUED",
+          input: INPUT_B,
+          promptVersion: 3,
+        }),
+        recentRow({
+          id: "p3",
+          status: "FAILED",
+          failureCode: "LINT_REPAIR_QUEUED",
+          input: INPUT_C,
+          promptVersion: 3,
+        }),
+      ]
+    );
+    mockPrisma.copyGeneration.findFirst.mockImplementation((arg: {
+      where: { sourceGenerationId?: string };
+    }) => {
+      if (arg.where.sourceGenerationId === "p3") {
+        return Promise.resolve(
+          recentRow({ id: "p3_repair", status: "CLAIMED", attempt: 2, input: INPUT_C })
+        );
+      }
+      return Promise.resolve(null);
+    });
+    const verdict = await trialVerdict("workspace_1", ["t1", "t2", "t3"]);
+    // Nothing was comparable: the gate refuses even though the draft's own
+    // outcomes are all terminal.
+    expect(verdict).toMatchObject({
+      ready: true,
+      trialPass: 0,
+      baselinePass: 0,
+      baselinesFound: 0,
+      gateOk: false,
+    });
   });
 
   it("refuses a cherry-picked subset of the run's trial ids", async () => {
@@ -1142,9 +1223,33 @@ describe("golden examples", () => {
     const result = await removeGoldenExample("workspace_1", 0, "owner@yoyaku.fr");
     expect(result.examples).toEqual([]);
     const data = mockTx.copywriterPrompt.create.mock.calls[0][0].data;
-    // Empty list is stored as JSON NULL; the version itself is the record.
+    // Empty list is stored as JSON NULL; the version writes are guarded by
+    // the expected-active check like every other activation.
     expect(data.isActive).toBe(true);
     expect(data.reason).toContain("Remove golden example");
+    expect(mockTx.copywriterPrompt.findFirst).toHaveBeenCalled();
+  });
+
+  it("refuses an example block above the 1500-character cap", async () => {
+    await expect(
+      addGoldenExample("workspace_1", "x".repeat(1501), "owner@yoyaku.fr")
+    ).rejects.toMatchObject({ code: "EXAMPLE_TOO_LONG", status: 400 });
+    expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
+  });
+
+  it("example operations refuse a concurrently changed active prompt", async () => {
+    // Another owner activated a version between the read and the write.
+    mockTx.copywriterPrompt.findFirst.mockResolvedValue({
+      id: "prompt_other",
+      isActive: true,
+    });
+    await expect(
+      addGoldenExample("workspace_1", "FACTS {} → OUTPUT {}", "owner@yoyaku.fr")
+    ).rejects.toMatchObject({ code: "ACTIVE_PROMPT_CHANGED", status: 409 });
+    await expect(
+      removeGoldenExample("workspace_1", 0, "owner@yoyaku.fr")
+    ).rejects.toMatchObject({ code: "ACTIVE_PROMPT_CHANGED", status: 409 });
+    expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
   });
 
   it("builds the FACTS → OUTPUT block from validated copy", () => {

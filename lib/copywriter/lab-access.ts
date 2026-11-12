@@ -26,6 +26,9 @@ export function labWriterAllowlist(raw = process.env.COPYWRITER_LAB_EMAILS): str
 
 export async function canWriteLab(context: WorkspaceContext): Promise<boolean> {
   if (context.role === "OWNER") return true;
+  // The allowlist fallback can never grant MORE than the role grants: a
+  // member stays read-refused even when their email is allowlisted.
+  if (!canReadLab(context.role)) return false;
 
   // Fallback path only when NO owner member exists on this workspace.
   const owner = await prisma.workspaceMember.findFirst({

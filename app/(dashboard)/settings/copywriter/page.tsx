@@ -408,10 +408,15 @@ export default function CopywriterLabPage() {
   async function runAction(action: () => Promise<{ ok: boolean; payload: { success?: boolean; error?: string } }>) {
     setBusy(true);
     setActionError(null);
-    const result = await action();
-    if (!result.ok) setActionError(result.payload.error ?? "The change was refused.");
-    await loadPrompts();
-    setBusy(false);
+    try {
+      const result = await action();
+      if (!result.ok) setActionError(result.payload.error ?? "The change was refused.");
+      await loadPrompts();
+    } catch {
+      setActionError("The request failed — check the connection and try again.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   function revertVersion(version: PromptVersion) {
@@ -481,21 +486,26 @@ export default function CopywriterLabPage() {
     setActionError(null);
     void (async () => {
       setBusy(true);
-      const res = await fetch("/api/copywriter/trials", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: draftBody, model: draftModel }),
-      });
-      const payload = await res.json().catch(() => ({}));
-      setBusy(false);
-      if (!payload?.success) {
-        setActionError(payload?.error ?? "The trial run was refused.");
-        return;
+      try {
+        const res = await fetch("/api/copywriter/trials", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: draftBody, model: draftModel }),
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!payload?.success) {
+          setActionError(payload?.error ?? "The trial run was refused.");
+          return;
+        }
+        setTrialIds(payload.data.ids as string[]);
+        setTrialItems([]);
+        setVerdict(null);
+        setTrialStalled(false);
+      } catch {
+        setActionError("The request failed — check the connection and try again.");
+      } finally {
+        setBusy(false);
       }
-      setTrialIds(payload.data.ids as string[]);
-      setTrialItems([]);
-      setVerdict(null);
-      setTrialStalled(false);
     })();
   }
 
@@ -552,6 +562,10 @@ export default function CopywriterLabPage() {
   const gateBlocked = verdict !== null && !verdict.gateOk && !override;
   const trialRunning =
     trialItems.length > 0 && trialItems.some((item) => item.status === "PENDING" || item.status === "CLAIMED");
+  // The next version number is max(existing)+1: draft versions count too,
+  // so the label can never promise a number the server would not assign.
+  const nextVersion =
+    prompts.versions.reduce((max, version) => Math.max(max, version.version), 0) + 1;
 
   return (
     <div className="mx-auto max-w-4xl space-y-8">
@@ -658,7 +672,7 @@ export default function CopywriterLabPage() {
                 disabled={busy || gateBlocked}
                 className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
               >
-                Activate as v{(active.version ?? 0) + 1}
+                Activate as v{nextVersion}
               </button>
               <label className="flex items-center gap-2 text-xs text-muted">
                 <input
@@ -726,7 +740,7 @@ export default function CopywriterLabPage() {
                       <div className="grid gap-2 sm:grid-cols-2">
                         <div className="rounded bg-surface p-2">
                           <p className="mb-1 text-[11px] uppercase tracking-wide text-muted">
-                            Draft (v{item.promptVersion + 1} candidate)
+                            Draft (v{nextVersion} candidate)
                           </p>
                           {trialCopy ? (
                             <ul className="space-y-0.5 text-xs text-foreground">
