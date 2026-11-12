@@ -28,6 +28,12 @@ import { prisma } from "@/lib/db/client";
 const METRICS_WINDOW_DAYS = 90;
 /** A version with fewer generations has no readable metrics. */
 export const METRICS_MIN_GENERATIONS = 5;
+/**
+ * The gate needs enough comparable inputs to mean anything: below this,
+ * "as good as the active version" would rest on one lucky input. Below the
+ * threshold the owner still gets through the override, recorded.
+ */
+export const GATE_MIN_COMPARABLE_BASELINES = 3;
 /** The four data blocks a prompt body may render. */
 export const ALLOWED_PLACEHOLDERS = [
   "facts",
@@ -63,9 +69,15 @@ function translateVersionConflict(error: unknown): never | void {
   throw error;
 }
 
-/** sha256 hex of a draft body — the trial ↔ activation binding. */
-function draftBodyHash(body: string): string {
-  return createHash("sha256").update(body).digest("hex");
+/**
+ * sha256 hex of the exact rendered draft: the body TOGETHER with the golden
+ * examples it was rendered with. A trial bound to this hash can never vouch
+ * for a different body OR a different examples block.
+ */
+function draftHash(body: string, examples: readonly string[]): string {
+  return createHash("sha256")
+    .update(`${body}\n---EXAMPLES---\n${canonicalJson(examples)}`)
+    .digest("hex");
 }
 
 /* ------------------------------ validation -------------------------------- */
@@ -140,6 +152,13 @@ export interface CreatePromptVersionInput {
   examples?: readonly string[];
   /** Flip `isActive` in the same transaction (one-active-per-workspace). */
   activate?: boolean;
+  /**
+   * Activation safety: refuse the write when the workspace's active prompt
+   * is no longer this row (another owner activated or reverted in between)
+   * — a gate verdict computed against version N must not silently replace
+   * version N+1.
+   */
+  expectedActiveId?: string;
 }
 
 /**
@@ -164,6 +183,14 @@ export async function createPromptVersion(
       });
       const activate = input.activate ?? false;
       if (activate) {
+        if (input.expectedActiveId) {
+          const current = await tx.copywriterPrompt.findFirst({
+            where: { workspaceId: input.workspaceId, isActive: true },
+          });
+          if (!current || current.id !== input.expectedActiveId) {
+            throw new CopywriterError("ACTIVE_PROMPT_CHANGED", 409);
+          }
+        }
         await tx.copywriterPrompt.updateMany({
           where: { workspaceId: input.workspaceId, isActive: true },
           data: { isActive: false },
@@ -623,7 +650,7 @@ export async function createTrialRun(input: {
   // in-flight check and the inserts atomic: two owners clicking "Test"
   // together cannot both pass the count and burn twice the shared quota.
   const examples = readExamplesJson(active.examples);
-  const bodyHash = draftBodyHash(input.body);
+  const bodyHash = draftHash(input.body, examples);
   const ids = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${input.workspaceId}))`;
     const running = await tx.copyGeneration.count({
@@ -814,7 +841,9 @@ export function verdictFromItems(items: TrialItemStatus[]): TrialVerdict {
     comparablePass,
     baselinesFound: comparable.length,
     gateOk:
-      finished && comparable.length > 0 && comparablePass >= baselinePass,
+      finished &&
+      comparable.length >= GATE_MIN_COMPARABLE_BASELINES &&
+      comparablePass >= baselinePass,
   };
 }
 
@@ -850,7 +879,9 @@ const OVERRIDE_MARKER = " [activation override]";
  * so activation never silently drops them.
  */
 export async function activateDraft(input: ActivateDraftInput) {
-  const bodyHash = draftBodyHash(input.body);
+  const active = await ensureActivePrompt(input.workspaceId);
+  const examples = input.examples ?? readExamplesJson(active.examples);
+  const bodyHash = draftHash(input.body, examples);
   if (!input.activateAnyway) {
     if (!input.trialIds?.length) {
       throw new CopywriterError("ACTIVATION_GATE_FAILED", 409);
@@ -902,14 +933,17 @@ export async function activateDraft(input: ActivateDraftInput) {
   const reason = input.activateAnyway
     ? `${input.reason}${OVERRIDE_MARKER}`
     : input.reason;
-  const active = await ensureActivePrompt(input.workspaceId);
   return createPromptVersion({
     workspaceId: input.workspaceId,
     body: input.body,
     model: input.model,
     reason,
     authorEmail: input.authorEmail,
-    examples: input.examples ?? readExamplesJson(active.examples),
+    examples,
+    // The verdict above was computed against THIS active version; if
+    // another owner activated or reverted in between, refuse instead of
+    // silently replacing a version the draft was never compared to.
+    expectedActiveId: active.id,
     activate: true,
   });
 }

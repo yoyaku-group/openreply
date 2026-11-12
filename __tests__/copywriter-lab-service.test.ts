@@ -70,10 +70,15 @@ import {
 } from "@/lib/copywriter/lab";
 import {
   applyGenerationToAutomation,
+  canonicalJson,
   recordFinalCopy,
 } from "@/lib/copywriter/service";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+
+// Mirror of the service's private draft binding: body + rendered examples.
+const draftHash = (body: string, examples: readonly string[]) =>
+  sha256(`${body}\n---EXAMPLES---\n${canonicalJson(examples)}`);
 
 const ACTIVE_PROMPT = {
   id: "prompt_1",
@@ -122,7 +127,11 @@ beforeEach(() => {
   mockTx.copywriterPrompt.create.mockResolvedValue({ id: "prompt_tx_new", version: 4 });
   mockTx.copywriterPrompt.aggregate.mockResolvedValue({ _max: { version: 3 } });
   mockTx.copywriterPrompt.updateMany.mockResolvedValue({ count: 1 });
-  mockTx.copywriterPrompt.findFirst.mockResolvedValue(null);
+  // The activation's expected-active check: same active row by default.
+  mockTx.copywriterPrompt.findFirst.mockResolvedValue({
+    id: "prompt_1",
+    isActive: true,
+  });
   mockPrisma.copywriterPrompt.findFirst.mockResolvedValue(ACTIVE_PROMPT);
   mockPrisma.copywriterPrompt.aggregate.mockResolvedValue({ _max: { version: 3 } });
   mockPrisma.copywriterPrompt.updateMany.mockResolvedValue({ count: 1 });
@@ -436,10 +445,10 @@ describe("createTrialRun", () => {
       expect(data.promptId).toBe("prompt_1");
       expect(data.promptVersion).toBe(3);
       // The draft's model travels with the row and the trial is bound to
-      // this exact body.
+      // this exact body AND the examples it was rendered with.
       expect(data.modelOverride).toBe("sonnet");
       expect(data.trialBodyHash).toBe(
-        sha256("DRAFT MARKER {{state}}\n{{examples}}")
+        draftHash("DRAFT MARKER {{state}}\n{{examples}}", ACTIVE_PROMPT.examples)
       );
       expect(data.renderedPrompt).toContain("DRAFT MARKER");
       // The active prompt's examples travel with the draft.
@@ -496,8 +505,10 @@ describe("createTrialRun", () => {
 });
 
 describe("trialVerdict (activation gate)", () => {
-  const INPUT_A = { facts: { sku: "A" }, caption: "" };
-  const INPUT_B = { facts: { sku: "B" }, caption: "" };
+  const INPUT_A = { facts: { sku: "A", state: "restock" }, caption: "" };
+  const INPUT_B = { facts: { sku: "B", state: "preorder" }, caption: "" };
+  const INPUT_C = { facts: { sku: "C", state: "available" }, caption: "" };
+  const INPUT_D = { facts: { sku: "D", state: "restock" }, caption: "" };
 
   function setupTrials(
     trialRows: Array<Record<string, unknown>>,
@@ -512,18 +523,27 @@ describe("trialVerdict (activation gate)", () => {
       };
     }) => {
       if (arg.where.id?.in) {
-        return Promise.resolve(trialRows);
+        // The verdict only sees the ids the caller submitted.
+        return Promise.resolve(
+          trialRows.filter((row) => arg.where!.id!.in!.includes(row.id as string))
+        );
       }
       if (arg.where.trialBodyHash) {
         // The run-lookup is filtered by body hash AND model and counts
-        // ROOT rows only (repair rows carry sourceGenerationId).
+        // ROOT rows only (repair rows carry sourceGenerationId). Newest
+        // first, like the real query.
         return Promise.resolve(
-          trialRows.filter(
-            (row) =>
-              row.trialBodyHash === arg.where!.trialBodyHash &&
-              row.modelOverride === arg.where!.modelOverride &&
-              !row.sourceGenerationId
-          )
+          trialRows
+            .filter(
+              (row) =>
+                row.trialBodyHash === arg.where!.trialBodyHash &&
+                row.modelOverride === arg.where!.modelOverride &&
+                !row.sourceGenerationId
+            )
+            .sort(
+              (a, b) =>
+                (b.createdAt as Date).getTime() - (a.createdAt as Date).getTime()
+            )
         );
       }
       return Promise.resolve(tailRows);
@@ -538,7 +558,8 @@ describe("trialVerdict (activation gate)", () => {
     body: string,
     model: string,
     input: unknown,
-    status: string
+    status: string,
+    examples: readonly string[] = ACTIVE_PROMPT.examples
   ) {
     return recentRow({
       id,
@@ -547,30 +568,120 @@ describe("trialVerdict (activation gate)", () => {
       input,
       createdAt: RUN_TS,
       modelOverride: model,
-      trialBodyHash: sha256(body),
+      trialBodyHash: draftHash(body, examples),
     });
+  }
+
+  function baselineRow(id: string, input: unknown, status: string) {
+    return recentRow({ id, status, input, promptVersion: 3 });
   }
 
   it("gate passes when the trial lint pass matches the baseline", async () => {
     setupTrials(
       [
-        recentRow({ id: "t1", isTrial: true, status: "DONE", input: INPUT_A }),
-        recentRow({ id: "t2", isTrial: true, status: "FAILED", input: INPUT_B }),
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "FAILED"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "DONE"),
       ],
       [
-        recentRow({ id: "p1", status: "DONE", input: INPUT_A }),
-        recentRow({ id: "p2", status: "FAILED", input: INPUT_B }),
+        baselineRow("p1", INPUT_A, "DONE"),
+        baselineRow("p2", INPUT_B, "FAILED"),
+        baselineRow("p3", INPUT_C, "DONE"),
       ]
     );
-    const verdict = await trialVerdict("workspace_1", ["t1", "t2"]);
+    const verdict = await trialVerdict("workspace_1", ["t1", "t2", "t3"]);
     expect(verdict).toEqual({
       ready: true,
-      trialPass: 1,
-      baselinePass: 1,
-      comparablePass: 1,
-      baselinesFound: 2,
+      trialPass: 2,
+      baselinePass: 2,
+      comparablePass: 2,
+      baselinesFound: 3,
       gateOk: true,
     });
+  });
+
+  it("gate refuses a trial whose lint pass is worse than the baseline", async () => {
+    setupTrials(
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "FAILED"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "FAILED"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "FAILED"),
+      ],
+      [
+        baselineRow("p1", INPUT_A, "DONE"),
+        baselineRow("p2", INPUT_B, "FAILED"),
+        baselineRow("p3", INPUT_C, "DONE"),
+      ]
+    );
+    const verdict = await trialVerdict("workspace_1", ["t1", "t2", "t3"]);
+    expect(verdict).toMatchObject({
+      ready: true,
+      trialPass: 0,
+      baselinePass: 2,
+      comparablePass: 0,
+      baselinesFound: 3,
+      gateOk: false,
+    });
+  });
+
+  it("gate compares draft and baseline over the SAME inputs", async () => {
+    // t1 failed where the active version passed; t2 passed but has NO
+    // baseline; t3 failed on a passed baseline; t4 passed on a failed one.
+    // Counting the draft over ALL items would let t2's pass ride over the
+    // comparable failures — the comparison must stay on the baseline set.
+    setupTrials(
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "FAILED"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "DONE"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "FAILED"),
+        boundTrial("t4", "b {{state}}", "haiku", INPUT_D, "DONE"),
+      ],
+      [
+        baselineRow("p1", INPUT_A, "DONE"),
+        baselineRow("p3", INPUT_C, "DONE"),
+        baselineRow("p4", INPUT_D, "FAILED"),
+      ]
+    );
+    const verdict = await trialVerdict("workspace_1", ["t1", "t2", "t3", "t4"]);
+    expect(verdict).toMatchObject({
+      ready: true,
+      trialPass: 2,
+      baselinePass: 2,
+      comparablePass: 1,
+      baselinesFound: 3,
+      gateOk: false,
+    });
+  });
+
+  it("gate refuses below 3 comparable baselines (evidence too thin)", async () => {
+    setupTrials(
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "DONE"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "DONE"),
+      ],
+      [baselineRow("p1", INPUT_A, "DONE")]
+    );
+    const verdict = await trialVerdict("workspace_1", ["t1", "t2", "t3"]);
+    expect(verdict).toMatchObject({
+      ready: true,
+      trialPass: 3,
+      baselinePass: 1,
+      baselinesFound: 1,
+      gateOk: false,
+    });
+    // The owner can still decide, through the recorded override.
+    await expect(
+      activateDraft({
+        workspaceId: "workspace_1",
+        body: "b {{state}}",
+        model: "haiku",
+        reason: "thin evidence, owner decision",
+        authorEmail: "o@x",
+        trialIds: ["t1", "t2", "t3"],
+      })
+    ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
+    expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
   });
 
   it("gate refuses when the active version has no baseline rows yet", async () => {
@@ -579,13 +690,14 @@ describe("trialVerdict (activation gate)", () => {
       [
         boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
         boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "DONE"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "DONE"),
       ],
       []
     );
-    const verdict = await trialVerdict("workspace_1", ["t1", "t2"]);
+    const verdict = await trialVerdict("workspace_1", ["t1", "t2", "t3"]);
     expect(verdict).toMatchObject({
       ready: true,
-      trialPass: 2,
+      trialPass: 3,
       baselinePass: 0,
       baselinesFound: 0,
       gateOk: false,
@@ -597,31 +709,7 @@ describe("trialVerdict (activation gate)", () => {
         model: "haiku",
         reason: "no baseline yet",
         authorEmail: "o@x",
-        trialIds: ["t1", "t2"],
-      })
-    ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
-    expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
-  });
-
-  it("refuses a cherry-picked subset of the run's trial ids", async () => {
-    // The full run lost 2 of 3; submitting only the passing id must not
-    // satisfy the gate.
-    setupTrials(
-      [
-        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
-        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "FAILED"),
-        boundTrial("t3", "b {{state}}", "haiku", { facts: { sku: "C" }, caption: "" }, "FAILED"),
-      ],
-      [recentRow({ id: "p1", status: "DONE", input: INPUT_A })]
-    );
-    await expect(
-      activateDraft({
-        workspaceId: "workspace_1",
-        body: "b {{state}}",
-        model: "haiku",
-        reason: "only the passing one",
-        authorEmail: "o@x",
-        trialIds: ["t1"],
+        trialIds: ["t1", "t2", "t3"],
       })
     ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
     expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
@@ -629,145 +717,34 @@ describe("trialVerdict (activation gate)", () => {
 
   it("baseline follows the repair link like the trial side", async () => {
     setupTrials(
-      [recentRow({ id: "t1", isTrial: true, status: "DONE", input: INPUT_A })],
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "DONE"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "FAILED"),
+      ],
       [
         recentRow({
           id: "p1",
           status: "FAILED",
           failureCode: "LINT_REPAIR_QUEUED",
           input: INPUT_A,
+          promptVersion: 3,
         }),
+        baselineRow("p2", INPUT_B, "FAILED"),
+        baselineRow("p3", INPUT_C, "DONE"),
       ]
     );
     // The active version's first attempt queued a repair that passed.
     mockPrisma.copyGeneration.findFirst.mockResolvedValue(
       recentRow({ id: "p1_repair", status: "DONE", attempt: 2, input: INPUT_A })
     );
-    const verdict = await trialVerdict("workspace_1", ["t1"]);
-    expect(verdict).toMatchObject({ trialPass: 1, baselinePass: 1, gateOk: true });
-    expect(verdict.baselinePass).toBe(1);
-  });
-
-  it("gate refuses a trial whose lint pass is worse than the baseline", async () => {
-    setupTrials(
-      [
-        recentRow({ id: "t1", isTrial: true, status: "FAILED", input: INPUT_A }),
-        recentRow({ id: "t2", isTrial: true, status: "FAILED", input: INPUT_B }),
-      ],
-      [
-        recentRow({ id: "p1", status: "DONE", input: INPUT_A }),
-        recentRow({ id: "p2", status: "FAILED", input: INPUT_B }),
-      ]
-    );
-    const verdict = await trialVerdict("workspace_1", ["t1", "t2"]);
-    expect(verdict).toMatchObject({ ready: true, trialPass: 0, baselinePass: 1, gateOk: false });
-  });
-
-  it("gate compares draft and baseline over the SAME inputs", async () => {
-    // t1 failed where the active version passed; t2 passed but has NO
-    // baseline. Counting the draft over all items would let t2's pass ride
-    // over t1's failure — the comparison must stay on the baseline set.
-    setupTrials(
-      [
-        recentRow({ id: "t1", isTrial: true, status: "FAILED", input: INPUT_A }),
-        recentRow({ id: "t2", isTrial: true, status: "DONE", input: { facts: { sku: "C" }, caption: "" } }),
-      ],
-      [recentRow({ id: "p1", status: "DONE", input: INPUT_A })]
-    );
-    const verdict = await trialVerdict("workspace_1", ["t1", "t2"]);
+    const verdict = await trialVerdict("workspace_1", ["t1", "t2", "t3"]);
     expect(verdict).toMatchObject({
-      ready: true,
-      trialPass: 1,
-      baselinePass: 1,
-      baselinesFound: 1,
-      gateOk: false,
+      trialPass: 2,
+      baselinePass: 2,
+      baselinesFound: 3,
+      gateOk: true,
     });
-  });
-
-  it("the run lookup ignores repair rows, so a repaired run can still activate", async () => {
-    // t1 needed a repair: the repair row carries the same hash but is not
-    // part of the 5-root run the page submitted.
-    setupTrials(
-      [
-        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
-        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "DONE"),
-        recentRow({
-          id: "t1_repair",
-          isTrial: true,
-          status: "DONE",
-          attempt: 2,
-          sourceGenerationId: "t1",
-          createdAt: new Date("2026-11-12T12:00:05Z"),
-          modelOverride: "haiku",
-          trialBodyHash: sha256("b {{state}}"),
-          input: INPUT_A,
-        }),
-      ],
-      [recentRow({ id: "p1", status: "DONE", input: INPUT_A })]
-    );
-    await activateDraft({
-      workspaceId: "workspace_1",
-      body: "b {{state}}",
-      model: "haiku",
-      reason: "repaired run passes",
-      authorEmail: "o@x",
-      trialIds: ["t1", "t2"],
-    });
-    expect(mockTx.copywriterPrompt.create).toHaveBeenCalledTimes(1);
-    const data = mockTx.copywriterPrompt.create.mock.calls[0][0].data;
-    expect(data.isActive).toBe(true);
-    expect(data.reason).not.toContain("override");
-  });
-
-  it("a re-test of the same draft starts a fresh batch, not a merged run", async () => {
-    // Two runs of the same body (10 roots in the window). The page submits
-    // the newest batch's ids only; the gate must accept it.
-    const FIRST = new Date("2026-11-12T10:00:00Z");
-    const SECOND = new Date("2026-11-12T11:00:00Z");
-    mockPrisma.copyGeneration.findMany.mockImplementation((arg: {
-      where: {
-        id?: { in?: string[] };
-        trialBodyHash?: string;
-        modelOverride?: string;
-      };
-    }) => {
-      const root = (id: string, input: unknown, status: string, at: Date) =>
-        recentRow({
-          id,
-          isTrial: true,
-          status,
-          input,
-          createdAt: at,
-          modelOverride: "haiku",
-          trialBodyHash: sha256("b {{state}}"),
-        });
-      const rows = [
-        root("old_1", INPUT_A, "FAILED", FIRST),
-        root("old_2", INPUT_B, "FAILED", FIRST),
-        root("new_1", INPUT_A, "DONE", SECOND),
-        root("new_2", INPUT_B, "DONE", SECOND),
-      ];
-      if (arg.where.id?.in) {
-        // The verdict only sees the ids the page submitted.
-        return Promise.resolve(rows.filter((row) => arg.where!.id!.in!.includes(row.id)));
-      }
-      if (arg.where.trialBodyHash) {
-        // Emulate the real query: newest first.
-        return Promise.resolve(
-          [...rows].sort((a, b) => (b.createdAt as Date).getTime() - (a.createdAt as Date).getTime())
-        );
-      }
-      return Promise.resolve([root("p1", INPUT_A, "FAILED", FIRST)]);
-    });
-    await activateDraft({
-      workspaceId: "workspace_1",
-      body: "b {{state}}",
-      model: "haiku",
-      reason: "second run after the first failed",
-      authorEmail: "o@x",
-      trialIds: ["new_1", "new_2"],
-    });
-    expect(mockTx.copywriterPrompt.create).toHaveBeenCalledTimes(1);
   });
 
   it("refuses activation without any trial or override", async () => {
@@ -788,8 +765,9 @@ describe("trialVerdict (activation gate)", () => {
       [
         boundTrial("t1", "BODY A {{state}}", "haiku", INPUT_A, "DONE"),
         boundTrial("t2", "BODY A {{state}}", "haiku", INPUT_B, "DONE"),
+        boundTrial("t3", "BODY A {{state}}", "haiku", INPUT_C, "DONE"),
       ],
-      [recentRow({ id: "p1", status: "FAILED", input: INPUT_A })]
+      [baselineRow("p1", INPUT_A, "DONE")]
     );
     // The owner tested BODY A but submits BODY B with A's trial ids.
     await expect(
@@ -799,7 +777,39 @@ describe("trialVerdict (activation gate)", () => {
         model: "haiku",
         reason: "gate bypass attempt",
         authorEmail: "o@x",
-        trialIds: ["t1", "t2"],
+        trialIds: ["t1", "t2", "t3"],
+      })
+    ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
+    expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses trials that ran with DIFFERENT golden examples", async () => {
+    // The active version gained an example after the trial ran: the draft
+    // as it would be activated was never tested.
+    setupTrials(
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "DONE"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "DONE"),
+      ],
+      [
+        baselineRow("p1", INPUT_A, "DONE"),
+        baselineRow("p2", INPUT_B, "DONE"),
+        baselineRow("p3", INPUT_C, "DONE"),
+      ]
+    );
+    mockPrisma.copywriterPrompt.findFirst.mockResolvedValue({
+      ...ACTIVE_PROMPT,
+      examples: [...ACTIVE_PROMPT.examples, "FACTS {\"sku\":\"NEW\"} → OUTPUT {}"],
+    });
+    await expect(
+      activateDraft({
+        workspaceId: "workspace_1",
+        body: "b {{state}}",
+        model: "haiku",
+        reason: "examples changed after the trial",
+        authorEmail: "o@x",
+        trialIds: ["t1", "t2", "t3"],
       })
     ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
     expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
@@ -808,7 +818,7 @@ describe("trialVerdict (activation gate)", () => {
   it("refuses trials that ran on a different model than the draft", async () => {
     setupTrials(
       [boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE")],
-      [recentRow({ id: "p1", status: "FAILED", input: INPUT_A })]
+      [baselineRow("p1", INPUT_A, "DONE")]
     );
     await expect(
       activateDraft({
@@ -823,13 +833,46 @@ describe("trialVerdict (activation gate)", () => {
     expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
   });
 
+  it("refuses a cherry-picked subset of the run's trial ids", async () => {
+    // The full run lost 2 of 3; submitting only the passing id must not
+    // satisfy the gate.
+    setupTrials(
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "FAILED"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "FAILED"),
+      ],
+      [
+        baselineRow("p1", INPUT_A, "DONE"),
+        baselineRow("p2", INPUT_B, "DONE"),
+        baselineRow("p3", INPUT_C, "DONE"),
+      ]
+    );
+    await expect(
+      activateDraft({
+        workspaceId: "workspace_1",
+        body: "b {{state}}",
+        model: "haiku",
+        reason: "only the passing one",
+        authorEmail: "o@x",
+        trialIds: ["t1"],
+      })
+    ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
+    expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
+  });
+
   it("refuses activation when the gate fails", async () => {
     setupTrials(
       [
         boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "FAILED"),
         boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "FAILED"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "FAILED"),
       ],
-      [recentRow({ id: "p1", status: "DONE", input: INPUT_A })]
+      [
+        baselineRow("p1", INPUT_A, "DONE"),
+        baselineRow("p2", INPUT_B, "DONE"),
+        baselineRow("p3", INPUT_C, "DONE"),
+      ]
     );
     await expect(
       activateDraft({
@@ -838,9 +881,41 @@ describe("trialVerdict (activation gate)", () => {
         model: "haiku",
         reason: "worse than active",
         authorEmail: "o@x",
-        trialIds: ["t1", "t2"],
+        trialIds: ["t1", "t2", "t3"],
       })
     ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
+    expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses activation when the active prompt changed since the verdict", async () => {
+    setupTrials(
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "DONE"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "DONE"),
+      ],
+      [
+        baselineRow("p1", INPUT_A, "DONE"),
+        baselineRow("p2", INPUT_B, "DONE"),
+        baselineRow("p3", INPUT_C, "DONE"),
+      ]
+    );
+    // Another owner activated a different version between the verdict and
+    // the create: the transaction sees a different active row.
+    mockTx.copywriterPrompt.findFirst.mockResolvedValue({
+      id: "prompt_v8",
+      isActive: true,
+    });
+    await expect(
+      activateDraft({
+        workspaceId: "workspace_1",
+        body: "b {{state}}",
+        model: "haiku",
+        reason: "stale verdict",
+        authorEmail: "o@x",
+        trialIds: ["t1", "t2", "t3"],
+      })
+    ).rejects.toMatchObject({ code: "ACTIVE_PROMPT_CHANGED", status: 409 });
     expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
   });
 
@@ -849,8 +924,13 @@ describe("trialVerdict (activation gate)", () => {
       [
         boundTrial("t1", "better {{state}}", "sonnet", INPUT_A, "DONE"),
         boundTrial("t2", "better {{state}}", "sonnet", INPUT_B, "DONE"),
+        boundTrial("t3", "better {{state}}", "sonnet", INPUT_C, "DONE"),
       ],
-      [recentRow({ id: "p1", status: "DONE", input: INPUT_A })]
+      [
+        baselineRow("p1", INPUT_A, "DONE"),
+        baselineRow("p2", INPUT_B, "FAILED"),
+        baselineRow("p3", INPUT_C, "DONE"),
+      ]
     );
     await activateDraft({
       workspaceId: "workspace_1",
@@ -858,7 +938,7 @@ describe("trialVerdict (activation gate)", () => {
       model: "sonnet",
       reason: "fewer invented nouns",
       authorEmail: "owner@yoyaku.fr",
-      trialIds: ["t1", "t2"],
+      trialIds: ["t1", "t2", "t3"],
     });
     const data = mockTx.copywriterPrompt.create.mock.calls[0][0].data;
     expect(data).toMatchObject({
@@ -886,6 +966,121 @@ describe("trialVerdict (activation gate)", () => {
     // No examples were passed: the active prompt's examples carry over
     // instead of being silently dropped.
     expect(data.examples).toEqual(ACTIVE_PROMPT.examples);
+  });
+
+  it("activates with the override and records it in the reason", async () => {
+    await activateDraft({
+      workspaceId: "workspace_1",
+      body: "risky {{state}}",
+      model: "haiku",
+      reason: "owner decision",
+      authorEmail: "owner@yoyaku.fr",
+      activateAnyway: true,
+    });
+    const data = mockTx.copywriterPrompt.create.mock.calls[0][0].data;
+    expect(data.isActive).toBe(true);
+    expect(data.reason).toContain("owner decision");
+    expect(data.reason).toContain("override");
+  });
+
+  it("the run lookup ignores repair rows, so a repaired run can still activate", async () => {
+    // t1 needed a repair: the repair row carries the same hash but is not
+    // part of the 3-root run the page submitted.
+    setupTrials(
+      [
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "DONE"),
+        boundTrial("t3", "b {{state}}", "haiku", INPUT_C, "DONE"),
+        recentRow({
+          id: "t1_repair",
+          isTrial: true,
+          status: "DONE",
+          attempt: 2,
+          sourceGenerationId: "t1",
+          createdAt: new Date("2026-11-12T12:00:05Z"),
+          modelOverride: "haiku",
+          trialBodyHash: draftHash("b {{state}}", ACTIVE_PROMPT.examples),
+          input: INPUT_A,
+        }),
+      ],
+      [
+        baselineRow("p1", INPUT_A, "DONE"),
+        baselineRow("p2", INPUT_B, "FAILED"),
+        baselineRow("p3", INPUT_C, "DONE"),
+      ]
+    );
+    await activateDraft({
+      workspaceId: "workspace_1",
+      body: "b {{state}}",
+      model: "haiku",
+      reason: "repaired run passes",
+      authorEmail: "o@x",
+      trialIds: ["t1", "t2", "t3"],
+    });
+    expect(mockTx.copywriterPrompt.create).toHaveBeenCalledTimes(1);
+    const data = mockTx.copywriterPrompt.create.mock.calls[0][0].data;
+    expect(data.isActive).toBe(true);
+    expect(data.reason).not.toContain("override");
+  });
+
+  it("a re-test of the same draft starts a fresh batch, not a merged run", async () => {
+    // Two runs of the same body (6 roots in the window). The page submits
+    // the newest batch's ids only; the gate must accept it.
+    const FIRST = new Date("2026-11-12T10:00:00Z");
+    const SECOND = new Date("2026-11-12T11:00:00Z");
+    const root = (id: string, input: unknown, status: string, at: Date) =>
+      recentRow({
+        id,
+        isTrial: true,
+        status,
+        input,
+        createdAt: at,
+        modelOverride: "haiku",
+        trialBodyHash: draftHash("b {{state}}", ACTIVE_PROMPT.examples),
+      });
+    const rows = [
+      root("old_1", INPUT_A, "FAILED", FIRST),
+      root("old_2", INPUT_B, "FAILED", FIRST),
+      root("old_3", INPUT_C, "FAILED", FIRST),
+      root("new_1", INPUT_A, "DONE", SECOND),
+      root("new_2", INPUT_B, "DONE", SECOND),
+      root("new_3", INPUT_C, "DONE", SECOND),
+    ];
+    mockPrisma.copyGeneration.findMany.mockImplementation((arg: {
+      where: {
+        id?: { in?: string[] };
+        trialBodyHash?: string;
+        modelOverride?: string;
+      };
+    }) => {
+      if (arg.where.id?.in) {
+        return Promise.resolve(
+          rows.filter((row) => arg.where!.id!.in!.includes(row.id))
+        );
+      }
+      if (arg.where.trialBodyHash) {
+        // Emulate the real query: newest first.
+        return Promise.resolve(
+          [...rows].sort(
+            (a, b) => (b.createdAt as Date).getTime() - (a.createdAt as Date).getTime()
+          )
+        );
+      }
+      return Promise.resolve([
+        baselineRow("p1", INPUT_A, "FAILED"),
+        baselineRow("p2", INPUT_B, "FAILED"),
+        baselineRow("p3", INPUT_C, "DONE"),
+      ]);
+    });
+    await activateDraft({
+      workspaceId: "workspace_1",
+      body: "b {{state}}",
+      model: "haiku",
+      reason: "second run after the first failed",
+      authorEmail: "o@x",
+      trialIds: ["new_1", "new_2", "new_3"],
+    });
+    expect(mockTx.copywriterPrompt.create).toHaveBeenCalledTimes(1);
   });
 
   it("maps a version-number race onto a stable VERSION_CONFLICT 409", async () => {
