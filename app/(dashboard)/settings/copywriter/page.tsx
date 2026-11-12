@@ -289,6 +289,18 @@ export default function CopywriterLabPage() {
   const [trialItems, setTrialItems] = useState<TrialItem[]>([]);
   const [verdict, setVerdict] = useState<TrialVerdictData | null>(null);
   const [override, setOverride] = useState(false);
+  const [trialStalled, setTrialStalled] = useState(false);
+
+  // The trial gate is bound to the exact draft body + model on the server
+  // (body hash); dropping the stale results on any edit keeps the screen
+  // honest with that binding.
+  function resetTrial() {
+    setTrialIds(null);
+    setTrialItems([]);
+    setVerdict(null);
+    setOverride(false);
+    setTrialStalled(false);
+  }
 
   const active = prompts?.active ?? null;
   const canWrite = prompts?.canWrite ?? false;
@@ -368,6 +380,11 @@ export default function CopywriterLabPage() {
           // A transient poll error is not a failed run.
         }
         await new Promise((resolve) => setTimeout(resolve, TRIAL_POLL_INTERVAL_MS));
+      }
+      if (!cancelled) {
+        // The 60 s window closed with rows still in flight: say so instead
+        // of leaving a silent "Trial running…" button.
+        setTrialStalled(true);
       }
     }
     void poll();
@@ -479,6 +496,7 @@ export default function CopywriterLabPage() {
       setTrialIds(payload.data.ids as string[]);
       setTrialItems([]);
       setVerdict(null);
+      setTrialStalled(false);
     })();
   }
 
@@ -597,7 +615,10 @@ export default function CopywriterLabPage() {
           <div className="space-y-3">
             <textarea
               value={draftBody}
-              onChange={(event) => setDraftBody(event.target.value)}
+              onChange={(event) => {
+                setDraftBody(event.target.value);
+                if (trialIds) resetTrial();
+              }}
               rows={16}
               className={`${inputClass} resize-y font-mono text-xs`}
             />
@@ -607,7 +628,10 @@ export default function CopywriterLabPage() {
               </span>
               <select
                 value={draftModel}
-                onChange={(event) => setDraftModel(event.target.value as "haiku" | "sonnet")}
+                onChange={(event) => {
+                  setDraftModel(event.target.value as "haiku" | "sonnet");
+                  if (trialIds) resetTrial();
+                }}
                 className="rounded border border-border bg-surface px-2 py-1.5 text-sm text-foreground"
               >
                 <option value="haiku">haiku</option>
@@ -646,7 +670,14 @@ export default function CopywriterLabPage() {
                 Activate anyway (skip the trial gate)
               </label>
             </div>
-            {verdict && !verdict.ready && (
+            {trialStalled && (
+              <p className="text-xs text-amber-400">
+                Polling gave up after 60 s with generations still in flight.
+                The run keeps going on the worker; run a new trial later to
+                refresh the gate.
+              </p>
+            )}
+            {verdict && !verdict.ready && !trialStalled && (
               <p className="text-xs text-amber-400">
                 Trial still running — {verdict.trialPass}/{trialItems.length || 5} passed so far.
               </p>

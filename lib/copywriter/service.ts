@@ -435,7 +435,9 @@ export async function claimCopyItems(
     id: row.id,
     renderedPrompt: row.renderedPrompt,
     jsonSchema: COPY_SCHEMA,
-    model: row.prompt.model,
+    // Trial rows run on the DRAFT model they were queued with; production
+    // rows run on their prompt version's model.
+    model: row.modelOverride ?? row.prompt.model,
     timeoutSec: CLAIM_TIMEOUT_SEC,
   }));
 }
@@ -678,6 +680,13 @@ export async function submitCopyResult(
           workspaceId: row.workspaceId,
           automationId: row.automationId,
           autoApply: row.autoApply,
+          // Isolation travels with the row: a trial's repair row is still a
+          // trial (never production metrics, never a dedupe target).
+          isTrial: row.isTrial,
+          // Trial rows keep the DRAFT model and the body binding they were
+          // rendered from.
+          modelOverride: row.modelOverride,
+          trialBodyHash: row.trialBodyHash,
           // The precise back-link the status route follows.
           sourceGenerationId: row.id,
           promptId: row.promptId,

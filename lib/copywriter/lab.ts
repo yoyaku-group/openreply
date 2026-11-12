@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Prisma } from "@/app/generated/prisma/client";
 import {
   CopywriterError,
@@ -46,6 +47,26 @@ export type LabModel = (typeof LAB_MODELS)[number];
 export const TRIAL_POLL_MAX_MS = 60 * 1000;
 
 const PLACEHOLDER_RE = /\{\{([^{}]+)\}\}/g;
+
+/**
+ * Two owners writing versions at the same moment both read max(version)=N;
+ * the unique (workspaceId, version) index lets exactly one insert win. The
+ * loser surfaces as a stable 409 instead of an unmapped 500.
+ */
+function translateVersionConflict(error: unknown): never | void {
+  if (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002"
+  ) {
+    throw new CopywriterError("VERSION_CONFLICT", 409);
+  }
+  throw error;
+}
+
+/** sha256 hex of a draft body — the trial ↔ activation binding. */
+function draftBodyHash(body: string): string {
+  return createHash("sha256").update(body).digest("hex");
+}
 
 /* ------------------------------ validation -------------------------------- */
 
@@ -135,34 +156,38 @@ export async function createPromptVersion(
   const examples = input.examples ?? [];
   assertValidExamples(examples);
 
-  return prisma.$transaction(async (tx) => {
-    const max = await tx.copywriterPrompt.aggregate({
-      where: { workspaceId: input.workspaceId },
-      _max: { version: true },
-    });
-    const activate = input.activate ?? false;
-    if (activate) {
-      await tx.copywriterPrompt.updateMany({
-        where: { workspaceId: input.workspaceId, isActive: true },
-        data: { isActive: false },
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const max = await tx.copywriterPrompt.aggregate({
+        where: { workspaceId: input.workspaceId },
+        _max: { version: true },
       });
-    }
-    return tx.copywriterPrompt.create({
-      data: {
-        workspaceId: input.workspaceId,
-        version: (max._max.version ?? 0) + 1,
-        body: input.body,
-        model: input.model,
-        reason: input.reason,
-        authorEmail: input.authorEmail,
-        isActive: activate,
-        examples:
-          examples.length > 0
-            ? (examples as unknown as Prisma.InputJsonValue)
-            : Prisma.DbNull,
-      },
+      const activate = input.activate ?? false;
+      if (activate) {
+        await tx.copywriterPrompt.updateMany({
+          where: { workspaceId: input.workspaceId, isActive: true },
+          data: { isActive: false },
+        });
+      }
+      return tx.copywriterPrompt.create({
+        data: {
+          workspaceId: input.workspaceId,
+          version: (max._max.version ?? 0) + 1,
+          body: input.body,
+          model: input.model,
+          reason: input.reason,
+          authorEmail: input.authorEmail,
+          isActive: activate,
+          examples:
+            examples.length > 0
+              ? (examples as unknown as Prisma.InputJsonValue)
+              : Prisma.DbNull,
+        },
+      });
     });
-  });
+  } catch (error) {
+    translateVersionConflict(error);
+  }
 }
 
 export interface RevertPromptInput {
@@ -184,28 +209,32 @@ export async function revertToPrompt(input: RevertPromptInput) {
   });
   if (!target) throw new CopywriterError("NOT_FOUND", 404);
 
-  return prisma.$transaction(async (tx) => {
-    const max = await tx.copywriterPrompt.aggregate({
-      where: { workspaceId: input.workspaceId },
-      _max: { version: true },
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const max = await tx.copywriterPrompt.aggregate({
+        where: { workspaceId: input.workspaceId },
+        _max: { version: true },
+      });
+      await tx.copywriterPrompt.updateMany({
+        where: { workspaceId: input.workspaceId, isActive: true },
+        data: { isActive: false },
+      });
+      return tx.copywriterPrompt.create({
+        data: {
+          workspaceId: input.workspaceId,
+          version: (max._max.version ?? 0) + 1,
+          body: target.body,
+          model: target.model,
+          reason: input.reason,
+          authorEmail: input.authorEmail,
+          isActive: true,
+          examples: (target.examples ?? Prisma.DbNull) as Prisma.InputJsonValue,
+        },
+      });
     });
-    await tx.copywriterPrompt.updateMany({
-      where: { workspaceId: input.workspaceId, isActive: true },
-      data: { isActive: false },
-    });
-    return tx.copywriterPrompt.create({
-      data: {
-        workspaceId: input.workspaceId,
-        version: (max._max.version ?? 0) + 1,
-        body: target.body,
-        model: target.model,
-        reason: input.reason,
-        authorEmail: input.authorEmail,
-        isActive: true,
-        examples: (target.examples ?? Prisma.DbNull) as Prisma.InputJsonValue,
-      },
-    });
-  });
+  } catch (error) {
+    translateVersionConflict(error);
+  }
 }
 
 export async function getPromptVersions(workspaceId: string) {
@@ -567,15 +596,6 @@ export async function createTrialRun(input: {
   assertValidPromptBody(input.body);
   assertValidLabModel(input.model);
 
-  const running = await prisma.copyGeneration.count({
-    where: {
-      workspaceId: input.workspaceId,
-      isTrial: true,
-      status: { in: ["PENDING", "CLAIMED"] },
-    },
-  });
-  if (running > 0) throw new CopywriterError("TRIAL_IN_PROGRESS", 409);
-
   const active = await ensureActivePrompt(input.workspaceId);
   const recent = await prisma.copyGeneration.findMany({
     where: { workspaceId: input.workspaceId, isTrial: false },
@@ -595,9 +615,22 @@ export async function createTrialRun(input: {
     throw new CopywriterError("NO_TRIAL_INPUTS", 409);
   }
 
+  // One run per workspace at a time. The advisory lock makes the
+  // in-flight check and the inserts atomic: two owners clicking "Test"
+  // together cannot both pass the count and burn twice the shared quota.
   const examples = readExamplesJson(active.examples);
-  const ids = await prisma.$transaction(async (tx) =>
-    Promise.all(
+  const bodyHash = draftBodyHash(input.body);
+  const ids = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${input.workspaceId}))`;
+    const running = await tx.copyGeneration.count({
+      where: {
+        workspaceId: input.workspaceId,
+        isTrial: true,
+        status: { in: ["PENDING", "CLAIMED"] },
+      },
+    });
+    if (running > 0) throw new CopywriterError("TRIAL_IN_PROGRESS", 409);
+    return Promise.all(
       sources.map((source) => {
         const facts =
           isRecord(source.input) && isRecord(source.input.facts)
@@ -612,6 +645,10 @@ export async function createTrialRun(input: {
             isTrial: true,
             promptId: active.id,
             promptVersion: active.version,
+            // The draft runs on the DRAFT model, and the trial is bound to
+            // this exact body so it can never vouch for a different draft.
+            modelOverride: input.model,
+            trialBodyHash: bodyHash,
             input: source.input as Prisma.InputJsonValue,
             renderedPrompt: renderPrompt(
               input.body,
@@ -624,8 +661,8 @@ export async function createTrialRun(input: {
           select: { id: true },
         });
       })
-    )
-  );
+    );
+  });
   return { ids: ids.map((row) => row.id) };
 }
 
@@ -682,11 +719,14 @@ export async function getTrialResults(
     orderBy: { createdAt: "asc" },
   });
 
-  // One bounded tail read serves every baseline: the side-by-side comparison
-  // is the most recent production output for the SAME input, whatever
-  // prompt version produced it.
+  // One bounded tail read serves every baseline: the comparison the docs
+  // promise is the ACTIVE version's outcome for the same input. A baseline
+  // that queued its repair is judged on the repair's outcome, exactly like
+  // the trial side — otherwise the gate would be biased in the draft's
+  // favour.
+  const active = await ensureActivePrompt(workspaceId);
   const tail = await prisma.copyGeneration.findMany({
-    where: { workspaceId, isTrial: false },
+    where: { workspaceId, isTrial: false, promptVersion: active.version },
     orderBy: { createdAt: "desc" },
     take: TRIAL_SOURCE_SCAN,
   });
@@ -696,6 +736,9 @@ export async function getTrialResults(
   for (const row of rows) {
     const effective = (await effectiveOutcome(workspaceId, row)) ?? row;
     const source = tailByKey.get(inputKey(row.input));
+    const baselineOutcome = source
+      ? (await effectiveOutcome(workspaceId, source)) ?? source
+      : null;
     items.push({
       id: row.id,
       effectiveId: effective.id,
@@ -706,12 +749,12 @@ export async function getTrialResults(
       tier: effective.tier,
       latencyMs: effective.latencyMs,
       promptVersion: row.promptVersion,
-      baseline: source
+      baseline: baselineOutcome
         ? {
-            generationId: source.id,
-            promptVersion: source.promptVersion,
-            status: source.status,
-            output: source.output,
+            generationId: baselineOutcome.id,
+            promptVersion: baselineOutcome.promptVersion,
+            status: baselineOutcome.status,
+            output: baselineOutcome.output,
           }
         : null,
       input: row.input,
@@ -770,13 +813,35 @@ const OVERRIDE_MARKER = " [activation override]";
 
 /**
  * Create version N+1 from the draft and flip it active in one transaction.
- * Without the explicit override, the gate demands a trial run on this draft
- * whose lint pass is at least as good as the active version's on the same
- * inputs. Using the override is recorded in the reason.
+ * Without the explicit override, the gate demands a trial run OF THIS EXACT
+ * DRAFT (same body hash, same model) whose lint pass is at least as good as
+ * the active version's on the same inputs — a trial can never vouch for a
+ * different body. Using the override is recorded in the reason. Golden
+ * examples carry over from the active version unless explicitly replaced,
+ * so activation never silently drops them.
  */
 export async function activateDraft(input: ActivateDraftInput) {
+  const bodyHash = draftBodyHash(input.body);
   if (!input.activateAnyway) {
     if (!input.trialIds?.length) {
+      throw new CopywriterError("ACTIVATION_GATE_FAILED", 409);
+    }
+    const trials = await prisma.copyGeneration.findMany({
+      where: {
+        workspaceId: input.workspaceId,
+        id: { in: input.trialIds },
+        isTrial: true,
+      },
+      select: { trialBodyHash: true, modelOverride: true },
+    });
+    const bound =
+      trials.length > 0 &&
+      trials.every(
+        (trial) =>
+          trial.trialBodyHash === bodyHash &&
+          trial.modelOverride === input.model
+      );
+    if (!bound) {
       throw new CopywriterError("ACTIVATION_GATE_FAILED", 409);
     }
     const verdict = await trialVerdict(input.workspaceId, input.trialIds);
@@ -787,13 +852,14 @@ export async function activateDraft(input: ActivateDraftInput) {
   const reason = input.activateAnyway
     ? `${input.reason}${OVERRIDE_MARKER}`
     : input.reason;
+  const active = await ensureActivePrompt(input.workspaceId);
   return createPromptVersion({
     workspaceId: input.workspaceId,
     body: input.body,
     model: input.model,
     reason,
     authorEmail: input.authorEmail,
-    examples: input.examples,
+    examples: input.examples ?? readExamplesJson(active.examples),
     activate: true,
   });
 }

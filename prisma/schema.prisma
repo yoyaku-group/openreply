@@ -692,6 +692,14 @@ model CopyGeneration {
   /// trial never carries an automationId, is never auto-applied and is
   /// excluded from production metrics and the recent-generations feed.
   isTrial        Boolean             @default(false)
+  /// Trial rows only: the DRAFT model the trial must run on. The claim
+  /// contract prefers it over the prompt row's model, so a sonnet draft is
+  /// tested on sonnet, not on the active version's tier.
+  modelOverride  String?
+  /// Trial rows only: sha256 of the draft body the trial was rendered
+  /// from. The activation gate refuses trial ids that do not match the
+  /// body being activated — a trial can never vouch for a different draft.
+  trialBodyHash  String?
   status         CopyGenerationState @default(PENDING)
   leaseOwner     String?
   leaseExpiresAt DateTime?

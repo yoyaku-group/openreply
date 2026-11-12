@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 
 const { mockPrisma, mockTx } = vi.hoisted(() => {
   const mockTx = {
+    $queryRaw: vi.fn(),
     copyGeneration: {
+      count: vi.fn(),
       create: vi.fn(),
       updateMany: vi.fn(),
     },
@@ -70,6 +73,8 @@ import {
   recordFinalCopy,
 } from "@/lib/copywriter/service";
 
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+
 const ACTIVE_PROMPT = {
   id: "prompt_1",
   workspaceId: "workspace_1",
@@ -110,6 +115,8 @@ function recentRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockTx.$queryRaw.mockResolvedValue([]);
+  mockTx.copyGeneration.count.mockResolvedValue(0);
   mockTx.copyGeneration.create.mockResolvedValue({ id: "gen_tx_new" });
   mockTx.copyGeneration.updateMany.mockResolvedValue({ count: 1 });
   mockTx.copywriterPrompt.create.mockResolvedValue({ id: "prompt_tx_new", version: 4 });
@@ -378,8 +385,11 @@ describe("inputKey", () => {
 });
 
 describe("createTrialRun", () => {
-  it("refuses a second concurrent run per workspace", async () => {
-    mockPrisma.copyGeneration.count.mockResolvedValue(1);
+  it("refuses a second concurrent run per workspace, before any quota is spent", async () => {
+    mockPrisma.copyGeneration.findMany.mockResolvedValue([
+      recentRow({ id: "g1", input: { facts: { sku: "A", state: "restock" }, caption: "" } }),
+    ]);
+    mockTx.copyGeneration.count.mockResolvedValue(1);
     await expect(
       createTrialRun({
         workspaceId: "workspace_1",
@@ -388,7 +398,16 @@ describe("createTrialRun", () => {
         authorEmail: "o@x",
       })
     ).rejects.toMatchObject({ code: "TRIAL_IN_PROGRESS", status: 409 });
-    expect(mockPrisma.copyGeneration.findMany).not.toHaveBeenCalled();
+    expect(mockTx.copyGeneration.create).not.toHaveBeenCalled();
+    // The in-flight check runs under the per-workspace advisory lock.
+    const lockSql = mockTx.$queryRaw.mock.calls[0][0].join("?");
+    expect(lockSql).toContain("pg_advisory_xact_lock");
+    expect(mockTx.$queryRaw.mock.calls[0][1]).toBe("workspace_1");
+    const countBeforeCreate =
+      mockTx.copyGeneration.create.mock.invocationCallOrder[0] ?? Infinity;
+    expect(mockTx.copyGeneration.count.mock.invocationCallOrder[0]).toBeLessThan(
+      countBeforeCreate
+    );
   });
 
   it("queues one trial per recent DISTINCT input, capped at 5, fully isolated", async () => {
@@ -413,6 +432,12 @@ describe("createTrialRun", () => {
       expect(data.autoApply).toBe(false);
       expect(data.promptId).toBe("prompt_1");
       expect(data.promptVersion).toBe(3);
+      // The draft's model travels with the row and the trial is bound to
+      // this exact body.
+      expect(data.modelOverride).toBe("sonnet");
+      expect(data.trialBodyHash).toBe(
+        sha256("DRAFT MARKER {{state}}\n{{examples}}")
+      );
       expect(data.renderedPrompt).toContain("DRAFT MARKER");
       // The active prompt's examples travel with the draft.
       expect(data.renderedPrompt).toContain("GOLDEN EXAMPLES");
@@ -485,6 +510,23 @@ describe("trialVerdict (activation gate)", () => {
     });
   }
 
+  function boundTrial(
+    id: string,
+    body: string,
+    model: string,
+    input: unknown,
+    status: string
+  ) {
+    return recentRow({
+      id,
+      isTrial: true,
+      status,
+      input,
+      modelOverride: model,
+      trialBodyHash: sha256(body),
+    });
+  }
+
   it("gate passes when the trial lint pass matches the baseline", async () => {
     setupTrials(
       [
@@ -498,6 +540,27 @@ describe("trialVerdict (activation gate)", () => {
     );
     const verdict = await trialVerdict("workspace_1", ["t1", "t2"]);
     expect(verdict).toEqual({ ready: true, trialPass: 1, baselinePass: 1, gateOk: true });
+  });
+
+  it("baseline follows the repair link like the trial side", async () => {
+    setupTrials(
+      [recentRow({ id: "t1", isTrial: true, status: "DONE", input: INPUT_A })],
+      [
+        recentRow({
+          id: "p1",
+          status: "FAILED",
+          failureCode: "LINT_REPAIR_QUEUED",
+          input: INPUT_A,
+        }),
+      ]
+    );
+    // The active version's first attempt queued a repair that passed.
+    mockPrisma.copyGeneration.findFirst.mockResolvedValue(
+      recentRow({ id: "p1_repair", status: "DONE", attempt: 2, input: INPUT_A })
+    );
+    const verdict = await trialVerdict("workspace_1", ["t1"]);
+    expect(verdict).toMatchObject({ trialPass: 1, baselinePass: 1, gateOk: true });
+    expect(verdict.baselinePass).toBe(1);
   });
 
   it("gate refuses a trial whose lint pass is worse than the baseline", async () => {
@@ -528,11 +591,51 @@ describe("trialVerdict (activation gate)", () => {
     expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
   });
 
+  it("refuses trial ids that belong to a DIFFERENT draft body", async () => {
+    setupTrials(
+      [
+        boundTrial("t1", "BODY A {{state}}", "haiku", INPUT_A, "DONE"),
+        boundTrial("t2", "BODY A {{state}}", "haiku", INPUT_B, "DONE"),
+      ],
+      [recentRow({ id: "p1", status: "FAILED", input: INPUT_A })]
+    );
+    // The owner tested BODY A but submits BODY B with A's trial ids.
+    await expect(
+      activateDraft({
+        workspaceId: "workspace_1",
+        body: "BODY B {{state}}",
+        model: "haiku",
+        reason: "gate bypass attempt",
+        authorEmail: "o@x",
+        trialIds: ["t1", "t2"],
+      })
+    ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
+    expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses trials that ran on a different model than the draft", async () => {
+    setupTrials(
+      [boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "DONE")],
+      [recentRow({ id: "p1", status: "FAILED", input: INPUT_A })]
+    );
+    await expect(
+      activateDraft({
+        workspaceId: "workspace_1",
+        body: "b {{state}}",
+        model: "sonnet",
+        reason: "model swap after the trial",
+        authorEmail: "o@x",
+        trialIds: ["t1"],
+      })
+    ).rejects.toMatchObject({ code: "ACTIVATION_GATE_FAILED" });
+    expect(mockTx.copywriterPrompt.create).not.toHaveBeenCalled();
+  });
+
   it("refuses activation when the gate fails", async () => {
     setupTrials(
       [
-        recentRow({ id: "t1", isTrial: true, status: "FAILED", input: INPUT_A }),
-        recentRow({ id: "t2", isTrial: true, status: "FAILED", input: INPUT_B }),
+        boundTrial("t1", "b {{state}}", "haiku", INPUT_A, "FAILED"),
+        boundTrial("t2", "b {{state}}", "haiku", INPUT_B, "FAILED"),
       ],
       [recentRow({ id: "p1", status: "DONE", input: INPUT_A })]
     );
@@ -552,8 +655,8 @@ describe("trialVerdict (activation gate)", () => {
   it("activates when the gate is satisfied", async () => {
     setupTrials(
       [
-        recentRow({ id: "t1", isTrial: true, status: "DONE", input: INPUT_A }),
-        recentRow({ id: "t2", isTrial: true, status: "DONE", input: INPUT_B }),
+        boundTrial("t1", "better {{state}}", "sonnet", INPUT_A, "DONE"),
+        boundTrial("t2", "better {{state}}", "sonnet", INPUT_B, "DONE"),
       ],
       [recentRow({ id: "p1", status: "DONE", input: INPUT_A })]
     );
@@ -575,7 +678,7 @@ describe("trialVerdict (activation gate)", () => {
     });
   });
 
-  it("activates with the override and records it in the reason", async () => {
+  it("inherits the active version's golden examples on activation", async () => {
     await activateDraft({
       workspaceId: "workspace_1",
       body: "risky {{state}}",
@@ -588,6 +691,29 @@ describe("trialVerdict (activation gate)", () => {
     expect(data.isActive).toBe(true);
     expect(data.reason).toContain("owner decision");
     expect(data.reason).toContain("override");
+    // No examples were passed: the active prompt's examples carry over
+    // instead of being silently dropped.
+    expect(data.examples).toEqual(ACTIVE_PROMPT.examples);
+  });
+
+  it("maps a version-number race onto a stable VERSION_CONFLICT 409", async () => {
+    const { Prisma } = await import("@/app/generated/prisma/client");
+    mockTx.copywriterPrompt.create.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+        code: "P2002",
+        clientVersion: "7.10.0",
+      })
+    );
+    await expect(
+      createPromptVersion({
+        workspaceId: "workspace_1",
+        body: "b {{state}}",
+        model: "haiku",
+        reason: "r",
+        authorEmail: "o@x",
+        activate: true,
+      })
+    ).rejects.toMatchObject({ code: "VERSION_CONFLICT", status: 409 });
   });
 });
 
