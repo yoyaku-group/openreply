@@ -250,6 +250,10 @@ export default function CampaignAssistantPage() {
   // version, when it arrives, replaces it only while the user has not edited
   // the texts — otherwise an explicit "Use it" decides.
   const [generationId, setGenerationId] = useState<string | null>(null);
+  // The dedupe window can hand back the SAME generation id on a Regenerate;
+  // the poll effect is keyed on this nonce too, so a repeated id still
+  // restarts polling instead of leaving the badge stuck on "pending".
+  const [pollNonce, setPollNonce] = useState(0);
   const [aiStatus, setAiStatus] = useState<AiStatus>("idle");
   const [aiCopy, setAiCopy] = useState<AiCopyTexts | null>(null);
   const [aiPromptVersion, setAiPromptVersion] = useState<number | null>(null);
@@ -444,7 +448,7 @@ export default function CampaignAssistantPage() {
     return () => {
       cancelled = true;
     };
-  }, [generationId]);
+  }, [generationId, pollNonce]);
 
   function applyAiCopy() {
     if (!aiCopy) return;
@@ -526,6 +530,7 @@ export default function CampaignAssistantPage() {
       setAiPromptVersion(null);
       setCopyEdited(false);
       pinSeedFromFacts(prepared.facts, captionInput);
+      setPollNonce((n) => n + 1);
       setAiStatus(prepared.generationId ? "pending" : "idle");
       setName(
         defaultCampaignName({
@@ -577,6 +582,7 @@ export default function CampaignAssistantPage() {
       setAiPromptVersion(null);
       setCopyEdited(false);
       pinSeedFromFacts(prepared.facts, captionInput);
+      setPollNonce((n) => n + 1);
       setAiStatus(prepared.generationId ? "pending" : "idle");
     } catch {
       setAiStatus("failed");

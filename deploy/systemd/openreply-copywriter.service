@@ -24,6 +24,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
+# StateDirectory is writable under ProtectSystem=strict. If the cascade CLI
+# keeps a cache under $HOME, copy the ReadWritePaths= line from an existing
+# cascade unit at install time (same step as the LoadCredential= lines).
 StateDirectory=openreply-copywriter
 
 [Install]

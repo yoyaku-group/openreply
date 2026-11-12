@@ -231,7 +231,8 @@ describe("enqueueGeneration", () => {
       id: "gen_recent",
       automationId: null,
       autoApply: false,
-      input: { facts: { sku: "LM-02" }, caption: "" },
+      input: { facts: FACTS, caption: "" },
+      standardCopy: STANDARD_COPY,
     });
     const id = await enqueueGeneration({
       workspaceId: "workspace_1",
@@ -244,16 +245,18 @@ describe("enqueueGeneration", () => {
 
   it("queues a new row when the recent one differs (other SKU or caption)", async () => {
     process.env.COPYWRITER_ENABLED = "true";
+    // The recent row was built from DIFFERENT facts: the dedupe must miss so
+    // the corrected request gets its own generation.
     mockPrisma.copyGeneration.findFirst.mockResolvedValue({
       id: "gen_recent_other",
       automationId: null,
       autoApply: false,
-      input: { facts: { sku: "XX-99" }, caption: "" },
+      input: { facts: { ...FACTS, title: "Old uncorrected title" }, caption: "" },
+      standardCopy: STANDARD_COPY,
     });
     const id = await enqueueGeneration({
       workspaceId: "workspace_1",
       facts: FACTS,
-      caption: "Different caption",
       standardCopy: STANDARD_COPY,
     });
     expect(id).toBe("gen_new");
@@ -748,6 +751,43 @@ describe("session-side status and final copy", () => {
         }),
       })
     );
+  });
+
+  it("measures the distance on the repair row the user actually saw", async () => {
+    // Attempt 1 failed and queued a repair; the page validated the REPAIR copy.
+    mockPrisma.copyGeneration.findUnique.mockResolvedValue(
+      generationRow({
+        status: "FAILED",
+        failureCode: "LINT_REPAIR_QUEUED",
+      })
+    );
+    mockPrisma.copyGeneration.findFirst.mockResolvedValue(
+      generationRow({
+        id: "gen_repair",
+        status: "DONE",
+        attempt: 2,
+        output: {
+          openingDm: "abc",
+          openingButton: "x",
+          revealDm: "same",
+          linkButton: "y",
+        },
+      })
+    );
+
+    const result = await recordFinalCopy("gen_1", "workspace_1", {
+      automationId: "automation_1",
+      finalCopy: {
+        openingDm: "abd",
+        openingButton: "x",
+        revealDm: "same",
+        linkButton: "y",
+      },
+    });
+    expect(result).toEqual({ editDistance: 1 });
+    // Provenance lands on the repair row, not the failed attempt.
+    const write = mockPrisma.copyGeneration.update.mock.calls[0][0];
+    expect(write.where).toEqual({ id: "gen_repair" });
   });
 
   it("records finalCopy with a null distance when the generation never produced output", async () => {

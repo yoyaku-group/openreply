@@ -276,15 +276,14 @@ async function findRecentEquivalentRow(
   if ((recent.automationId ?? null) !== (input.automationId ?? null)) return null;
   if (recent.autoApply !== (input.autoApply ?? false)) return null;
   if (!isRecord(recent.input)) return null;
-  const recentFacts = recent.input.facts;
   const recentCaption = typeof recent.input.caption === "string" ? recent.input.caption : "";
-  if (
-    !isRecord(recentFacts) ||
-    recentFacts.sku !== input.facts.sku ||
-    recentCaption !== truncateBlock(input.caption)
-  ) {
-    return null;
-  }
+  if (recentCaption !== truncateBlock(input.caption)) return null;
+  // The whole fact block and the standard copy must be identical: a fact
+  // correction between two clicks must NOT be served the old row.
+  const sameJson = (a: unknown, b: unknown) =>
+    JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  if (!sameJson(recent.input.facts, input.facts)) return null;
+  if (!sameJson(recent.standardCopy, input.standardCopy)) return null;
   return { id: recent.id };
 }
 
@@ -604,9 +603,19 @@ export async function submitCopyResult(
     // Release-sync rows carry the automation id AND the autoApply flag:
     // apply the AI copy while the guards hold. Assistant rows are applied
     // on save from the page — a save that records automationId must not
-    // re-arm this applier over the copy the team just validated.
+    // re-arm this applier over the copy the team just validated. An apply
+    // failure must not fail the result post (the worker cannot retry it):
+    // it is logged for the sweeper/audit — the row stays DONE with a null
+    // appliedAt, which is the observable marker of an unapplied sync row.
     if (row.autoApply && row.automationId) {
-      await applyGenerationToAutomation(row.id);
+      try {
+        await applyGenerationToAutomation(row.id);
+      } catch (error) {
+        console.error(
+          `[copywriter] auto-apply failed for ${row.id}; appliedAt stays null`,
+          error
+        );
+      }
     }
     return { status: "DONE" };
   }
@@ -835,10 +844,25 @@ export async function recordFinalCopy(
   const row = await prisma.copyGeneration.findUnique({ where: { id } });
   if (!row || row.workspaceId !== workspaceId) return null;
 
-  const output = asCopyTexts(row.output);
+  // The user saw (and validated) whatever the status route served — for a
+  // repaired generation that is the repair row. Measure the distance from
+  // THAT output, and stamp provenance on the row the screen actually showed.
+  let effectiveRow = row;
+  if (
+    row.status === "FAILED" &&
+    row.failureCode === FAILURE_CODES.LINT_REPAIR_QUEUED
+  ) {
+    const repair = await prisma.copyGeneration.findFirst({
+      where: { sourceGenerationId: row.id, workspaceId: row.workspaceId },
+      orderBy: { createdAt: "desc" },
+    });
+    if (repair) effectiveRow = repair;
+  }
+
+  const output = asCopyTexts(effectiveRow.output);
   const editDistance = output ? copyEditDistance(output, input.finalCopy) : null;
   await prisma.copyGeneration.update({
-    where: { id: row.id },
+    where: { id: effectiveRow.id },
     data: {
       automationId: input.automationId,
       finalCopy: input.finalCopy as unknown as Prisma.InputJsonValue,
