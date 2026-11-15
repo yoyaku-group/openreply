@@ -274,6 +274,96 @@ describe("parseCommentEvents", () => {
     expect(events[0].commenterId).toBe("user_2");
   });
 
+  it("should carry the ad context Meta reports under media", () => {
+    const payload = {
+      object: "instagram",
+      entry: [
+        {
+          id: "page_123",
+          time: 1234567890,
+          changes: [
+            {
+              field: "comments",
+              value: {
+                id: "comment_456",
+                text: "LINK",
+                from: { id: "user_789", username: "testuser" },
+                media: {
+                  id: "media_101",
+                  ad_id: "120210000000000001",
+                  ad_title: "Reel — restock 42",
+                },
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const events = parseCommentEvents(payload);
+    expect(events).toHaveLength(1);
+    expect(events[0].adId).toBe("120210000000000001");
+    expect(events[0].adTitle).toBe("Reel — restock 42");
+  });
+
+  it("should carry ad context sent as flat fields on the change value", () => {
+    const payload = {
+      object: "instagram",
+      entry: [
+        {
+          id: "page_123",
+          time: 1234567890,
+          changes: [
+            {
+              field: "comments",
+              value: {
+                id: "comment_456",
+                text: "LINK",
+                from: { id: "user_789", username: "testuser" },
+                media_id: "media_101",
+                ad_id: 987654321,
+                ad_title: "Reel — new drop",
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const events = parseCommentEvents(payload);
+    expect(events).toHaveLength(1);
+    expect(events[0].adId).toBe("987654321");
+    expect(events[0].adTitle).toBe("Reel — new drop");
+  });
+
+  it("should leave ad context undefined for an organic comment", () => {
+    const payload = {
+      object: "instagram",
+      entry: [
+        {
+          id: "page_123",
+          time: 1234567890,
+          changes: [
+            {
+              field: "comments",
+              value: {
+                id: "comment_456",
+                text: "LINK",
+                from: { id: "user_789", username: "testuser" },
+                media: { id: "media_101" },
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const events = parseCommentEvents(payload);
+    expect(events).toHaveLength(1);
+    expect(events[0].adId).toBeUndefined();
+    expect(events[0].adTitle).toBeUndefined();
+  });
+
   it("should handle entries without changes", () => {
     const payload = {
       object: "instagram",

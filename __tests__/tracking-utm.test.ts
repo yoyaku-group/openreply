@@ -1,5 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { withDmUtm } from "@/lib/tracking/utm";
+import { withDmContentUtm, withDmUtm } from "@/lib/tracking/utm";
+
+describe("withDmContentUtm", () => {
+  it("tags the destination with the DM that delivered it", () => {
+    const url = withDmContentUtm("https://yoyaku.io/release/lm02/", "dmlog_123");
+    expect(new URL(url).searchParams.get("utm_content")).toBe("dm-dmlog_123");
+  });
+
+  it("keeps a utm_content the shop already set", () => {
+    const url = withDmContentUtm(
+      "https://yoyaku.io/release/lm02/?utm_content=newsletter",
+      "dmlog_123"
+    );
+    expect(new URL(url).searchParams.getAll("utm_content")).toEqual([
+      "newsletter",
+    ]);
+  });
+
+  it("keeps every other query parameter and the hash", () => {
+    const url = withDmContentUtm(
+      "https://yoyaku.io/a/?utm_source=instagram&variant=black#pricing",
+      "dmlog_123"
+    );
+    const parsed = new URL(url);
+    expect(parsed.searchParams.get("utm_source")).toBe("instagram");
+    expect(parsed.searchParams.get("variant")).toBe("black");
+    expect(parsed.searchParams.get("utm_content")).toBe("dm-dmlog_123");
+    expect(parsed.hash).toBe("#pricing");
+  });
+
+  it("is idempotent", () => {
+    const once = withDmContentUtm("https://yoyaku.io/a/", "dmlog_123");
+    expect(withDmContentUtm(once, "dmlog_123")).toBe(once);
+  });
+
+  it("returns an unparsable URL unchanged", () => {
+    expect(withDmContentUtm("not a url", "dmlog_123")).toBe("not a url");
+  });
+});
 
 describe("withDmUtm", () => {
   it("adds the DM UTM parameters to a bare destination", () => {

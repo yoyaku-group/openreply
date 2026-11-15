@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCampaignReportBySlug } from "@/lib/reports/data";
+import { formatCtr } from "@/lib/tracking/analytics";
 
 type ReportPageProps = {
   params: Promise<{ shareSlug: string }>;
@@ -146,9 +147,9 @@ export default async function ReportPage({ params }: ReportPageProps) {
             helper="Tracked link visits from replies."
           />
           <MetricCard
-            label="CTR"
-            value={`${report.metrics.ctr}%`}
-            helper="Clicks divided by sent replies."
+            label="Click rate"
+            value={formatCtr(report.metrics.ctr)}
+            helper="Distinct replies that clicked, divided by replies sent."
           />
         </div>
 

@@ -240,6 +240,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     commenterId,
     commenterName,
     mediaId,
+    adId,
+    adTitle,
   } = job.data;
   const requeueAttempt = job.data.requeueAttempt ?? 0;
 
@@ -349,6 +351,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
             commentText,
             commentId,
             mediaId,
+            adId: adId ?? null,
+            adTitle: adTitle ?? null,
             matchedKeyword: matchResult.matchedKeyword,
             status: "SKIPPED_DEDUP",
           },
@@ -374,6 +378,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commentText,
           commentId,
           mediaId,
+          adId: adId ?? null,
+          adTitle: adTitle ?? null,
           matchedKeyword: matchResult.matchedKeyword,
           status: "FAILED",
           errorMessage: "No Instagram access token available",
@@ -406,6 +412,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commentText,
           commentId,
           mediaId,
+          adId: adId ?? null,
+          adTitle: adTitle ?? null,
           matchedKeyword: matchResult.matchedKeyword,
           status: "FAILED",
           errorMessage: "Failed to decrypt Instagram access token",
@@ -432,6 +440,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commentText,
           commentId,
           mediaId,
+          adId: adId ?? null,
+          adTitle: adTitle ?? null,
           matchedKeyword: matchResult.matchedKeyword,
           status: "PENDING",
           attempts: job.attemptsMade + 1,
@@ -447,6 +457,10 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           attempts: job.attemptsMade + 1,
           matchedKeyword: matchResult.matchedKeyword,
           errorMessage: null,
+          // Only ever enrich: a retry caught by polling carries no ad context
+          // and must not erase what the original webhook recorded.
+          ...(adId ? { adId } : {}),
+          ...(adTitle ? { adTitle } : {}),
         },
       });
     }

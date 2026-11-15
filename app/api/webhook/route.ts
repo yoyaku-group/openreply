@@ -232,6 +232,9 @@ export async function POST(request: NextRequest) {
           commenterId: event.commenterId,
           commenterName: event.commenterName,
           mediaId: event.mediaId,
+          // Paid-ad attribution: present only when the comment came from an ad.
+          ...(event.adId ? { adId: event.adId } : {}),
+          ...(event.adTitle ? { adTitle: event.adTitle } : {}),
           source: "WEBHOOK",
         },
         { jobId },

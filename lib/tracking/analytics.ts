@@ -21,11 +21,50 @@ function getCount(value: StatusCountRow["_count"] | KeywordCountRow["_count"]) {
   return value._all ?? 0;
 }
 
-export function calculateCtr(clicks: number, sent: number) {
-  if (sent <= 0) return 0;
-  // Raw clicks can exceed sends (repeat clicks, link-preview bots hitting the
-  // tracked URL), which makes a "rate" over 100% — cap it so CTR stays sane.
-  return Math.min(100, Number(((clicks / sent) * 100).toFixed(1)));
+/**
+ * Click-through rate: the share of delivered DMs that produced at least one
+ * click. Raw clicks are deliberately NOT the numerator — a single person can
+ * click a link five times (link previews, re-opens) and a click/sent ratio
+ * above 1 is meaningless as a rate. Returns `null` when nothing was sent:
+ * "no data yet" is not the same statement as "0% clicked", and callers render
+ * it as "unknown" rather than a misleading zero.
+ */
+export function calculateCtr(uniqueClickers: number, sent: number) {
+  if (sent <= 0) return null;
+  return Number((uniqueClickers / sent).toFixed(3));
+}
+
+/** Same rate as a percentage, for display. `null` stays "unknown". */
+export function formatCtr(rate: number | null): string {
+  return rate === null ? "unknown" : `${Number((rate * 100).toFixed(1))}%`;
+}
+
+/** One row of a `linkClick.groupBy({ by: ["dmLogId"] })` result. */
+export interface ClickerRow {
+  dmLogId: string | null;
+}
+
+/**
+ * Turn raw click counts plus the distinct-DM groups into the three numbers the
+ * dashboards report: raw clicks (traffic, repeat opens included), unique
+ * clickers (distinct DMs clicked at least once) and the click rate computed
+ * from the latter. Grouping happens in SQL — this only counts the groups.
+ */
+export function summarizeClicks(
+  clicks: number,
+  clickerRows: ClickerRow[],
+  sent: number
+) {
+  // A group can only exist for a non-null dmLogId (callers filter), but a null
+  // key would mean "clicks we cannot attribute" and must not inflate the rate.
+  const uniqueClickers = clickerRows.filter(
+    (row) => row.dmLogId !== null
+  ).length;
+  return {
+    clicks,
+    uniqueClickers,
+    ctr: calculateCtr(uniqueClickers, sent),
+  };
 }
 
 export function summarizeDmStatuses(rows: StatusCountRow[]) {

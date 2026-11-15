@@ -17,6 +17,7 @@ import {
   campaignStatusClass,
 } from "@/lib/automations/status";
 import { displayCatnoTag } from "@/lib/automations/catalogue";
+import { formatCtr } from "@/lib/tracking/analytics";
 
 interface Campaign {
   id: string;
@@ -53,7 +54,8 @@ interface Campaign {
     skipped: number;
     failed: number;
     clicks: number;
-    ctr: number;
+    uniqueClickers: number;
+    ctr: number | null;
   };
 }
 
@@ -182,7 +184,7 @@ export default function CampaignDetailPage() {
   const metrics = [
     { label: "Sends", value: campaign.analytics.sent },
     { label: "Clicks", value: campaign.analytics.clicks },
-    { label: "CTR", value: `${campaign.analytics.ctr}%` },
+    { label: "Click rate", value: formatCtr(campaign.analytics.ctr) },
     { label: "Failed", value: campaign.analytics.failed },
   ];
 

@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import StatCard from "@/components/stat-card";
 import StatusBadge from "@/components/status-badge";
+import { formatCtr } from "@/lib/tracking/analytics";
 
 interface DashboardStats {
   userName: string | null;
@@ -23,8 +24,9 @@ interface DashboardStats {
   dmsFailedMonth: number;
   totalDMs: number;
   clicksThisMonth: number;
+  uniqueClickersThisMonth: number;
   totalClicks: number;
-  ctrThisMonth: number;
+  ctrThisMonth: number | null;
   instagramAccounts: AccountOption[];
   selectedInstagramAccountId: string | null;
   topKeywords: { keyword: string; count: number }[];
@@ -124,7 +126,12 @@ export default function DashboardPage() {
         <StatCard label="Skipped" value={stats?.dmsSkippedMonth ?? 0} />
         <StatCard label="Failed" value={stats?.dmsFailedMonth ?? 0} />
         <StatCard label="Clicks" value={stats?.clicksThisMonth ?? 0} />
-        <StatCard label="CTR" value={`${stats?.ctrThisMonth ?? 0}%`} />
+        {/* Real click rate: distinct DMs clicked at least once, over DMs sent.
+            "unknown" (null) means nothing was sent yet — not a 0% result. */}
+        <StatCard
+          label="Click rate"
+          value={stats ? formatCtr(stats.ctrThisMonth) : "unknown"}
+        />
       </div>
 
       {/* Chart + Recent Activity */}
