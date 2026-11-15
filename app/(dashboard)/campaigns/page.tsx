@@ -11,6 +11,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import { readCache, writeCache } from "@/lib/client-cache";
+import { formatCtr } from "@/lib/tracking/analytics";
 import {
   campaignStatus,
   campaignStatusClass,
@@ -66,7 +67,8 @@ interface Campaign {
     skipped: number;
     failed: number;
     clicks: number;
-    ctr: number;
+    uniqueClickers: number;
+    ctr: number | null;
     topKeywords: { keyword: string; count: number }[];
   };
 }
@@ -553,7 +555,7 @@ export default function CampaignsPage() {
                   </span>
                   <span>·</span>
                   <span className="font-medium text-foreground">
-                    {auto.analytics.ctr}% CTR
+                    {formatCtr(auto.analytics.ctr)} click rate
                   </span>
                   <span>·</span>
                   <span>{auto.analytics.sent} sent</span>

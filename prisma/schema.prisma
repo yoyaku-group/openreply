@@ -327,6 +327,12 @@ model DmLog {
   /// post (Instagram/ManyChat semantics). Nullable for inbound-DM rows (no post)
   /// and rows created before this column existed.
   mediaId        String?
+  /// Paid-ad context Meta reports with the comment: which ad the commenter was
+  /// looking at when they commented. Null for every organic comment (and for
+  /// comments caught by polling, which carries no ad context). Indexed on adId
+  /// so WooCommerce orders can be reconciled per ad.
+  adId           String?
+  adTitle        String?
   matchedKeyword String?
   status         DmStatus  @default(PENDING)
   attempts       Int       @default(0)
@@ -357,6 +363,7 @@ model DmLog {
   // Fast lookup for per-user/media idempotence (has this commenter already been
   // DM'd for this automation+post?).
   @@index([automationId, mediaId, commenterId])
+  @@index([adId])
 }
 
 // Every comment the system has seen, from either the webhook or the polling

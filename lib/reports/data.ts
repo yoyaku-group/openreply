@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db/client";
 import {
-  calculateCtr,
   normalizeTopKeywords,
+  summarizeClicks,
   summarizeDmStatuses,
 } from "@/lib/tracking/analytics";
 import { buildReportUrl, isReportBranded } from "@/lib/reports/share";
@@ -69,7 +69,7 @@ export async function getCampaignReportBySlug(shareSlug: string) {
     return null;
   }
 
-  const [statusRows, clickCount, keywordRows, latestSentLog] =
+  const [statusRows, clickCount, clickerRows, keywordRows, latestSentLog] =
     await Promise.all([
       prisma.dmLog.groupBy({
         by: ["status"],
@@ -84,6 +84,16 @@ export async function getCampaignReportBySlug(shareSlug: string) {
           workspaceId: automation.workspaceId,
           automationId: automation.id,
         },
+      }),
+      // Distinct DMs clicked = the report's rate numerator.
+      prisma.linkClick.groupBy({
+        by: ["dmLogId"],
+        where: {
+          workspaceId: automation.workspaceId,
+          automationId: automation.id,
+          dmLogId: { not: null },
+        },
+        _count: { _all: true },
       }),
       prisma.dmLog.groupBy({
         by: ["matchedKeyword"],
@@ -110,6 +120,11 @@ export async function getCampaignReportBySlug(shareSlug: string) {
       status: row.status,
       _count: row._count._all,
     }))
+  );
+  const clickSummary = summarizeClicks(
+    clickCount,
+    clickerRows,
+    statusSummary.sent
   );
   const topKeywords = normalizeTopKeywords(
     keywordRows.map((row) => ({
@@ -173,8 +188,9 @@ export async function getCampaignReportBySlug(shareSlug: string) {
       sent: statusSummary.sent,
       skipped: statusSummary.skipped,
       failed: statusSummary.failed,
-      clicks: clickCount,
-      ctr: calculateCtr(clickCount, statusSummary.sent),
+      clicks: clickSummary.clicks,
+      uniqueClickers: clickSummary.uniqueClickers,
+      ctr: clickSummary.ctr,
       latestSentAt: latestSentLog?.dmSentAt ?? latestSentLog?.createdAt ?? null,
     },
     topKeywords,

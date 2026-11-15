@@ -234,7 +234,9 @@ function getProcessor(): (job: {
   }) => Promise<void>;
 }
 
-function createMockJob(data = mockJobData) {
+function createMockJob(
+  data: typeof mockJobData | Record<string, unknown> = mockJobData
+) {
   return {
     data,
     id: "job_001",
@@ -502,6 +504,63 @@ describe("DM Worker — Full Pipeline", () => {
 
     expect(mockSendPrivateReply).not.toHaveBeenCalled();
     expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+  });
+
+  it("persists the ad context carried by the job on the DM log", async () => {
+    const processor = getProcessor();
+
+    await processor(
+      createMockJob({
+        ...mockJobData,
+        adId: "120210000000000001",
+        adTitle: "Reel — restock 42",
+      })
+    );
+
+    expect(mockPrisma.dmLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          commentId: "comment_555",
+          adId: "120210000000000001",
+          adTitle: "Reel — restock 42",
+        }),
+      })
+    );
+  });
+
+  it("stores null ad context for an organic comment", async () => {
+    const processor = getProcessor();
+
+    await processor(createMockJob());
+
+    expect(mockPrisma.dmLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          commentId: "comment_555",
+          adId: null,
+          adTitle: null,
+        }),
+      })
+    );
+  });
+
+  it("still dedupes a repeated comment that carries ad context", async () => {
+    mockPrisma.dmLog.findUnique.mockResolvedValue({
+      id: "existing_log",
+      status: "SENT",
+    });
+    const processor = getProcessor();
+
+    await processor(
+      createMockJob({
+        ...mockJobData,
+        adId: "120210000000000001",
+        adTitle: "Reel — restock 42",
+      })
+    );
+
+    expect(mockPrisma.dmLog.create).not.toHaveBeenCalled();
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
   });
 
   it("should skip a repeat commenter already DM'd for this post (per-user/media dedup)", async () => {

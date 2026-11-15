@@ -450,15 +450,25 @@ export async function GET(request: NextRequest) {
     }),
   );
 
-  const [statusCounts, clickCounts, keywordCounts] = await Promise.all([
+  const [statusCounts, clickCounts, clickerCounts, keywordCounts] =
+    await Promise.all([
     prisma.dmLog.groupBy({
       by: ["automationId", "status"],
       where: { workspaceId },
       _count: { _all: true },
     }),
+    // Raw clicks stay reported (repeat opens are real traffic), but they are
+    // not a usable rate numerator: one person clicking five times is 500% of a
+    // single send. The rate is computed from distinct clickers below.
     prisma.linkClick.groupBy({
       by: ["automationId"],
       where: { workspaceId },
+      _count: { _all: true },
+    }),
+    // One row per (automation, dmLogId) group = distinct DMs that were clicked.
+    prisma.linkClick.groupBy({
+      by: ["automationId", "dmLogId"],
+      where: { workspaceId, dmLogId: { not: null } },
       _count: { _all: true },
     }),
     prisma.dmLog.groupBy({
@@ -475,6 +485,7 @@ export async function GET(request: NextRequest) {
       skipped: number;
       failed: number;
       clicks: number;
+      uniqueClickers: number;
       topKeywords: { keyword: string; count: number }[];
     }
   >();
@@ -485,6 +496,7 @@ export async function GET(request: NextRequest) {
       skipped: 0,
       failed: 0,
       clicks: 0,
+      uniqueClickers: 0,
       topKeywords: [],
     });
   }
@@ -501,6 +513,11 @@ export async function GET(request: NextRequest) {
   for (const row of clickCounts) {
     const item = analytics.get(row.automationId);
     if (item) item.clicks = row._count._all;
+  }
+
+  for (const row of clickerCounts) {
+    const item = analytics.get(row.automationId);
+    if (item) item.uniqueClickers += 1;
   }
 
   for (const automation of automationsWithReports) {
@@ -526,6 +543,7 @@ export async function GET(request: NextRequest) {
           skipped: 0,
           failed: 0,
           clicks: 0,
+          uniqueClickers: 0,
           topKeywords: [],
         };
 
@@ -540,7 +558,7 @@ export async function GET(request: NextRequest) {
             : null,
           analytics: {
             ...item,
-            ctr: calculateCtr(item.clicks, item.sent),
+            ctr: calculateCtr(item.uniqueClickers, item.sent),
           },
         };
       }),

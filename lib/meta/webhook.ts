@@ -39,6 +39,12 @@ export interface WebhookCommentEvent {
   commenterId: string;
   commenterName?: string;
   mediaId: string;
+  /**
+   * Paid-ad context Meta attaches when a comment was left on an ad rather than
+   * on the organic post. Absent for organic comments.
+   */
+  adId?: string;
+  adTitle?: string;
 }
 
 interface WebhookEntry {
@@ -56,8 +62,12 @@ interface WebhookEntry {
       };
       media?: {
         id?: string;
+        ad_id?: string | number;
+        ad_title?: string;
       };
       media_id?: string;
+      ad_id?: string | number;
+      ad_title?: string;
     };
   }>;
   messaging?: Array<{
@@ -104,6 +114,17 @@ interface WebhookPayload {
   entry: WebhookEntry[];
 }
 
+/**
+ * Meta is inconsistent about the type of identifiers it echoes back (an ad id
+ * arrives as a string on some payload versions and as a number on others), so
+ * coerce defensively and treat anything empty as absent.
+ */
+function metaString(value: unknown): string | undefined {
+  if (typeof value === "string") return value.trim() || undefined;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
 export function parseCommentEvents(payload: WebhookPayload): WebhookCommentEvent[] {
   const events: WebhookCommentEvent[] = [];
 
@@ -131,6 +152,13 @@ export function parseCommentEvents(payload: WebhookPayload): WebhookCommentEvent
         continue;
       }
 
+      // Ad context travels on the media object for paid placements and as flat
+      // fields on the change value; accept either shape. Organic comments carry
+      // neither, and both stay undefined here rather than being invented.
+      const adId = metaString(value?.media?.ad_id) ?? metaString(value?.ad_id);
+      const adTitle =
+        metaString(value?.media?.ad_title) ?? metaString(value?.ad_title);
+
       events.push({
         instagramAccountId: entry.id,
         commentId,
@@ -138,6 +166,8 @@ export function parseCommentEvents(payload: WebhookPayload): WebhookCommentEvent
         commenterId,
         commenterName: value.from?.username,
         mediaId,
+        ...(adId ? { adId } : {}),
+        ...(adTitle ? { adTitle } : {}),
       });
     }
   }

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateCtr,
+  formatCtr,
   normalizeTopKeywords,
+  summarizeClicks,
   summarizeDmStatuses,
 } from "../lib/tracking/analytics";
 import {
@@ -91,10 +93,47 @@ describe("campaign analytics helpers", () => {
     ).toEqual({ sent: 20, skipped: 4, failed: 2 });
   });
 
-  it("calculates CTR and handles empty send volume", () => {
-    expect(calculateCtr(5, 20)).toBe(25);
-    expect(calculateCtr(2, 3)).toBe(66.7);
-    expect(calculateCtr(5, 0)).toBe(0);
+  it("calculates the click rate from unique clickers over DMs sent", () => {
+    expect(calculateCtr(5, 20)).toBe(0.25);
+    expect(calculateCtr(2, 3)).toBe(0.667);
+    expect(calculateCtr(0, 10)).toBe(0);
+  });
+
+  it("reports an unknown click rate when nothing was sent", () => {
+    expect(calculateCtr(0, 0)).toBeNull();
+    expect(calculateCtr(5, 0)).toBeNull();
+  });
+
+  it("formats a click rate for display, keeping unknown distinct from zero", () => {
+    expect(formatCtr(0.25)).toBe("25%");
+    expect(formatCtr(0)).toBe("0%");
+    expect(formatCtr(null)).toBe("unknown");
+  });
+
+  it("counts distinct DMs as clickers, not raw clicks", () => {
+    // Three clicks from one DM (one person re-opening) and one from another:
+    // 4 raw clicks, but only 2 DMs actually clicked out of 10 sent.
+    const summary = summarizeClicks(
+      4,
+      [{ dmLogId: "dmlog_a" }, { dmLogId: "dmlog_b" }],
+      10
+    );
+
+    expect(summary).toEqual({ clicks: 4, uniqueClickers: 2, ctr: 0.2 });
+  });
+
+  it("reports an unknown rate when no DM was sent", () => {
+    expect(summarizeClicks(0, [], 0)).toEqual({
+      clicks: 0,
+      uniqueClickers: 0,
+      ctr: null,
+    });
+  });
+
+  it("never counts unattributable clicks as clickers", () => {
+    expect(
+      summarizeClicks(3, [{ dmLogId: null }, { dmLogId: "dmlog_a" }], 4)
+    ).toEqual({ clicks: 3, uniqueClickers: 1, ctr: 0.25 });
   });
 
   it("normalizes top keywords by count", () => {

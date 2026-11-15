@@ -29,6 +29,11 @@ export interface ProcessCommentJob {
   commenterId: string;
   commenterName?: string;
   mediaId: string;
+  // Paid-ad context Meta attaches to a comment left on an ad. Absent for
+  // organic comments (a polling catch never has it) and carried verbatim from
+  // the webhook onto the DmLog row.
+  adId?: string;
+  adTitle?: string;
   requeueAttempt?: number;
   // Which path enqueued this comment. Recorded in the shared ProcessedComment
   // dedup store so the reconciler can tell webhook- from polling-caught comments.

@@ -19,6 +19,30 @@ function dmUtmCampaignSlug(campaign: string): string {
   return campaign.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
 
+/** `utm_content` value that ties one click back to the exact DM that carried it. */
+export function dmUtmContent(dmLogId: string): string {
+  return `dm-${dmLogId}`;
+}
+
+/**
+ * Tag a destination with the DM that delivered it (`utm_content=dm-<id>`), so a
+ * landing page or shop order can be reconciled to a single DM and therefore to
+ * the ad that produced the comment. An existing `utm_content` always wins: the
+ * shop side may already use it for its own segmentation.
+ */
+export function withDmContentUtm(url: string, dmLogId: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  if (!parsed.searchParams.has("utm_content")) {
+    parsed.searchParams.set("utm_content", dmUtmContent(dmLogId));
+  }
+  return parsed.toString();
+}
+
 /**
  * Append the DM UTM parameters to a destination URL. An unparsable URL is
  * returned unchanged rather than losing the destination.

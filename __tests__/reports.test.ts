@@ -12,6 +12,7 @@ const { mockPrisma } = vi.hoisted(() => ({
     },
     linkClick: {
       count: vi.fn(),
+      groupBy: vi.fn(),
     },
   },
 }));
@@ -66,6 +67,13 @@ beforeEach(() => {
       { matchedKeyword: "SHOP", _count: { _all: 6 } },
     ]);
   mockPrisma.linkClick.count.mockResolvedValue(12);
+  // 12 distinct DMs clicked out of 20 sent = a 0.6 click rate.
+  mockPrisma.linkClick.groupBy.mockResolvedValue(
+    Array.from({ length: 12 }, (_, index) => ({
+      dmLogId: `dmlog_${index}`,
+      _count: { _all: 1 },
+    }))
+  );
   mockPrisma.dmLog.findFirst.mockResolvedValue({
     dmSentAt: new Date("2026-05-20T12:00:00.000Z"),
     createdAt: new Date("2026-05-20T12:00:00.000Z"),
@@ -90,7 +98,8 @@ describe("campaign reports", () => {
         skipped: 2,
         failed: 1,
         clicks: 12,
-        ctr: 60,
+        uniqueClickers: 12,
+        ctr: 0.6,
       },
       topKeywords: [
         { keyword: "LINK", count: 14 },

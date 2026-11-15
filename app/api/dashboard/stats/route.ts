@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUserId, getCurrentWorkspaceId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
 import {
-  calculateCtr,
   normalizeTopKeywords,
+  summarizeClicks,
   summarizeDmStatuses,
 } from "@/lib/tracking/analytics";
 
@@ -45,6 +45,7 @@ export async function GET(request: NextRequest) {
     totalDMs,
     dmStatusCountsThisMonth,
     clicksThisMonth,
+    clickerRowsThisMonth,
     totalClicks,
     topKeywordRows,
     recentLogs,
@@ -120,6 +121,19 @@ export async function GET(request: NextRequest) {
     prisma.linkClick.count({
       where: { workspaceId, createdAt: { gte: monthStart }, ...accountFilter },
     }),
+    // Distinct DMs clicked at least once this month: the numerator of the real
+    // click rate. Raw clicks would count one person's repeat opens as several
+    // "clickers" and push the rate above 100%.
+    prisma.linkClick.groupBy({
+      by: ["dmLogId"],
+      where: {
+        workspaceId,
+        createdAt: { gte: monthStart },
+        dmLogId: { not: null },
+        ...accountFilter,
+      },
+      _count: { _all: true },
+    }),
     prisma.linkClick.count({ where: { workspaceId, ...accountFilter } }),
     prisma.dmLog.groupBy({
       by: ["matchedKeyword"],
@@ -177,6 +191,11 @@ export async function GET(request: NextRequest) {
       _count: row._count._all,
     }))
   );
+  const clickSummary = summarizeClicks(
+    clicksThisMonth,
+    clickerRowsThisMonth,
+    dmsSentMonth
+  );
   const topKeywords = normalizeTopKeywords(
     topKeywordRows.map((row) => ({
       matchedKeyword: row.matchedKeyword,
@@ -206,9 +225,10 @@ export async function GET(request: NextRequest) {
       dmsSkippedMonth: monthlyStatusSummary.skipped,
       dmsFailedMonth: monthlyStatusSummary.failed,
       totalDMs,
-      clicksThisMonth,
+      clicksThisMonth: clickSummary.clicks,
+      uniqueClickersThisMonth: clickSummary.uniqueClickers,
       totalClicks,
-      ctrThisMonth: calculateCtr(clicksThisMonth, dmsSentMonth),
+      ctrThisMonth: clickSummary.ctr,
       topKeywords,
       dailyDMs,
       recentLogs,
